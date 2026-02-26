@@ -2,15 +2,11 @@
 import streamlit as st
 import pandas as pd
 import io
-PAGE_DIR = os.path.dirname(os.path.abspath(__file__))
-APP_DIR = os.path.dirname(PAGE_DIR)
-if APP_DIR not in sys.path:
-    sys.path.insert(0, APP_DIR)
+
+# page_config set in main app.py
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from data.label_engine import *
-
-# page_config set in main app.py
 st.markdown("# 🔍 표시사항 적부 판정")
 st.markdown("제품 표시사항을 입력하면 3개 법령 기준으로 자동 검토합니다")
 st.markdown("---")
@@ -127,7 +123,6 @@ elif input_method == "📎 샘플 데이터":
     st.dataframe(pd.DataFrame(list(label_data.items()), columns=["항목","내용"]),
                 use_container_width=True, hide_index=True)
     submitted = st.button("🔍 적부 판정 실행", type="primary", use_container_width=True)
-
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 적부 판정 결과

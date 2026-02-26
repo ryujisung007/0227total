@@ -1,15 +1,11 @@
 """📖 법령 조회"""
 import streamlit as st
 import pandas as pd
-PAGE_DIR = os.path.dirname(os.path.abspath(__file__))
-APP_DIR = os.path.dirname(PAGE_DIR)
-if APP_DIR not in sys.path:
-    sys.path.insert(0, APP_DIR)
+
+# page_config set in main app.py
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from data.label_engine import *
-
-# page_config set in main app.py
 st.markdown("# 📖 법령 조회 & 검색")
 st.markdown("학습된 법령 내용 검색 · 검토항목별 관련 조항 확인 · AI 해석")
 st.markdown("---")

@@ -3,15 +3,11 @@ import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
 import pandas as pd
-PAGE_DIR = os.path.dirname(os.path.abspath(__file__))
-APP_DIR = os.path.dirname(PAGE_DIR)
-if APP_DIR not in sys.path:
-    sys.path.insert(0, APP_DIR)
+
+# page_config set in main app.py
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from data.common import *
-
-# page_config set in main app.py
 st.markdown("# 💰 원재료 원가 분석")
 st.markdown("배합비 기반 원가 자동 계산 · 원재료 단가표 · 원가 구성 시각화")
 st.markdown("---")

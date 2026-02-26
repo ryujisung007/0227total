@@ -3,15 +3,11 @@ import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
 import pandas as pd
-PAGE_DIR = os.path.dirname(os.path.abspath(__file__))
-APP_DIR = os.path.dirname(PAGE_DIR)
-if APP_DIR not in sys.path:
-    sys.path.insert(0, APP_DIR)
+
+# page_config set in main app.py
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from data.common import *
-
-# page_config set in main app.py
 st.markdown("# ⚗️ 배합비 설계 & 표준 비교")
 st.markdown("배합비 100% 기준 설계 · 표준배합비 대비 비교분석 · 원가 연동")
 st.markdown("---")
@@ -121,7 +117,6 @@ with tab_input:
         if bc3.button("🏭 공정설계 →", use_container_width=True):
             st.switch_page("pages/07_🏭_공정설계_리스크.py")
 
-
 # ━━━━━ TAB 2: 표준배합비 비교 ━━━━━
 with tab_compare:
     st.markdown("### 🔀 내 배합비 vs 표준배합비 비교")
@@ -196,7 +191,6 @@ with tab_compare:
 
             csv_cmp = cmp_df.to_csv(index=False).encode("utf-8-sig")
             st.download_button("📥 비교표 CSV", csv_cmp, "표준비교분석.csv", "text/csv")
-
 
 # ━━━━━ TAB 3: 원가 연동 ━━━━━
 with tab_cost:

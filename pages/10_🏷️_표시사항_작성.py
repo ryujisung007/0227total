@@ -1,15 +1,11 @@
 """🏷️ 표시사항 검토"""
 import streamlit as st
 import pandas as pd
-PAGE_DIR = os.path.dirname(os.path.abspath(__file__))
-APP_DIR = os.path.dirname(PAGE_DIR)
-if APP_DIR not in sys.path:
-    sys.path.insert(0, APP_DIR)
+
+# page_config set in main app.py
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from data.common import *
-
-# page_config set in main app.py
 st.markdown("# 🏷️ 표시사항 검토 & 식품등의 표시기준")
 st.markdown("식품등의 표시기준 PDF 학습 → 표시사항 작성 → 적합성 비교 분석")
 st.markdown("---")
@@ -127,7 +123,6 @@ with tab1:
         csv_dl = label_df.to_csv(index=False).encode("utf-8-sig")
         st.download_button("📥 표시사항 CSV", csv_dl, "표시사항.csv", "text/csv")
 
-
 # ━━━ TAB 2: 적합성 비교표 ━━━
 with tab2:
     st.markdown("### 📊 표시기준 적합성 비교 분석표")
@@ -198,7 +193,6 @@ with tab2:
         c2.metric("작성/필수", f"{filled_count}/{len(all_required)}")
         c3.metric("종합", "✅ 적합" if rate >= 90 else "⚠️ 보완필요")
 
-
 # ━━━ TAB 3: 기준 원문 검색 ━━━
 with tab3:
     st.markdown("### 📄 식품등의 표시기준 원문 검색")
@@ -230,7 +224,6 @@ with tab3:
                     st.text(m)
         else:
             st.text_area("전문 (상위 5,000자)", st.session_state.label_pdf_text[:5000], height=400)
-
 
 # ━━━ TAB 4: AI 검토 ━━━
 with tab4:

@@ -1,14 +1,10 @@
 """📄 법령 학습"""
 import streamlit as st
-PAGE_DIR = os.path.dirname(os.path.abspath(__file__))
-APP_DIR = os.path.dirname(PAGE_DIR)
-if APP_DIR not in sys.path:
-    sys.path.insert(0, APP_DIR)
+
+# page_config set in main app.py
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from data.label_engine import *
-
-# page_config set in main app.py
 st.markdown("# 📄 법령 PDF 학습")
 st.markdown("3개 법령 PDF를 업로드하면 텍스트를 추출하여 지식베이스를 구축합니다")
 st.markdown("---")

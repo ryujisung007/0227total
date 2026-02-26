@@ -3,16 +3,11 @@ import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
 import pandas as pd
-# Streamlit Cloud 호환 경로
-PAGE_DIR = os.path.dirname(os.path.abspath(__file__))
-APP_DIR = os.path.dirname(PAGE_DIR)
-if APP_DIR not in sys.path:
-    sys.path.insert(0, APP_DIR)
+
+# page_config set in main app.py
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from data.common import *
-
-# page_config set in main app.py
 st.markdown("# 📈 음료 세부유형별 매출 추이")
 st.markdown("점선 = 전체 유형 평균 매출 | 매출액 높은 순 정렬 | 단위: 백만원")
 st.markdown("---")

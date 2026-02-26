@@ -1,15 +1,11 @@
 """🔬 AI 공정 분석"""
 import streamlit as st
 import pandas as pd
-PAGE_DIR = os.path.dirname(os.path.abspath(__file__))
-APP_DIR = os.path.dirname(PAGE_DIR)
-if APP_DIR not in sys.path:
-    sys.path.insert(0, APP_DIR)
+
+# page_config set in main app.py
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from data.common import *
-
-# page_config set in main app.py
 st.markdown("# 🔬 AI 공정 분석 & PDF 학습")
 st.markdown("공정 관련 PDF를 업로드하면 AI 연구원이 분석하여 공정 리스크를 검토합니다")
 st.markdown("---")
@@ -179,7 +175,6 @@ Brix: {form.get('brix', '-')}, pH: {form.get('pH', '-')}
                 st.markdown(text[:500] + "..." if len(text) > 500 else text)
                 st.markdown("---")
 
-
 with tab2:
     st.markdown("### 📄 업로드된 PDF 내용")
     if not st.session_state.pdf_texts:
@@ -199,7 +194,6 @@ with tab2:
                     st.text_area("전문", text[:5000], height=400, key=f"full_{name}")
                     if len(text) > 5000:
                         st.caption(f"(전체 {len(text):,}자 중 상위 5,000자 표시)")
-
 
 with tab3:
     st.markdown("### 📊 공정 분석 비교표")

@@ -4,15 +4,11 @@ import plotly.express as px
 import plotly.graph_objects as go
 import pandas as pd
 import io
-PAGE_DIR = os.path.dirname(os.path.abspath(__file__))
-APP_DIR = os.path.dirname(PAGE_DIR)
-if APP_DIR not in sys.path:
-    sys.path.insert(0, APP_DIR)
+
+# page_config set in main app.py
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from data.common import *
-
-# page_config set in main app.py
 st.markdown("# ✏️ 배합비 작성 연습")
 st.markdown("CSV 작성 → 실시간 검증 → 표준배합비 비교 → 원가 계산 → 저장")
 st.markdown("---")
@@ -97,7 +93,6 @@ with left:
         st.session_state.csv_input = ""
         st.session_state.formula_name = "나의 배합비"
         st.rerun()
-
 
 with right:
     df_parsed, msg = parse_csv_formula(csv_text)

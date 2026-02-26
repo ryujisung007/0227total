@@ -117,7 +117,6 @@ def fetch_food_data(food_type, start=1, end=100):
 
     return None, "모든 조회 방법 실패", 0
 
-
 def fetch_multiple_types(types_list, per_type=20):
     """여러 식품유형을 한번에 조회"""
     all_rows = []
@@ -137,7 +136,6 @@ def fetch_multiple_types(types_list, per_type=20):
 
     progress.empty()
     return all_rows, status_msgs
-
 
 def to_dataframe(rows):
     """API 응답을 DataFrame으로 변환"""
@@ -177,7 +175,6 @@ def to_dataframe(rows):
         df = df.sort_values("보고일자_dt", ascending=False).reset_index(drop=True)
 
     return df
-
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  사이드바
@@ -229,7 +226,6 @@ with st.sidebar:
     st.caption("📡 데이터: 식품안전나라 I1250 API")
     st.caption(f"🔑 키: {API_KEY[:8]}...")
     st.caption("⚠️ 일일 API 호출 2,000회 제한")
-
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  메인
