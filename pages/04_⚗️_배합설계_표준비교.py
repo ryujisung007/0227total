@@ -12,6 +12,15 @@ st.markdown("# ⚗️ 배합비 설계 & 표준 비교")
 st.markdown("배합비 100% 기준 설계 · 표준배합비 대비 비교분석 · 원가 연동")
 st.markdown("---")
 
+# 안전한 포맷터 (non-numeric 값에도 오류 없음)
+def safe_fmt(fmt):
+    def _fmt(x):
+        try:
+            return fmt.format(float(x))
+        except (ValueError, TypeError):
+            return str(x)
+    return _fmt
+
 tab_input, tab_compare, tab_cost = st.tabs(["📋 배합표 (100%)", "🔀 표준배합비 비교", "💰 원가 연동"])
 
 # ━━━━━ TAB 1: 배합표 100% 기준 ━━━━━
@@ -37,13 +46,16 @@ with tab_input:
             rows = []
             for ing in form["ingredients"]:
                 rows.append({
-                    "원료명": ing["name"],
-                    "비율(%)": ing["pct"],
-                    "함량(g)": ing["amount"],
-                    "기능": ing["function"],
-                    "등급": ing["grade"],
+                    "원료명": str(ing.get("name", "")),
+                    "비율(%)": ing.get("pct", 0),
+                    "함량(g)": ing.get("amount", 0),
+                    "기능": str(ing.get("function", "")),
+                    "등급": str(ing.get("grade", "")),
                 })
             df_current = pd.DataFrame(rows)
+            # 숫자 컬럼 강제 변환 (AI가 문자열로 줄 수 있음)
+            df_current["비율(%)"] = pd.to_numeric(df_current["비율(%)"], errors="coerce").fillna(0)
+            df_current["함량(g)"] = pd.to_numeric(df_current["함량(g)"], errors="coerce").fillna(0)
 
     elif input_mode == "✏️ 직접 입력 (CSV)":
         csv_text = st.text_area("CSV 배합비 (비율은 반드시 100% 기준)",
@@ -63,6 +75,11 @@ with tab_input:
 
     # ─── 배합표 표시 ───
     if df_current is not None and "비율(%)" in df_current.columns:
+        # 숫자 보장
+        df_current["비율(%)"] = pd.to_numeric(df_current["비율(%)"], errors="coerce").fillna(0)
+        if "함량(g)" in df_current.columns:
+            df_current["함량(g)"] = pd.to_numeric(df_current["함량(g)"], errors="coerce").fillna(0)
+
         st.markdown("---")
         total_pct = df_current["비율(%)"].sum()
 
@@ -80,12 +97,14 @@ with tab_input:
 
         st.markdown("### 📋 배합표 (100% 기준)")
         display_df = df_current.copy()
-        display_df["비율(%)"] = display_df["비율(%)"].round(3)
+        display_df["비율(%)"] = pd.to_numeric(display_df["비율(%)"], errors="coerce").fillna(0).round(3)
         if "함량(g)" not in display_df.columns:
             display_df["함량(g)"] = (display_df["비율(%)"] * 5).round(2)
+        else:
+            display_df["함량(g)"] = pd.to_numeric(display_df["함량(g)"], errors="coerce").fillna(0).round(2)
 
         st.dataframe(
-            display_df.style.format({"비율(%)": "{:.3f}", "함량(g)": "{:.2f}"}),
+            display_df.style.format({"비율(%)": safe_fmt("{:.3f}"), "함량(g)": safe_fmt("{:.2f}")}),
             use_container_width=True, hide_index=True,
         )
 
@@ -144,7 +163,7 @@ with tab_compare:
                 return ""
 
             styled = cmp_df.style.applymap(color_judgment, subset=["판정"]).format({
-                "내 배합(%)": "{:.3f}", "표준(%)": "{:.3f}", "차이(%)": "{:.3f}",
+                "내 배합(%)": safe_fmt("{:.3f}"), "표준(%)": safe_fmt("{:.3f}"), "차이(%)": safe_fmt("{:.3f}"),
             })
             st.dataframe(styled, use_container_width=True, hide_index=True)
 
@@ -213,8 +232,8 @@ with tab_cost:
 
         st.dataframe(
             cost_df.style.format({
-                "비율(%)": "{:.3f}", "함량(g)": "{:.2f}",
-                "단가(원/kg)": "{:,.0f}", "원가(원)": "{:,.2f}",
+                "비율(%)": safe_fmt("{:.3f}"), "함량(g)": safe_fmt("{:.2f}"),
+                "단가(원/kg)": safe_fmt("{:,.0f}"), "원가(원)": safe_fmt("{:,.2f}"),
             }),
             use_container_width=True, hide_index=True,
         )
