@@ -30,7 +30,7 @@ BASE_URL = f"http://openapi.foodsafetykorea.go.kr/api/{API_KEY}/{SERVICE_ID}/jso
 
 # ━━━ 식품유형 목록 ━━━
 FOOD_TYPES = {
-    "음료류": ["혼합음료", "과·채음료", "과·채주스", "탄산음료", "두유류", "유산균음료", "커피", "인삼·홍삼음료"],
+    "음료류": ["혼합음료", "과.채음료", "과.채주스", "탄산음료", "두유류", "유산균음료", "커피", "인삼·홍삼음료"],
     "과자류": ["과자", "캔디류", "추잉껌", "빙과", "아이스크림"],
     "빵·면류": ["빵류", "떡류", "면류", "즉석섭취식품"],
     "조미·소스류": ["소스", "복합조미식품", "향신료가공품", "식초", "드레싱"],
@@ -209,7 +209,7 @@ with st.sidebar:
         for cat, types in FOOD_TYPES.items():
             with st.expander(cat, expanded=(cat == "음료류")):
                 for t in types:
-                    if st.checkbox(t, value=(t in ["혼합음료", "과·채음료"]), key=f"cb_{t}"):
+                    if st.checkbox(t, value=(t in ["혼합음료", "과.채음료"]), key=f"cb_{t}"):
                         selected_types.append(t)
 
         per_type = st.slider("유형별 조회 건수", 10, 50, 20, step=5)
