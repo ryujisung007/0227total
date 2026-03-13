@@ -214,7 +214,7 @@ with st.sidebar:
         for cat, types in FOOD_TYPES.items():
             with st.expander(cat, expanded=(cat == "음료류")):
                 for t in types:
-                    if st.checkbox(t, value=(t in ["혼합음료", "과채음료"]), key=f"cb_{t}"):
+                    if st.checkbox(t, value=(t in ["혼합음료", "과.채음료"]), key=f"cb_{t}"):
                         selected_types.append(t)
 
         per_type = st.slider("유형별 조회 건수", 10, 50, 20, step=5)
