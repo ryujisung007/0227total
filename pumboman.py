@@ -1,7 +1,7 @@
 """
 🔍 식품안전나라 품목제조보고 조회 시스템
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-식품유형별 최신 제품 100건 조회 및 분석
+품목유형별 최신 제품 100건 조회 및 분석
 API: 식품(첨가물)품목제조보고 (I1250)
 """
 
@@ -28,10 +28,14 @@ API_KEY = "9171f7ffd72f4ffcb62f"
 SERVICE_ID = "I1250"
 BASE_URL = f"http://openapi.foodsafetykorea.go.kr/api/{API_KEY}/{SERVICE_ID}/json"
 
-# ━━━ 식품유형 목록 ━━━
-# ✅ 수정 1: 마침표(.) → 가운뎃점(·, U+00B7) — DB 실제 PRDLST_DCNM 값과 일치시킴
+# ━━━ 품목유형 목록 (카테고리 → 품목유형) ━━━
 FOOD_TYPES = {
-    "음료류": ["혼합음료", "과.채음료", "과.채주스", "탄산음료", "두유류", "유산균음료", "커피", "인삼·홍삼음료"],
+    "음료류": [
+        "혼합음료", "탄산음료", "탄산수",
+        "과.채주스", "과.채음료", "음료베이스",
+        "침출차", "추출차", "액상차",
+        "두유류", "유산균음료", "커피", "인삼·홍삼음료",
+    ],
     "과자류": ["과자", "캔디류", "추잉껌", "빙과", "아이스크림"],
     "빵·면류": ["빵류", "떡류", "면류", "즉석섭취식품"],
     "조미·소스류": ["소스", "복합조미식품", "향신료가공품", "식초", "드레싱"],
@@ -136,7 +140,7 @@ def fetch_food_data(food_type: str, start: int = 1, end: int = 100):
 
 
 def fetch_multiple_types(types_list: list, per_type: int = 20):
-    """여러 식품유형을 순차 조회"""
+    """여러 품목유형을 순차 조회"""
     all_rows = []
     progress = st.progress(0, text="조회 중...")
     status_msgs = {}
@@ -166,7 +170,7 @@ def to_dataframe(rows: list) -> pd.DataFrame:
 
     col_map = {
         "PRDLST_NM":               "제품명",
-        "PRDLST_DCNM":             "식품유형",
+        "PRDLST_DCNM":             "품목유형",
         "BSSH_NM":                 "제조사",
         "PRMS_DT":                 "보고일자",
         "POG_DAYCNT":              "유통기한",
@@ -213,7 +217,7 @@ with st.sidebar:
 
     if mode == "📋 단일 유형 조회":
         category  = st.selectbox("카테고리", list(FOOD_TYPES.keys()))
-        food_type = st.selectbox("식품유형", FOOD_TYPES[category])
+        food_type = st.selectbox("품목유형", FOOD_TYPES[category])
 
         custom_type = st.text_input(
             "또는 직접 입력",
@@ -250,7 +254,7 @@ with st.sidebar:
 #  메인
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 st.markdown("# 🏭 식품안전나라 품목제조보고 조회")
-st.markdown("식품유형별 최신 품목제조보고 데이터를 실시간으로 조회합니다.")
+st.markdown("품목유형별 최신 품목제조보고 데이터를 실시간으로 조회합니다.")
 st.markdown("---")
 
 if run:
@@ -276,7 +280,7 @@ if run:
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("조회 결과", f"{len(df)}건")
             c2.metric("전체 DB 레코드", f"{total:,}건")
-            c3.metric("식품유형", food_type)
+            c3.metric("품목유형", food_type)
             if "제조사" in df.columns:
                 c4.metric("제조사 수", f"{df['제조사'].nunique()}개")
 
@@ -303,7 +307,7 @@ if run:
                 if "제조사" in df.columns and sel_maker != "전체":
                     filtered = filtered[filtered["제조사"] == sel_maker]
 
-                show_cols = ["제품명", "식품유형", "제조사", "보고일자", "유통기한", "생산종료"]
+                show_cols = ["제품명", "품목유형", "제조사", "보고일자", "유통기한", "생산종료"]
                 show_cols = [c for c in show_cols if c in filtered.columns]
                 st.dataframe(
                     filtered[show_cols].reset_index(drop=True),
@@ -378,7 +382,7 @@ if run:
     # ━━━━ 복수 유형 비교 ━━━━
     else:
         if not selected_types:
-            st.warning("⚠️ 비교할 식품유형을 1개 이상 선택하세요.")
+            st.warning("⚠️ 비교할 품목유형을 1개 이상 선택하세요.")
         else:
             all_rows, status_msgs = fetch_multiple_types(selected_types, per_type)
 
@@ -400,24 +404,24 @@ if run:
 
                 with tab1:
                     st.markdown(f"### 📋 통합 품목 목록 ({len(df)}건)")
-                    types_in_data = ["전체"] + sorted(df["식품유형"].dropna().unique().tolist())
-                    sel_type = st.selectbox("식품유형 필터", types_in_data)
-                    show_df  = df if sel_type == "전체" else df[df["식품유형"] == sel_type]
-                    show_cols = ["제품명", "식품유형", "제조사", "보고일자", "유통기한"]
+                    types_in_data = ["전체"] + sorted(df["품목유형"].dropna().unique().tolist())
+                    sel_type = st.selectbox("품목유형 필터", types_in_data)
+                    show_df  = df if sel_type == "전체" else df[df["품목유형"] == sel_type]
+                    show_cols = ["제품명", "품목유형", "제조사", "보고일자", "유통기한"]
                     show_cols = [c for c in show_cols if c in show_df.columns]
                     st.dataframe(show_df[show_cols].reset_index(drop=True),
                                  use_container_width=True, height=500)
 
                 with tab2:
-                    st.markdown("### 📊 식품유형별 비교 분석")
+                    st.markdown("### 📊 품목유형별 비교 분석")
                     ch1, ch2 = st.columns(2)
 
                     with ch1:
-                        type_counts = df["식품유형"].value_counts()
+                        type_counts = df["품목유형"].value_counts()
                         fig = px.bar(
                             x=type_counts.index, y=type_counts.values,
-                            title="식품유형별 조회 건수",
-                            labels={"x": "식품유형", "y": "건수"},
+                            title="품목유형별 조회 건수",
+                            labels={"x": "품목유형", "y": "건수"},
                             color=type_counts.index,
                         )
                         fig.update_layout(height=400, showlegend=False)
@@ -425,20 +429,20 @@ if run:
 
                     with ch2:
                         if "제조사" in df.columns:
-                            maker_type = (df.groupby("식품유형")["제조사"]
+                            maker_type = (df.groupby("품목유형")["제조사"]
                                           .nunique().reset_index())
-                            maker_type.columns = ["식품유형", "제조사수"]
+                            maker_type.columns = ["품목유형", "제조사수"]
                             fig2 = px.bar(
-                                maker_type, x="식품유형", y="제조사수",
+                                maker_type, x="품목유형", y="제조사수",
                                 title="유형별 제조사 다양성",
-                                color="식품유형",
+                                color="품목유형",
                             )
                             fig2.update_layout(height=400, showlegend=False)
                             st.plotly_chart(fig2, use_container_width=True)
 
                     st.markdown("#### 🏢 유형별 상위 제조사")
                     for ft in selected_types:
-                        ft_df = df[df["식품유형"] == ft]
+                        ft_df = df[df["품목유형"] == ft]
                         if not ft_df.empty and "제조사" in ft_df.columns:
                             top = ft_df["제조사"].value_counts().head(5)
                             with st.expander(f"**{ft}** — 상위 제조사 (총 {len(ft_df)}건)"):
@@ -458,15 +462,15 @@ if run:
 
 # ━━━━ 초기 안내 ━━━━
 else:
-    st.info("👈 왼쪽 사이드바에서 식품유형을 선택하고 **[조회 실행]** 버튼을 누르세요.")
+    st.info("👈 왼쪽 사이드바에서 품목유형을 선택하고 **[조회 실행]** 버튼을 누르세요.")
 
     st.markdown("""
 ### 사용 방법
 
-**단일 유형 조회** — 한 가지 식품유형의 최신 제품을 상세 조회합니다.
+**단일 유형 조회** — 한 가지 품목유형의 최신 제품을 상세 조회합니다.
 제품 목록, 제조사 분석, 보고일자 추이 차트를 확인할 수 있습니다.
 
-**복수 유형 비교** — 여러 식품유형을 동시에 조회하여 비교합니다.
+**복수 유형 비교** — 여러 품목유형을 동시에 조회하여 비교합니다.
 유형별 제품 수, 제조사 다양성 등을 한눈에 비교할 수 있습니다.
 
 ### 수정 사항 (v2)
