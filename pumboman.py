@@ -74,16 +74,27 @@ def fetch_food_data(food_type: str, start: int = 1, end: int = 100):
     try:
         probe = requests.get(f"{BASE_URL}/1/1", timeout=30)
         probe.raise_for_status()
-        probe_data = probe.json()
     except requests.exceptions.Timeout:
         return None, "API 응답 시간 초과 (30초)", 0
     except requests.exceptions.ConnectionError:
         return None, "API 서버 연결 실패", 0
     except Exception as e:
-        return None, f"오류: {str(e)}", 0
+        return None, f"HTTP 오류: {str(e)}", 0
+
+    # 응답 본문이 비어있거나 JSON이 아닌 경우 처리
+    raw = probe.text.strip()
+    if not raw:
+        return None, f"API 빈 응답 (HTTP {probe.status_code}) — 서버 점검 중이거나 API 키를 확인하세요.", 0
+    try:
+        probe_data = probe.json()
+    except Exception:
+        preview = raw[:300].replace("\n", " ")
+        return None, f"JSON 파싱 실패 (HTTP {probe.status_code}) — 응답: {preview}", 0
 
     if SERVICE_ID not in probe_data:
-        return None, "API 응답에 데이터가 없습니다.", 0
+        # API 자체 오류코드 포함해서 반환
+        result_info = probe_data.get("RESULT", probe_data)
+        return None, f"API 오류 응답: {result_info}", 0
 
     total_count = int(probe_data[SERVICE_ID].get("total_count", 0))
     if total_count == 0:
@@ -100,16 +111,25 @@ def fetch_food_data(food_type: str, start: int = 1, end: int = 100):
         try:
             resp = requests.get(url, timeout=30)
             resp.raise_for_status()
-            data = resp.json()
         except requests.exceptions.Timeout:
             return None, "API 응답 시간 초과 (30초)", 0
         except requests.exceptions.ConnectionError:
             return None, "API 서버 연결 실패", 0
         except Exception as e:
-            return None, f"오류: {str(e)}", 0
+            return None, f"HTTP 오류: {str(e)}", 0
+
+        raw = resp.text.strip()
+        if not raw:
+            return None, f"API 빈 응답 (HTTP {resp.status_code}) — 서버 점검 중이거나 API 키를 확인하세요.", 0
+        try:
+            data = resp.json()
+        except Exception:
+            preview = raw[:300].replace("\n", " ")
+            return None, f"JSON 파싱 실패 (HTTP {resp.status_code}) — 응답: {preview}", 0
 
         if SERVICE_ID not in data:
-            return None, "API 응답에 데이터가 없습니다.", 0
+            result_info = data.get("RESULT", data)
+            return None, f"API 오류 응답: {result_info}", 0
 
         result = data[SERVICE_ID]
         code = result.get("RESULT", {}).get("CODE", "")
