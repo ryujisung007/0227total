@@ -31,7 +31,7 @@ BASE_URL = f"http://openapi.foodsafetykorea.go.kr/api/{API_KEY}/{SERVICE_ID}/jso
 # ━━━ 식품유형 목록 ━━━
 # ✅ 수정 1: 마침표(.) → 가운뎃점(·, U+00B7) — DB 실제 PRDLST_DCNM 값과 일치시킴
 FOOD_TYPES = {
-    "음료류": ["혼합음료", "과·채음료", "과·채주스", "탄산음료", "두유류", "유산균음료", "커피", "인삼·홍삼음료"],
+    "음료류": ["혼합음료", "과.채음료", "과.채주스", "탄산음료", "두유류", "유산균음료", "커피", "인삼·홍삼음료"],
     "과자류": ["과자", "캔디류", "추잉껌", "빙과", "아이스크림"],
     "빵·면류": ["빵류", "떡류", "면류", "즉석섭취식품"],
     "조미·소스류": ["소스", "복합조미식품", "향신료가공품", "식초", "드레싱"],
@@ -231,7 +231,7 @@ with st.sidebar:
         for cat, types in FOOD_TYPES.items():
             with st.expander(cat, expanded=(cat == "음료류")):
                 for t in types:
-                    if st.checkbox(t, value=(t in ["혼합음료", "과·채음료"]), key=f"cb_{t}"):
+                    if st.checkbox(t, value=(t in ["혼합음료", "과.채음료"]), key=f"cb_{t}"):
                         selected_types.append(t)
 
         per_type = st.slider("유형별 조회 건수", 10, 50, 20, step=5)
@@ -266,7 +266,7 @@ if run:
             st.warning(
                 f"⚠️ '{food_type}'에 해당하는 데이터가 없습니다.\n\n"
                 "식품안전나라 DB의 실제 PRDLST_DCNM 값과 일치하는지 확인하세요. "
-                "(예: 가운뎃점 구분 → '과·채주스' (·, U+00B7) vs 마침표 '과.채주스')"
+                "(예: 마침표 구분 → '과.채주스')"
             )
         else:
             st.success(f"✅ {msg} — '{food_type}' {len(rows)}건 조회 완료")
@@ -475,7 +475,7 @@ else:
 |---|---|---|
 | 서버 필터 | URL에 PRDLST_DCNM=값 추가 (API가 무시) | 제거 |
 | 클라이언트 필터 | `food_type in PRDLST_DCNM` 부분일치 | `==` 완전일치 |
-| 가운뎃점 | `과.채음료` (마침표, DB 불일치 → 0건) | `과·채음료` (U+00B7, DB 일치) |
+| 가운뎃점 | 잘못 수정됨 (`과·채음료`) | `과.채음료` (마침표, DB 실제값) 복원 |
 | 순회 방향 | DB 앞에서부터 → 오래된 데이터 수집 | **DB 끝에서부터 역순** → 최신 데이터 우선 수집 |
 | probe 호출 | 없음 (total_count를 첫 페이지에서 획득) | **1건 probe**로 total_count 먼저 확인 후 역진 |
 
