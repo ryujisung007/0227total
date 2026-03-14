@@ -48,6 +48,13 @@ API_KEY    = "9171f7ffd72f4ffcb62f"
 SERVICE_ID = "I1250"
 BASE_URL   = f"http://openapi.foodsafetykorea.go.kr/api/{API_KEY}/{SERVICE_ID}/json"
 
+# ── Gemini API 키 (st.secrets에서 자동 로드) ──
+def _get_gemini_key() -> str:
+    try:
+        return st.secrets.get("GOOGLE_API_KEY", "") or st.secrets.get("google_api_key", "")
+    except Exception:
+        return ""
+
 FOOD_TYPES = {
     "음료류": [
         "혼합음료", "탄산음료", "탄산수",
@@ -253,51 +260,48 @@ def product_table(df: pd.DataFrame, show_type: bool, pfx: str):
 # ───────────────────────────────
 # AI 현황분석 탭
 # ───────────────────────────────
-def ai_tab(df: pd.DataFrame, label: str, oai_key: str):
+def ai_tab(df: pd.DataFrame, label: str, oai_key: str = ""):
     st.markdown(f"### 🤖 AI 현황분석 — {label}")
 
-    if not oai_key:
-        st.info("👈 사이드바 하단의 **OpenAI API Key** 입력란에 키를 입력하면 분석이 활성화됩니다.")
+    gemini_key = _get_gemini_key()
+    if not gemini_key:
+        st.warning("⚠️ st.secrets에 GOOGLE_API_KEY가 설정되지 않았습니다.")
         return
 
-    st.caption(f"분석 대상: 최대 150건 / GPT-4o-mini 사용 (약 5~15초)")
+    st.caption(f"분석 대상: 최대 150건 / Gemini 2.0 Flash (secrets 키 사용)")
     if not st.button("🔍 AI 분석 실행", key=f"ai_{label[:8]}", type="primary"):
         return
 
-    sample = df.head(150).copy()
+    sample   = df.head(150).copy()
     has_ingr = "주요원재료" in sample.columns
     lines = [
         f"{row['제품명']} / {row['주요원재료'] if has_ingr else ''}"
         for _, row in sample.fillna("").iterrows()
     ]
 
-    system_p = """식품 R&D 전문가입니다. 제품 목록을 분석해 JSON만 반환하세요.
-JSON 외 텍스트·마크다운 코드블록 금지.
-형식: {"flavors":{"딸기":12,"복숭아":8},"concepts":{"제로슈거":15,"탄산":6}}
+    prompt = f"""식품 R&D 전문가입니다. 아래 제품 목록을 분석해 JSON만 반환하세요.
+JSON 외 텍스트·마크다운 코드블록 절대 금지.
+형식: {{"flavors":{{"딸기":12,"복숭아":8}},"concepts":{{"제로슈거":15,"탄산":6}}}}
 flavors: 주요 플레이버/과일/향 (딸기,복숭아,사과,레몬,오렌지,포도,망고,파인애플,메론,자몽,블루베리,라임,녹차,홍차,커피,콜라,오리지널,기타)
 concepts: 마케팅·기능 컨셉 (제로슈거,저칼로리,탄산,프리미엄,유기농,기능성,비타민,단백질,발효,식이섬유,무첨가,어린이,기타)
-각 값은 제품 수(정수), 상위 10개."""
+각 값은 제품 수(정수), 상위 10개.
+
+{len(lines)}개 제품:
+""" + "\n".join(lines)
 
     try:
         r = requests.post(
-            "https://api.openai.com/v1/chat/completions",
-            headers={"Authorization": f"Bearer {oai_key}", "Content-Type": "application/json"},
-            json={
-                "model": "gpt-4o-mini",
-                "messages": [
-                    {"role": "system", "content": system_p},
-                    {"role": "user",   "content": f"{len(lines)}개 제품:\n" + "\n".join(lines)},
-                ],
-                "max_tokens": 600, "temperature": 0.2,
-            },
+            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={gemini_key}",
+            headers={"Content-Type": "application/json"},
+            json={"contents": [{"parts": [{"text": prompt}]}]},
             timeout=60,
         )
         r.raise_for_status()
-        content = r.json()["choices"][0]["message"]["content"].strip()
+        content = r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
         content = content.replace("```json", "").replace("```", "").strip()
         result  = json.loads(content)
     except Exception as e:
-        st.error(f"GPT 오류: {e}")
+        st.error(f"Gemini 오류: {e}")
         return
 
     flavors  = result.get("flavors", {})
@@ -442,17 +446,12 @@ with st.sidebar:
         d_to   = None
 
     st.markdown("---")
-
-    # ── AI 분석 키 ──
-    st.markdown("#### 🤖 AI 현황분석 (GPT-4o-mini)")
-    oai_key = st.text_input("OpenAI API Key", type="password", placeholder="sk-...")
-
-    st.markdown("---")
     run = st.button("🚀 조회 실행", use_container_width=True, type="primary")
     st.markdown("---")
     st.caption(f"📡 식품안전나라 I1250 API")
     st.caption(f"🔑 {API_KEY[:8]}...")
     st.caption("⚠️ 일 2,000회 호출 제한")
+    st.caption("🤖 AI분석: Gemini (secrets)")
 
 
 # ───────────────────────────────
@@ -592,7 +591,7 @@ else:
         analysis_charts(df, r_label, show_type_chart=(r_mode != "single"))
 
     with t3:
-        ai_tab(df, r_label, oai_key)
+        ai_tab(df, r_label)
 
     with t4:
         st.dataframe(df, use_container_width=True, height=500)
