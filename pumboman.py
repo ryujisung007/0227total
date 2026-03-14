@@ -29,8 +29,9 @@ SERVICE_ID = "I1250"
 BASE_URL = f"http://openapi.foodsafetykorea.go.kr/api/{API_KEY}/{SERVICE_ID}/json"
 
 # ━━━ 식품유형 목록 ━━━
+# ✅ 수정 1: 마침표(.) → 가운뎃점(·, U+00B7) — DB 실제 PRDLST_DCNM 값과 일치시킴
 FOOD_TYPES = {
-    "음료류": ["혼합음료", "과.채음료", "과.채주스", "탄산음료", "두유류", "유산균음료", "커피", "인삼·홍삼음료"],
+    "음료류": ["혼합음료", "과·채음료", "과·채주스", "탄산음료", "두유류", "유산균음료", "커피", "인삼·홍삼음료"],
     "과자류": ["과자", "캔디류", "추잉껌", "빙과", "아이스크림"],
     "빵·면류": ["빵류", "떡류", "면류", "즉석섭취식품"],
     "조미·소스류": ["소스", "복합조미식품", "향신료가공품", "식초", "드레싱"],
@@ -41,29 +42,56 @@ FOOD_TYPES = {
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  API 호출 함수 (페이지네이션 + 완전일치 필터)
+#  API 호출 함수 (역순 페이지네이션 + 완전일치 필터)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 @st.cache_data(ttl=600, show_spinner=False)
 def fetch_food_data(food_type: str, start: int = 1, end: int = 100):
     """
-    페이지네이션으로 전체 DB를 순회하며 food_type 완전일치 데이터를 수집.
+    DB 끝에서부터 역순으로 페이지를 순회하며 food_type 완전일치 데이터를 수집.
 
-    수정 배경:
-      - I1250 API는 URL에 PRDLST_DCNM=값 을 붙여도 서버가 필터링하지 않고
-        전체 데이터를 그대로 반환한다 (응답 코드는 INFO-000 정상으로 옴).
-      - 이전 코드의 'in' 부분일치는 "과" in "과자류" == True 처럼
-        엉뚱한 유형을 포함시켰다.
-      - 따라서 ==  완전일치 클라이언트 필터링 + 페이지네이션으로 교체.
+    ✅ 수정 2: 순방향 → 역순 페이지네이션
+      문제: DB는 등록 순(오래된 것부터) 정렬.
+            앞에서부터 순회하면 target_count(100건) 달성 후 중단하므로
+            오래된 데이터만 수집됨. to_dataframe의 sort_values는
+            이미 뽑힌 100건 내 정렬이라 최신 누락을 해소하지 못함.
+      해결: ① probe 호출(1건)로 total_count 확보
+            ② total_count 위치에서 앞쪽으로 1000건씩 역진
+            ③ 각 페이지를 reversed()해 최신 행부터 필터링
+            ④ target_count 달성 즉시 중단 → API 호출 최소화
+
+    ✅ 수정 1 연계: food_type이 가운뎃점(·) 기준으로 들어오므로
+       완전일치(==) 필터가 올바르게 동작함.
     """
     target_count = end - start + 1
     collected = []
-    page_size = 1000          # 1회 호출 최대 건수
-    page_start = 1
-    total_count = None
+    page_size = 1000
 
-    while len(collected) < target_count:
-        page_end = page_start + page_size - 1
-        url = f"{BASE_URL}/{page_start}/{page_end}"
+    # ── 1단계: 총 레코드 수 확인 (probe 1건 호출) ──────────────────────
+    try:
+        probe = requests.get(f"{BASE_URL}/1/1", timeout=30)
+        probe.raise_for_status()
+        probe_data = probe.json()
+    except requests.exceptions.Timeout:
+        return None, "API 응답 시간 초과 (30초)", 0
+    except requests.exceptions.ConnectionError:
+        return None, "API 서버 연결 실패", 0
+    except Exception as e:
+        return None, f"오류: {str(e)}", 0
+
+    if SERVICE_ID not in probe_data:
+        return None, "API 응답에 데이터가 없습니다.", 0
+
+    total_count = int(probe_data[SERVICE_ID].get("total_count", 0))
+    if total_count == 0:
+        return [], "전체 DB 레코드 0건", 0
+
+    # ── 2단계: DB 끝에서부터 역순으로 1000건씩 조회 ─────────────────────
+    cursor = total_count   # DB의 마지막 인덱스에서 출발
+
+    while len(collected) < target_count and cursor > 0:
+        p_start = max(1, cursor - page_size + 1)
+        p_end   = cursor
+        url     = f"{BASE_URL}/{p_start}/{p_end}"
 
         try:
             resp = requests.get(url, timeout=30)
@@ -88,29 +116,23 @@ def fetch_food_data(food_type: str, start: int = 1, end: int = 100):
         if code != "INFO-000":
             return None, f"[{code}] {msg}", 0
 
-        if total_count is None:
-            total_count = int(result.get("total_count", 0))
-
         rows = result.get("row", [])
         if not rows:
-            break
+            cursor = p_start - 1
+            continue
 
-        # ✅ 핵심 수정: 완전일치 필터 (strip으로 공백 제거 후 비교)
+        # 페이지 내에서도 reversed() → 최신 행부터 필터링
         matched = [
-            r for r in rows
+            r for r in reversed(rows)
             if r.get("PRDLST_DCNM", "").strip() == food_type.strip()
         ]
         collected.extend(matched)
 
-        # 전체 레코드 소진 여부 확인
-        if page_end >= (total_count or 0):
-            break
-
-        page_start += page_size
+        cursor = p_start - 1
         time.sleep(0.3)   # API 부하 방지
 
     collected = collected[:target_count]
-    return collected, "정상 (페이지네이션 필터링)", total_count or 0
+    return collected, "정상 (역순 페이지네이션)", total_count
 
 
 def fetch_multiple_types(types_list: list, per_type: int = 20):
@@ -209,7 +231,7 @@ with st.sidebar:
         for cat, types in FOOD_TYPES.items():
             with st.expander(cat, expanded=(cat == "음료류")):
                 for t in types:
-                    if st.checkbox(t, value=(t in ["혼합음료", "과.채음료"]), key=f"cb_{t}"):
+                    if st.checkbox(t, value=(t in ["혼합음료", "과·채음료"]), key=f"cb_{t}"):
                         selected_types.append(t)
 
         per_type = st.slider("유형별 조회 건수", 10, 50, 20, step=5)
@@ -221,7 +243,7 @@ with st.sidebar:
     st.caption("📡 데이터: 식품안전나라 I1250 API")
     st.caption(f"🔑 키: {API_KEY[:8]}...")
     st.caption("⚠️ 일일 API 호출 2,000회 제한")
-    st.caption("✅ 필터: PRDLST_DCNM 완전일치 (페이지네이션)")
+    st.caption("✅ 필터: PRDLST_DCNM 완전일치 (역순 페이지네이션)")
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -235,7 +257,7 @@ if run:
 
     # ━━━━ 단일 유형 조회 ━━━━
     if mode == "📋 단일 유형 조회":
-        with st.spinner(f"📡 '{food_type}' 데이터 조회 중… (전체 DB 순회, 잠시 기다려 주세요)"):
+        with st.spinner(f"📡 '{food_type}' 데이터 조회 중… (DB 역순 순회, 잠시 기다려 주세요)"):
             rows, msg, total = fetch_food_data(food_type, 1, count)
 
         if rows is None:
@@ -244,7 +266,7 @@ if run:
             st.warning(
                 f"⚠️ '{food_type}'에 해당하는 데이터가 없습니다.\n\n"
                 "식품안전나라 DB의 실제 PRDLST_DCNM 값과 일치하는지 확인하세요. "
-                "(예: 점·가운뎃점 구분 → '과·채주스' vs '과.채주스')"
+                "(예: 가운뎃점 구분 → '과·채주스' (·, U+00B7) vs 마침표 '과.채주스')"
             )
         else:
             st.success(f"✅ {msg} — '{food_type}' {len(rows)}건 조회 완료")
@@ -253,7 +275,7 @@ if run:
             # ━━ 상단 메트릭 ━━
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("조회 결과", f"{len(df)}건")
-            c2.metric("전체 등록 수", f"{total:,}건")
+            c2.metric("전체 DB 레코드", f"{total:,}건")
             c3.metric("식품유형", food_type)
             if "제조사" in df.columns:
                 c4.metric("제조사 수", f"{df['제조사'].nunique()}개")
@@ -447,13 +469,15 @@ else:
 **복수 유형 비교** — 여러 식품유형을 동시에 조회하여 비교합니다.
 유형별 제품 수, 제조사 다양성 등을 한눈에 비교할 수 있습니다.
 
-### 필터링 방식 (수정 사항)
+### 수정 사항 (v2)
 
 | 항목 | 이전 | 현재 |
 |---|---|---|
 | 서버 필터 | URL에 PRDLST_DCNM=값 추가 (API가 무시) | 제거 |
 | 클라이언트 필터 | `food_type in PRDLST_DCNM` 부분일치 | `==` 완전일치 |
-| 조회 범위 | 첫 500건만 탐색 | 전체 DB 페이지네이션 순회 |
+| 가운뎃점 | `과.채음료` (마침표, DB 불일치 → 0건) | `과·채음료` (U+00B7, DB 일치) |
+| 순회 방향 | DB 앞에서부터 → 오래된 데이터 수집 | **DB 끝에서부터 역순** → 최신 데이터 우선 수집 |
+| probe 호출 | 없음 (total_count를 첫 페이지에서 획득) | **1건 probe**로 total_count 먼저 확인 후 역진 |
 
 ### API 정보
 
@@ -464,6 +488,6 @@ else:
 | 제공기관 | 행정안전부 |
 | 호출제한 | 1회 최대 1,000건 / 일 2,000회 |
 
-> ⚠️ **가운뎃점 주의**: 식품안전나라 DB는 `과·채주스` (·, U+00B7) 를 사용합니다.
-> 일반 마침표 `.` 로 입력하면 매칭되지 않습니다.
+> ⚠️ **직접 입력 시 주의**: 가운뎃점(`·`, U+00B7)과 마침표(`.`)는 다른 문자입니다.
+> DB 실제 유형명과 정확히 일치해야 결과가 출력됩니다.
 """)
