@@ -49,42 +49,54 @@ FOOD_TYPES = {
 #  API 호출 (역순 페이지네이션 + 완전일치)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 @st.cache_data(ttl=600, show_spinner=False)
-def fetch_food_data(food_type: str, start: int = 1, end: int = 100):
-    target_count = end - start + 1
-    collected    = []
-    page_size    = 1000
+def fetch_food_data(food_type: str, top_n: int = 100, max_scan_pages: int = 100):
+    """
+    전체 DB를 max_scan_pages 페이지만큼 스캔 후 보고일자 정렬 → 최신 top_n건 반환.
+
+    핵심 수정:
+      - DB 인덱스 순서 ≠ 보고일자 순서임이 확인됨.
+        1987~2026 데이터가 DB 끝부분에 뒤섞여 있어 역순 N건 수집으로는
+        최신 신고 제품을 올바르게 포착할 수 없음.
+      - 해결: target_count 달성 즉시 중단 제거 →
+        max_scan_pages 페이지 전체 스캔 후 PRMS_DT 기준 정렬 → 상위 top_n 반환.
+      - DB 끝(최근 등록분)부터 역순 스캔해 API 호출을 최소화.
+    """
+    collected  = []
+    page_size  = 1000
 
     # 1단계: probe → total_count
     try:
         probe = requests.get(f"{BASE_URL}/1/1", timeout=30)
         probe.raise_for_status()
     except requests.exceptions.Timeout:
-        return None, "API 응답 시간 초과 (30초)", 0
+        return None, "API 응답 시간 초과 (30초)", 0, 0
     except requests.exceptions.ConnectionError:
-        return None, "API 서버 연결 실패", 0
+        return None, "API 서버 연결 실패", 0, 0
     except Exception as e:
-        return None, f"HTTP 오류: {str(e)}", 0
+        return None, f"HTTP 오류: {str(e)}", 0, 0
 
     raw = probe.text.strip()
     if not raw:
-        return None, f"API 빈 응답 (HTTP {probe.status_code}) — 서버 점검 중이거나 API 키 확인 필요", 0
+        return None, f"API 빈 응답 (HTTP {probe.status_code}) — 서버 점검 중이거나 API 키 확인 필요", 0, 0
     try:
         probe_data = probe.json()
     except Exception:
         preview = raw[:300].replace("\n", " ")
-        return None, f"JSON 파싱 실패 (HTTP {probe.status_code}) — 응답: {preview}", 0
+        return None, f"JSON 파싱 실패 (HTTP {probe.status_code}) — 응답: {preview}", 0, 0
 
     if SERVICE_ID not in probe_data:
         result_info = probe_data.get("RESULT", probe_data)
-        return None, f"API 오류 응답: {result_info}", 0
+        return None, f"API 오류 응답: {result_info}", 0, 0
 
     total_count = int(probe_data[SERVICE_ID].get("total_count", 0))
     if total_count == 0:
-        return [], "전체 DB 레코드 0건", 0
+        return [], "전체 DB 레코드 0건", 0, 0
 
-    # 2단계: DB 끝에서 역순 1000건씩
-    cursor = total_count
-    while len(collected) < target_count and cursor > 0:
+    # 2단계: DB 끝에서 역순으로 max_scan_pages 페이지 전체 스캔
+    cursor     = total_count
+    pages_done = 0
+
+    while cursor > 0 and pages_done < max_scan_pages:
         p_start = max(1, cursor - page_size + 1)
         p_end   = cursor
         url     = f"{BASE_URL}/{p_start}/{p_end}"
@@ -93,24 +105,24 @@ def fetch_food_data(food_type: str, start: int = 1, end: int = 100):
             resp = requests.get(url, timeout=30)
             resp.raise_for_status()
         except requests.exceptions.Timeout:
-            return None, "API 응답 시간 초과 (30초)", 0
+            return None, "API 응답 시간 초과 (30초)", 0, 0
         except requests.exceptions.ConnectionError:
-            return None, "API 서버 연결 실패", 0
+            return None, "API 서버 연결 실패", 0, 0
         except Exception as e:
-            return None, f"HTTP 오류: {str(e)}", 0
+            return None, f"HTTP 오류: {str(e)}", 0, 0
 
         raw = resp.text.strip()
         if not raw:
-            return None, f"API 빈 응답 (HTTP {resp.status_code}) — 서버 점검 중이거나 API 키 확인 필요", 0
+            return None, f"API 빈 응답 (HTTP {resp.status_code}) — 서버 점검 중이거나 API 키 확인 필요", 0, 0
         try:
             data = resp.json()
         except Exception:
             preview = raw[:300].replace("\n", " ")
-            return None, f"JSON 파싱 실패 (HTTP {resp.status_code}) — 응답: {preview}", 0
+            return None, f"JSON 파싱 실패 (HTTP {resp.status_code}) — 응답: {preview}", 0, 0
 
         if SERVICE_ID not in data:
             result_info = data.get("RESULT", data)
-            return None, f"API 오류 응답: {result_info}", 0
+            return None, f"API 오류 응답: {result_info}", 0, 0
 
         result = data[SERVICE_ID]
         code   = result.get("RESULT", {}).get("CODE", "")
@@ -119,23 +131,34 @@ def fetch_food_data(food_type: str, start: int = 1, end: int = 100):
         if code == "INFO-200":
             break
         if code != "INFO-000":
-            return None, f"[{code}] {msg}", 0
+            return None, f"[{code}] {msg}", 0, 0
 
         rows = result.get("row", [])
-        if not rows:
-            cursor = p_start - 1
-            continue
+        if rows:
+            matched = [
+                r for r in rows
+                if r.get("PRDLST_DCNM", "").strip() == food_type.strip()
+            ]
+            collected.extend(matched)
 
-        matched = [
-            r for r in reversed(rows)
-            if r.get("PRDLST_DCNM", "").strip() == food_type.strip()
-        ]
-        collected.extend(matched)
-        cursor = p_start - 1
-        time.sleep(0.3)
+        cursor     = p_start - 1
+        pages_done += 1
+        time.sleep(0.2)
 
-    collected = collected[:target_count]
-    return collected, "정상 (역순 페이지네이션)", total_count
+    # 3단계: 보고일자 기준 정렬 → 최신 top_n 반환
+    if collected:
+        def sort_key(r):
+            try:
+                return r.get("PRMS_DT", "0") or "0"
+            except Exception:
+                return "0"
+        collected.sort(key=sort_key, reverse=True)
+        collected = collected[:top_n]
+
+    scanned = min(pages_done * page_size, total_count)
+    coverage = round(scanned / total_count * 100, 1) if total_count else 0
+    msg = f"정상 — {pages_done}페이지({scanned:,}건) 스캔, DB 커버리지 {coverage}%"
+    return collected, msg, total_count, pages_done
 
 
 def fetch_multiple_types(types_list: list, per_type: int = 20):
@@ -145,7 +168,7 @@ def fetch_multiple_types(types_list: list, per_type: int = 20):
 
     for i, ft in enumerate(types_list):
         progress.progress((i + 1) / len(types_list), text=f"📡 {ft} 조회 중...")
-        rows, msg, total = fetch_food_data(ft, 1, per_type)
+        rows, msg, total, _ = fetch_food_data(ft, top_n=per_type, max_scan_pages=max_scan_pages)
         status_msgs[ft] = {"msg": msg, "total": total, "fetched": len(rows) if rows else 0}
         if rows:
             all_rows.extend(rows)
@@ -375,11 +398,11 @@ with st.sidebar:
             )
             if custom_type.strip():
                 food_type = custom_type.strip()
-            count = st.slider("조회 건수", 10, 200, 100, step=10)
+            count = st.slider("출력 건수 (최신순)", 10, 500, 100, step=10)
         else:
             food_type = None
             st.info(f"**{category}** 내 {len(FOOD_TYPES[category])}개 품목유형 전체 조회")
-            count = st.slider("품목유형별 조회 건수", 10, 50, 20, step=5)
+            count = st.slider("품목유형별 출력 건수", 10, 100, 20, step=5)
     else:
         st.markdown("**비교할 유형 선택:**")
         selected_types = []
@@ -388,7 +411,18 @@ with st.sidebar:
                 for t in types:
                     if st.checkbox(t, value=(t in ["혼합음료", "과.채음료"]), key=f"cb_{t}"):
                         selected_types.append(t)
-        per_type = st.slider("유형별 조회 건수", 10, 50, 20, step=5)
+        per_type = st.slider("유형별 출력 건수", 10, 100, 20, step=5)
+
+    st.markdown("---")
+    st.markdown("#### 🔭 스캔 범위 설정")
+    max_scan_pages = st.slider(
+        "스캔 페이지 수",
+        min_value=10, max_value=300, value=100, step=10,
+        help="1페이지 = DB 1,000건 스캔. 클수록 최신 데이터 정확도↑, API 호출↑\n"
+             "권장: 혼합음료·탄산음료 등 대형 카테고리 → 200 이상\n"
+             "소형 카테고리(탄산수, 액상차 등) → 50~100"
+    )
+    st.caption(f"스캔 범위: DB 최근 {max_scan_pages*1000:,}건 / API {max_scan_pages+1}회 사용")
 
     st.markdown("---")
 
@@ -502,7 +536,7 @@ if run:
         # ── 개별 품목유형 ──
         else:
             with st.spinner(f"📡 '{food_type}' 조회 중… (DB 역순 순회)"):
-                rows, msg, total = fetch_food_data(food_type, 1, count)
+                rows, msg, total, pages_done = fetch_food_data(food_type, top_n=count, max_scan_pages=max_scan_pages)
 
             if rows is None:
                 st.error(f"❌ 조회 실패: {msg}")
@@ -513,7 +547,7 @@ if run:
                     "(예: 마침표 구분 → '과.채주스')"
                 )
             else:
-                st.success(f"✅ {msg} — '{food_type}' {len(rows)}건 조회 완료")
+                st.success(f"✅ {msg} | 출력: {len(rows)}건")
                 df = to_dataframe(rows)
                 if use_date_filter:
                     df = apply_date_filter(df, date_from, date_to)
