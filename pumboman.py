@@ -236,18 +236,27 @@ with st.sidebar:
     st.markdown("---")
 
     if mode == "📋 단일 유형 조회":
-        category  = st.selectbox("카테고리", list(FOOD_TYPES.keys()))
-        food_type = st.selectbox("품목유형", FOOD_TYPES[category])
-
-        custom_type = st.text_input(
-            "또는 직접 입력",
-            placeholder="예: 혼합음료, 초콜릿, 잼류...",
-            help="API의 PRDLST_DCNM 값과 완전일치하는 명칭을 입력하세요",
+        category     = st.selectbox("카테고리", list(FOOD_TYPES.keys()))
+        category_all = st.checkbox(
+            "카테고리 전체 조회",
+            value=False,
+            help="선택한 카테고리의 모든 품목유형을 합산 조회합니다",
         )
-        if custom_type.strip():
-            food_type = custom_type.strip()
 
-        count = st.slider("조회 건수", 10, 200, 100, step=10)
+        if not category_all:
+            food_type = st.selectbox("품목유형", FOOD_TYPES[category])
+            custom_type = st.text_input(
+                "또는 직접 입력",
+                placeholder="예: 혼합음료, 초콜릿, 잼류...",
+                help="API의 PRDLST_DCNM 값과 완전일치하는 명칭을 입력하세요",
+            )
+            if custom_type.strip():
+                food_type = custom_type.strip()
+            count = st.slider("조회 건수", 10, 200, 100, step=10)
+        else:
+            food_type = None
+            st.info(f"**{category}** 내 {len(FOOD_TYPES[category])}개 품목유형 전체 조회")
+            count = st.slider("품목유형별 조회 건수", 10, 50, 20, step=5)
 
     else:
         st.markdown("**비교할 유형 선택:**")
@@ -281,123 +290,219 @@ if run:
 
     # ━━━━ 단일 유형 조회 ━━━━
     if mode == "📋 단일 유형 조회":
-        with st.spinner(f"📡 '{food_type}' 데이터 조회 중… (DB 역순 순회, 잠시 기다려 주세요)"):
-            rows, msg, total = fetch_food_data(food_type, 1, count)
 
-        if rows is None:
-            st.error(f"❌ 조회 실패: {msg}")
-        elif len(rows) == 0:
-            st.warning(
-                f"⚠️ '{food_type}'에 해당하는 데이터가 없습니다.\n\n"
-                "식품안전나라 DB의 실제 PRDLST_DCNM 값과 일치하는지 확인하세요. "
-                "(예: 마침표 구분 → '과.채주스')"
-            )
-        else:
-            st.success(f"✅ {msg} — '{food_type}' {len(rows)}건 조회 완료")
-            df = to_dataframe(rows)
+        # ── 카테고리 전체 조회 ──────────────────────────────────────────
+        if category_all:
+            types_in_cat = FOOD_TYPES[category]
+            all_rows, status_msgs = fetch_multiple_types(types_in_cat, count)
 
-            # ━━ 상단 메트릭 ━━
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("조회 결과", f"{len(df)}건")
-            c2.metric("전체 DB 레코드", f"{total:,}건")
-            c3.metric("품목유형", food_type)
-            if "제조사" in df.columns:
-                c4.metric("제조사 수", f"{df['제조사'].nunique()}개")
+            st.markdown(f"### 📡 **{category}** 카테고리 전체 조회 결과")
+            summary_cols = st.columns(min(len(types_in_cat), 5))
+            for i, ft in enumerate(types_in_cat):
+                info = status_msgs.get(ft, {"msg": "미조회", "fetched": 0, "total": 0})
+                with summary_cols[i % len(summary_cols)]:
+                    if "정상" in info["msg"]:
+                        st.metric(ft, f"{info['fetched']}건", f"전체 {info['total']:,}건")
+                    else:
+                        st.metric(ft, "❌", info["msg"][:20])
 
-            st.markdown("---")
+            if not all_rows:
+                st.warning("⚠️ 조회된 데이터가 없습니다.")
+            else:
+                df = to_dataframe(all_rows)
+                st.markdown("---")
 
-            tab1, tab2, tab3 = st.tabs(["📋 제품 목록", "📊 분석 차트", "📥 원시 데이터"])
-
-            # ── 탭1: 제품 목록 ──
-            with tab1:
-                st.markdown(f"### 📋 {food_type} 최신 품목제조보고 ({len(df)}건)")
-
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    search = st.text_input("🔎 제품명/제조사 검색", placeholder="검색어 입력...")
-                with col_b:
-                    if "제조사" in df.columns:
-                        makers    = ["전체"] + sorted(df["제조사"].dropna().unique().tolist())
-                        sel_maker = st.selectbox("제조사 필터", makers)
-
-                filtered = df.copy()
-                if search:
-                    mask     = filtered.apply(lambda r: search.lower() in str(r).lower(), axis=1)
-                    filtered = filtered[mask]
-                if "제조사" in df.columns and sel_maker != "전체":
-                    filtered = filtered[filtered["제조사"] == sel_maker]
-
-                show_cols = ["제품명", "품목유형", "제조사", "보고일자", "유통기한", "생산종료"]
-                show_cols = [c for c in show_cols if c in filtered.columns]
-                st.dataframe(
-                    filtered[show_cols].reset_index(drop=True),
-                    use_container_width=True,
-                    height=500,
-                )
-                st.caption(f"총 {len(filtered)}건 표시 중")
-
-            # ── 탭2: 분석 차트 ──
-            with tab2:
-                st.markdown(f"### 📊 {food_type} 데이터 분석")
-                ch1, ch2 = st.columns(2)
-
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("총 조회 결과", f"{len(df)}건")
+                c2.metric("카테고리", category)
+                c3.metric("품목유형 수", f"{df['품목유형'].nunique()}개")
                 if "제조사" in df.columns:
-                    with ch1:
-                        maker_counts = df["제조사"].value_counts().head(15)
-                        fig1 = px.bar(
-                            x=maker_counts.values,
-                            y=maker_counts.index,
-                            orientation="h",
-                            title="제조사별 제품 수 (상위 15)",
-                            labels={"x": "제품 수", "y": "제조사"},
-                            color=maker_counts.values,
-                            color_continuous_scale="Blues",
-                        )
-                        fig1.update_layout(height=450, showlegend=False,
-                                           yaxis=dict(autorange="reversed"))
-                        fig1.update_coloraxes(showscale=False)
-                        st.plotly_chart(fig1, use_container_width=True)
+                    c4.metric("제조사 수", f"{df['제조사'].nunique()}개")
+                st.markdown("---")
 
-                if "보고일자_dt" in df.columns:
+                tab1, tab2, tab3 = st.tabs(["📋 제품 목록", "📊 품목유형별 분석", "📥 원시 데이터"])
+
+                with tab1:
+                    st.markdown(f"### 📋 {category} 전체 품목 ({len(df)}건)")
+                    col_a, col_b, col_c = st.columns(3)
+                    with col_a:
+                        search = st.text_input("🔎 제품명/제조사 검색", placeholder="검색어 입력...")
+                    with col_b:
+                        type_opts = ["전체"] + sorted(df["품목유형"].dropna().unique().tolist())
+                        sel_type  = st.selectbox("품목유형 필터", type_opts)
+                    with col_c:
+                        if "제조사" in df.columns:
+                            makers    = ["전체"] + sorted(df["제조사"].dropna().unique().tolist())
+                            sel_maker = st.selectbox("제조사 필터", makers)
+                    filtered = df.copy()
+                    if search:
+                        mask     = filtered.apply(lambda r: search.lower() in str(r).lower(), axis=1)
+                        filtered = filtered[mask]
+                    if sel_type != "전체":
+                        filtered = filtered[filtered["품목유형"] == sel_type]
+                    if "제조사" in df.columns and sel_maker != "전체":
+                        filtered = filtered[filtered["제조사"] == sel_maker]
+                    show_cols = ["제품명", "품목유형", "제조사", "보고일자", "유통기한", "생산종료"]
+                    show_cols = [c for c in show_cols if c in filtered.columns]
+                    st.dataframe(filtered[show_cols].reset_index(drop=True),
+                                 use_container_width=True, height=500)
+                    st.caption(f"총 {len(filtered)}건 표시 중")
+
+                with tab2:
+                    st.markdown(f"### 📊 {category} 품목유형별 분석")
+                    ch1, ch2 = st.columns(2)
+                    with ch1:
+                        type_counts = df["품목유형"].value_counts()
+                        fig = px.bar(
+                            x=type_counts.index, y=type_counts.values,
+                            title="품목유형별 조회 건수",
+                            labels={"x": "품목유형", "y": "건수"},
+                            color=type_counts.index,
+                        )
+                        fig.update_layout(height=400, showlegend=False)
+                        st.plotly_chart(fig, use_container_width=True)
                     with ch2:
-                        df_dt = df.dropna(subset=["보고일자_dt"]).copy()
-                        if not df_dt.empty:
-                            df_dt["연월"] = df_dt["보고일자_dt"].dt.to_period("M").astype(str)
-                            monthly = df_dt["연월"].value_counts().sort_index().tail(24)
-                            fig2 = px.line(
-                                x=monthly.index,
-                                y=monthly.values,
-                                title="월별 보고 건수 추이 (최근 24개월)",
-                                labels={"x": "연월", "y": "건수"},
-                                markers=True,
+                        if "제조사" in df.columns:
+                            maker_type = df.groupby("품목유형")["제조사"].nunique().reset_index()
+                            maker_type.columns = ["품목유형", "제조사수"]
+                            fig2 = px.bar(
+                                maker_type, x="품목유형", y="제조사수",
+                                title="품목유형별 제조사 다양성",
+                                color="품목유형",
                             )
-                            fig2.update_layout(height=450)
+                            fig2.update_layout(height=400, showlegend=False)
                             st.plotly_chart(fig2, use_container_width=True)
 
-                if "생산종료" in df.columns:
-                    prod_counts = df["생산종료"].value_counts()
-                    fig3 = px.pie(
-                        values=prod_counts.values,
-                        names=prod_counts.index,
-                        title="생산종료 현황",
-                        color_discrete_sequence=px.colors.qualitative.Set2,
+                with tab3:
+                    st.dataframe(df, use_container_width=True, height=500)
+                    csv = df.to_csv(index=False).encode("utf-8-sig")
+                    st.download_button(
+                        "📥 CSV 다운로드",
+                        csv,
+                        f"{category}_전체_품목제조보고_{datetime.now().strftime('%Y%m%d')}.csv",
+                        "text/csv",
+                        use_container_width=True,
                     )
-                    fig3.update_layout(height=350)
-                    st.plotly_chart(fig3, use_container_width=True)
 
-            # ── 탭3: 원시 데이터 ──
-            with tab3:
-                st.markdown("### 📥 원시 데이터 (전체 필드)")
-                st.dataframe(df, use_container_width=True, height=500)
+        # ── 개별 품목유형 조회 ─────────────────────────────────────────
+        else:
+            with st.spinner(f"📡 '{food_type}' 데이터 조회 중… (DB 역순 순회, 잠시 기다려 주세요)"):
+                rows, msg, total = fetch_food_data(food_type, 1, count)
 
-                csv = df.to_csv(index=False).encode("utf-8-sig")
-                st.download_button(
-                    "📥 CSV 다운로드",
-                    csv,
-                    f"{food_type}_품목제조보고_{datetime.now().strftime('%Y%m%d')}.csv",
-                    "text/csv",
-                    use_container_width=True,
+            if rows is None:
+                st.error(f"❌ 조회 실패: {msg}")
+            elif len(rows) == 0:
+                st.warning(
+                    f"⚠️ '{food_type}'에 해당하는 데이터가 없습니다.\n\n"
+                    "식품안전나라 DB의 실제 PRDLST_DCNM 값과 일치하는지 확인하세요. "
+                    "(예: 마침표 구분 → '과.채주스')"
                 )
+            else:
+                st.success(f"✅ {msg} — '{food_type}' {len(rows)}건 조회 완료")
+                df = to_dataframe(rows)
+
+                # ━━ 상단 메트릭 ━━
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("조회 결과", f"{len(df)}건")
+                c2.metric("전체 DB 레코드", f"{total:,}건")
+                c3.metric("품목유형", food_type)
+                if "제조사" in df.columns:
+                    c4.metric("제조사 수", f"{df['제조사'].nunique()}개")
+
+                st.markdown("---")
+
+                tab1, tab2, tab3 = st.tabs(["📋 제품 목록", "📊 분석 차트", "📥 원시 데이터"])
+
+                # ── 탭1: 제품 목록 ──
+                with tab1:
+                    st.markdown(f"### 📋 {food_type} 최신 품목제조보고 ({len(df)}건)")
+
+                    col_a, col_b = st.columns(2)
+                    with col_a:
+                        search = st.text_input("🔎 제품명/제조사 검색", placeholder="검색어 입력...")
+                    with col_b:
+                        if "제조사" in df.columns:
+                            makers    = ["전체"] + sorted(df["제조사"].dropna().unique().tolist())
+                            sel_maker = st.selectbox("제조사 필터", makers)
+
+                    filtered = df.copy()
+                    if search:
+                        mask     = filtered.apply(lambda r: search.lower() in str(r).lower(), axis=1)
+                        filtered = filtered[mask]
+                    if "제조사" in df.columns and sel_maker != "전체":
+                        filtered = filtered[filtered["제조사"] == sel_maker]
+
+                    show_cols = ["제품명", "품목유형", "제조사", "보고일자", "유통기한", "생산종료"]
+                    show_cols = [c for c in show_cols if c in filtered.columns]
+                    st.dataframe(
+                        filtered[show_cols].reset_index(drop=True),
+                        use_container_width=True,
+                        height=500,
+                    )
+                    st.caption(f"총 {len(filtered)}건 표시 중")
+
+                # ── 탭2: 분석 차트 ──
+                with tab2:
+                    st.markdown(f"### 📊 {food_type} 데이터 분석")
+                    ch1, ch2 = st.columns(2)
+
+                    if "제조사" in df.columns:
+                        with ch1:
+                            maker_counts = df["제조사"].value_counts().head(15)
+                            fig1 = px.bar(
+                                x=maker_counts.values,
+                                y=maker_counts.index,
+                                orientation="h",
+                                title="제조사별 제품 수 (상위 15)",
+                                labels={"x": "제품 수", "y": "제조사"},
+                                color=maker_counts.values,
+                                color_continuous_scale="Blues",
+                            )
+                            fig1.update_layout(height=450, showlegend=False,
+                                               yaxis=dict(autorange="reversed"))
+                            fig1.update_coloraxes(showscale=False)
+                            st.plotly_chart(fig1, use_container_width=True)
+
+                    if "보고일자_dt" in df.columns:
+                        with ch2:
+                            df_dt = df.dropna(subset=["보고일자_dt"]).copy()
+                            if not df_dt.empty:
+                                df_dt["연월"] = df_dt["보고일자_dt"].dt.to_period("M").astype(str)
+                                monthly = df_dt["연월"].value_counts().sort_index().tail(24)
+                                fig2 = px.line(
+                                    x=monthly.index,
+                                    y=monthly.values,
+                                    title="월별 보고 건수 추이 (최근 24개월)",
+                                    labels={"x": "연월", "y": "건수"},
+                                    markers=True,
+                                )
+                                fig2.update_layout(height=450)
+                                st.plotly_chart(fig2, use_container_width=True)
+
+                    if "생산종료" in df.columns:
+                        prod_counts = df["생산종료"].value_counts()
+                        fig3 = px.pie(
+                            values=prod_counts.values,
+                            names=prod_counts.index,
+                            title="생산종료 현황",
+                            color_discrete_sequence=px.colors.qualitative.Set2,
+                        )
+                        fig3.update_layout(height=350)
+                        st.plotly_chart(fig3, use_container_width=True)
+
+                # ── 탭3: 원시 데이터 ──
+                with tab3:
+                    st.markdown("### 📥 원시 데이터 (전체 필드)")
+                    st.dataframe(df, use_container_width=True, height=500)
+
+                    csv = df.to_csv(index=False).encode("utf-8-sig")
+                    st.download_button(
+                        "📥 CSV 다운로드",
+                        csv,
+                        f"{food_type}_품목제조보고_{datetime.now().strftime('%Y%m%d')}.csv",
+                        "text/csv",
+                        use_container_width=True,
+                    )
 
     # ━━━━ 복수 유형 비교 ━━━━
     else:
