@@ -515,59 +515,78 @@ class InsightBatch(BaseModel):
     items: list[ProductInsight]
 
 def call_gemini_extract(df: pd.DataFrame, gemini_client, batch_size: int = 25) -> pd.DataFrame:
+    """
+    속도 개선:
+    - 상위 30건으로 제한 (기존: 전체)
+    - 1회 단일 호출 (기존: 25건씩 순차 배치)
+    """
     if df.empty:
         return pd.DataFrame()
-    results = []
-    rows = df[["대표상품명","normalized_title"]].copy()
-    for start_idx in range(0, len(rows), batch_size):
-        batch = rows.iloc[start_idx:start_idx+batch_size]
-        product_lines = [{"product_name": r["대표상품명"], "normalized_name": r["normalized_title"]}
-                         for _, r in batch.iterrows()]
-        prompt = f"""다음 한국 네이버 쇼핑 음료 상품명 목록의 각 상품에 대해 추출하라.
+
+    # 상위 30건만 처리 (속도 최우선)
+    target = df.head(30).copy()
+    product_lines = [
+        {"product_name": r["대표상품명"], "normalized_name": r["normalized_title"]}
+        for _, r in target.iterrows()
+    ]
+
+    prompt = f"""다음 한국 네이버 쇼핑 음료 상품명 목록의 각 상품에 대해 추출하라.
 규칙: primary_flavor=대표flavor 1개 / secondary_flavors=보조flavor들 /
 trend_keywords=소비자 관점 키워드 2~5개 / functional_positioning=건강·기능·편의·프리미엄 등 /
 package_format=캔·병·팩·파우치·분말·기타 / sugar_positioning=제로·저당·일반·불명 / confidence=0~1
-입력: {json.dumps(product_lines, ensure_ascii=False, indent=2)}"""
-        try:
-            response = gemini_client.models.generate_content(
-                model="gemini-2.5-pro", contents=prompt,
-                config={"response_mime_type": "application/json", "response_schema": InsightBatch}
-            )
-            parsed = response.parsed
-            if parsed and hasattr(parsed, "items"):
-                for item in parsed.items:
-                    results.append({
-                        "normalized_title": item.normalized_name,
-                        "gemini_primary_flavor": item.primary_flavor,
-                        "gemini_secondary_flavors": item.secondary_flavors,
-                        "gemini_trend_keywords": item.trend_keywords,
-                        "gemini_functional_positioning": item.functional_positioning,
-                        "gemini_package_format": item.package_format,
-                        "gemini_sugar_positioning": item.sugar_positioning,
-                        "gemini_confidence": item.confidence
-                    })
-        except Exception:
-            for _, r in batch.iterrows():
+입력: {json.dumps(product_lines, ensure_ascii=False)}"""
+
+    results = []
+    try:
+        response = gemini_client.models.generate_content(
+            model="gemini-2.5-pro", contents=prompt,
+            config={"response_mime_type": "application/json", "response_schema": InsightBatch}
+        )
+        parsed = response.parsed
+        if parsed and hasattr(parsed, "items"):
+            for item in parsed.items:
                 results.append({
-                    "normalized_title": r["normalized_title"],
-                    "gemini_primary_flavor": "", "gemini_secondary_flavors": [],
-                    "gemini_trend_keywords": [], "gemini_functional_positioning": [],
-                    "gemini_package_format": "", "gemini_sugar_positioning": "", "gemini_confidence": 0.0
+                    "normalized_title": item.normalized_name,
+                    "gemini_primary_flavor": item.primary_flavor,
+                    "gemini_secondary_flavors": item.secondary_flavors,
+                    "gemini_trend_keywords": item.trend_keywords,
+                    "gemini_functional_positioning": item.functional_positioning,
+                    "gemini_package_format": item.package_format,
+                    "gemini_sugar_positioning": item.sugar_positioning,
+                    "gemini_confidence": item.confidence
                 })
+    except Exception:
+        for _, r in target.iterrows():
+            results.append({
+                "normalized_title": r["normalized_title"],
+                "gemini_primary_flavor": "", "gemini_secondary_flavors": [],
+                "gemini_trend_keywords": [], "gemini_functional_positioning": [],
+                "gemini_package_format": "", "gemini_sugar_positioning": "", "gemini_confidence": 0.0
+            })
+
     out = pd.DataFrame(results)
     return out.drop_duplicates(subset=["normalized_title"]).reset_index(drop=True) if not out.empty else out
 
+
 def generate_market_report(agg_df, flavor_stats, trend_stats, query, sort_label, d1, d2, gemini_client) -> str:
-    top_products = agg_df.head(15)[["대표상품명","대표브랜드","상품수","평균최저가","순위점수"]].to_dict(orient="records")
-    top_flavors  = flavor_stats.head(10).to_dict(orient="records") if not flavor_stats.empty else []
-    top_trends   = trend_stats.head(10).to_dict(orient="records")  if not trend_stats.empty else []
-    payload = {"top_products": top_products, "top_flavors": top_flavors, "top_trends": top_trends,
-               "product_count": int(len(agg_df))}
-    prompt = f"""한국 음료 시장 분석보고서를 한국어로 작성하라.
-조건: 실무형, '시장요약/핵심 플레이버 트렌드/브랜드 시사점/가격대 시사점/신제품 개발 제안/한계' 포함,
-최소 8문단, 마크다운 사용, 네이버 쇼핑 검색 기반 한계 명시.
-검색어:{query} / 정렬:{sort_label} / 기간:{d1}~{d2}
-데이터:{json.dumps(payload, ensure_ascii=False, indent=2)}"""
+    """프롬프트 압축 버전 — 토큰 절약으로 응답 속도 향상"""
+    top_products = agg_df.head(10)[["대표상품명","대표브랜드","상품수","평균최저가","순위점수"]].to_dict(orient="records")
+    top_flavors  = flavor_stats.head(8).to_dict(orient="records") if not flavor_stats.empty else []
+    top_trends   = trend_stats.head(8).to_dict(orient="records")  if not trend_stats.empty else []
+
+    payload = {
+        "검색어": query, "정렬": sort_label, "기간": f"{d1}~{d2}",
+        "제품수": int(len(agg_df)),
+        "top_products": top_products,
+        "top_flavors": top_flavors,
+        "top_trends": top_trends,
+    }
+    prompt = (
+        f"한국 음료 시장 분석보고서를 한국어로 작성하라.\n"
+        f"항목: 시장요약 / 핵심플레이버트렌드 / 브랜드시사점 / 가격대시사점 / 신제품개발제안 / 데이터한계\n"
+        f"조건: 실무형, 최소 6문단, 마크다운 사용, 네이버 쇼핑 검색 기반 한계 명시\n"
+        f"데이터: {json.dumps(payload, ensure_ascii=False)}"
+    )
     try:
         resp = gemini_client.models.generate_content(model="gemini-2.5-pro", contents=prompt)
         return resp.text if hasattr(resp, "text") else "보고서 생성 실패"
@@ -1045,7 +1064,7 @@ def tab_naver():
                 st.session_state.n_detail_idx   = 0
             st.success(f"✅ 수집 완료 — 원본 {len(raw_df)}건 → 통합 {len(agg_df)}건 | 2️⃣ AI 분석 버튼으로 Gemini 분석을 실행하세요")
 
-        # ── 2단계: AI 분석 ──
+        # ── 2단계: AI 분석 (병렬 실행) ──
         if btn_ai and st.session_state.n_collected:
             if not gemini_key:
                 st.error("Gemini API 키가 없습니다.")
@@ -1057,22 +1076,27 @@ def tab_naver():
                     st.error(f"Gemini 클라이언트 생성 실패: {e}")
                     return
 
-                with st.spinner("✨ Gemini 플레이버/트렌드 추출 중…"):
-                    g_df = call_gemini_extract(agg_df, gemini_client)
-                    if not g_df.empty:
-                        agg_df = agg_df.merge(g_df, on="normalized_title", how="left",
-                                              suffixes=("","_gem"))
+                import concurrent.futures
+                fs = st.session_state.n_flavor_stats
+                ts = st.session_state.n_trend_stats
 
-                with st.spinner("📝 Gemini 보고서 생성 중…"):
-                    fs = st.session_state.n_flavor_stats
-                    ts = st.session_state.n_trend_stats
-                    report = generate_market_report(
-                        agg_df, fs, ts,
-                        st.session_state.n_query, n_sort, nd1, nd2, gemini_client
-                    )
+                with st.spinner("✨ Gemini 분석 중… (플레이버 추출 + 보고서 동시 생성)"):
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
+                        fut_extract = ex.submit(call_gemini_extract, agg_df, gemini_client)
+                        fut_report  = ex.submit(
+                            generate_market_report,
+                            agg_df, fs, ts,
+                            st.session_state.n_query, n_sort, nd1, nd2, gemini_client
+                        )
+                        g_df   = fut_extract.result()
+                        report = fut_report.result()
 
-                st.session_state.n_agg_df  = agg_df
-                st.session_state.n_report  = report
+                if not g_df.empty:
+                    agg_df = agg_df.merge(g_df, on="normalized_title", how="left",
+                                          suffixes=("","_gem"))
+
+                st.session_state.n_agg_df = agg_df
+                st.session_state.n_report = report
                 st.success("✅ AI 분석 완료!")
 
         # ── 결과 렌더링 ──
