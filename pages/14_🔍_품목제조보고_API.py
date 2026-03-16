@@ -290,24 +290,37 @@ def render_charts(df: pd.DataFrame, food_type: str):
 # ══════════════════════════════════════════════════════
 #  AI 분석
 # ══════════════════════════════════════════════════════
+GEMINI_CANDIDATES = [
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
+    "gemini-1.5-pro",
+    "gemini-1.5-flash",
+]
+
 def _gemini(prompt: str, api_key: str) -> str:
-    """
-    Gemini REST API 직접 호출.
-    사용자 작동 코드와 동일한 방식 — gemini-2.0-flash / v1beta
-    캐시 없음: 캐시된 오류가 계속 반환되는 문제 방지
-    """
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/models"
-        f"/gemini-2.0-flash:generateContent?key={api_key}"
-    )
-    r = requests.post(
-        url,
-        headers={"Content-Type": "application/json"},
-        json={"contents": [{"parts": [{"text": prompt}]}]},
-        timeout=60,
-    )
-    r.raise_for_status()
-    return r.json()["candidates"][0]["content"]["parts"][0]["text"]
+    """작동하는 모델을 순서대로 시도"""
+    BASE = "https://generativelanguage.googleapis.com/v1/models"
+    last_err = ""
+    for model in GEMINI_CANDIDATES:
+        try:
+            r = requests.post(
+                f"{BASE}/{model}:generateContent?key={api_key}",
+                headers={"Content-Type": "application/json"},
+                json={"contents": [{"parts": [{"text": prompt}]}]},
+                timeout=60,
+            )
+            if r.status_code == 404 or "no longer available" in r.text:
+                last_err = f"{model}: deprecated"
+                continue
+            r.raise_for_status()
+            return r.json()["candidates"][0]["content"]["parts"][0]["text"]
+        except requests.exceptions.HTTPError as e:
+            last_err = f"{model}: {e}"
+            continue
+        except Exception as e:
+            last_err = f"{model}: {e}"
+            continue
+    raise RuntimeError(f"모든 모델 실패. 마지막 오류: {last_err}")
 
 
 def _ctx(df: pd.DataFrame, food_type: str) -> dict:
@@ -347,7 +360,7 @@ def render_ai_section(df: pd.DataFrame, food_type: str, api_key: str):
         )
         return
 
-    st.info(f"모델: **gemini-2.0-flash** | 대상: **{food_type}** {len(df)}건")
+    st.info(f"모델: **자동 선택** (2.5-flash 우선) | 대상: **{food_type}** {len(df)}건")
 
     if not st.button("🔬 AI 분석 시작", key="btn_ai", type="primary",
                      use_container_width=True):
@@ -507,8 +520,8 @@ with st.sidebar:
     else:
         st.warning("GOOGLE_API_KEY 없음", icon="⚠️")
         st.caption("secrets.toml: GOOGLE_API_KEY = \"AIza...\"")
-    gemini_model = get_gemini_key()   # api_key 전달용
-    st.caption("모델: 자동 감지 (gemini-2.0-flash 계열)")
+    gemini_model = get_gemini_key()
+    st.caption("모델: 자동 선택 (2.5-flash → 2.0-flash-lite → 1.5-flash 순)")
 
     st.markdown("---")
     if st.button("🔄 캐시 초기화", use_container_width=True):
