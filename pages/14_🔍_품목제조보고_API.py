@@ -77,10 +77,9 @@ COL_MAP = {
 
 
 # ══════════════════════════════════════════════════════
-#  조회 — 페이지 단위 캐시 + 진행 표시 + normalize 비교
+#  조회 — API 명세 기반 (PRDLST_DCNM + CHNG_DT 파라미터)
 # ══════════════════════════════════════════════════════
 def _norm(s: str) -> str:
-    """DB 표기 정규화: 가운뎃점↔마침표, 공백 제거, 소문자"""
     return s.strip().replace("·", ".").replace(" ", "").lower()
 
 
@@ -105,112 +104,151 @@ def _safe_get(url: str):
 
 
 @st.cache_data(ttl=600, show_spinner=False)
-def _fetch_page(base_url: str, p_s: int, p_e: int):
-    """페이지 단위 캐시 — 같은 페이지 재요청 시 즉시 반환"""
-    return _safe_get(f"{base_url}/{p_s}/{p_e}")
+def _fetch_with_params(base_url: str, p_s: int, p_e: int, params_str: str):
+    """파라미터 포함 페이지 단위 캐시"""
+    url = f"{base_url}/{p_s}/{p_e}"
+    if params_str:
+        url += f"/{params_str}"
+    return _safe_get(url)
 
 
-def fetch_food_data(food_type: str, top_n: int = 100, max_pages: int = 200,
+def fetch_food_data(food_type: str, top_n: int = 100, max_pages: int = 50,
+                    chng_dt: str = "",
                     prog_bar=None, status_text=None):
     """
-    개선된 스캔 전략:
-    - DB 인덱스 ≠ 날짜순이므로 끝만 보면 최신 데이터 누락 가능
-    - 전체 DB를 고르게 샘플링 (앞/중간/끝 모두 커버)
-    - 수집 후 PRMS_DT 내림차순 정렬 → 최신순 반환
-    반환: (rows | None, msg, total, pages_done)
+    API 명세 기반 조회 전략:
+      1순위: PRDLST_DCNM + CHNG_DT 파라미터 → 서버 필터링 (빠름)
+      2순위: PRDLST_DCNM만 → 서버 필터링
+      3순위: 전체 스캔 + 클라이언트 필터 (fallback)
+
+    URL 형식 (API 명세):
+      /api/KEY/I1250/json/1/100/PRDLST_DCNM=혼합음료&CHNG_DT=20230101
     """
-    base_url = get_base_url()
-    t_start  = time.time()
+    import urllib.parse
+    base_url  = get_base_url()
+    t_start   = time.time()
     norm_type = _norm(food_type)
+    page_size = 1000
 
-    # total_count 파악
-    data, err = _safe_get(f"{base_url}/1/1")
-    if err:
-        return None, err, 0, 0
-    if SERVICE_ID not in data:
-        return None, f"API 오류: {data}", 0, 0
+    # ── 파라미터 문자열 구성 ──
+    # API 명세: 추가인자는 URL 경로에 변수명=값&변수명=값 형식
+    encoded_type = urllib.parse.quote(food_type.strip(), safe="")
+    param_variants = []
 
-    total = int(data[SERVICE_ID].get("total_count", 0))
-    if total == 0:
-        return [], "DB 레코드 0건", 0, 0
+    if chng_dt:
+        param_variants.append(
+            f"PRDLST_DCNM={encoded_type}&CHNG_DT={chng_dt}"
+        )
+    param_variants.append(f"PRDLST_DCNM={encoded_type}")
+    param_variants.append("")   # fallback: 전체 스캔
 
-    page_size  = 1000
-    total_pages = (total + page_size - 1) // page_size
+    for params_str in param_variants:
+        label = ("서버필터+날짜" if "CHNG_DT" in params_str
+                 else "서버필터" if "PRDLST_DCNM" in params_str
+                 else "전체스캔")
 
-    # 스캔할 페이지 인덱스 선택 — 끝(최신우선) + 고르게 샘플링
-    if max_pages >= total_pages:
-        # 전체 스캔
-        scan_indices = list(range(total_pages - 1, -1, -1))
-    else:
-        # 끝 절반 + 나머지를 고르게 샘플링
-        tail_n    = max_pages * 2 // 3          # 끝 2/3
-        sample_n  = max_pages - tail_n           # 앞쪽 1/3 샘플
-        tail_idx  = list(range(total_pages - 1,
-                               max(total_pages - 1 - tail_n, -1), -1))
-        if sample_n > 0 and total_pages - tail_n > 0:
-            import random
-            pool       = list(range(0, total_pages - tail_n))
-            step       = max(1, len(pool) // sample_n)
-            sample_idx = pool[::step][:sample_n]
-        else:
-            sample_idx = []
-        scan_indices = tail_idx + sample_idx
-
-    collected  = []
-    pages_done = 0
-
-    for idx in scan_indices:
-        p_s = idx * page_size + 1
-        p_e = min(p_s + page_size - 1, total)
-
-        elapsed = time.time() - t_start
-        pct     = min(pages_done / max(len(scan_indices), 1), 0.99)
-        if prog_bar:
-            prog_bar.progress(pct)
         if status_text:
-            status_text.markdown(
-                f"📡 스캔 중… **{pages_done}/{len(scan_indices)}페이지** | "
-                f"수집 **{len(collected)}건** | "
-                f"경과 **{elapsed:.0f}초**"
+            status_text.markdown(f"📡 **{label}** 방식으로 조회 중…")
+
+        # total_count 파악
+        url_probe = f"{base_url}/1/1"
+        if params_str:
+            url_probe += f"/{params_str}"
+        data, err = _safe_get(url_probe)
+        if err or SERVICE_ID not in data:
+            continue
+
+        total = int(data[SERVICE_ID].get("total_count", 0))
+        if total == 0:
+            continue
+
+        # 서버필터가 작동하는지 검증 (첫 페이지 샘플)
+        if params_str:
+            d_check, _ = _fetch_with_params(base_url, 1, 5, params_str)
+            if d_check and SERVICE_ID in d_check:
+                rows_check = d_check[SERVICE_ID].get("row", [])
+                if rows_check:
+                    matched = [r for r in rows_check
+                               if _norm(r.get("PRDLST_DCNM","")) == norm_type]
+                    match_rate = len(matched) / len(rows_check)
+                    if match_rate < 0.5:
+                        # 서버필터 미작동 → 다음 방식 시도
+                        if "PRDLST_DCNM" in params_str:
+                            continue
+
+        # 페이지네이션으로 top_n건 수집
+        collected  = []
+        pages_done = 0
+        cursor     = 1
+
+        while cursor <= total and pages_done < max_pages:
+            p_s = cursor
+            p_e = min(cursor + page_size - 1, total)
+
+            elapsed = time.time() - t_start
+            pct     = min(pages_done / max(max_pages, 1), 0.99)
+            if prog_bar:
+                prog_bar.progress(pct)
+            if status_text:
+                status_text.markdown(
+                    f"📡 **{label}** | 페이지 {pages_done+1} | "
+                    f"수집 {len(collected)}건 | {elapsed:.0f}초"
+                )
+
+            d, err = _fetch_with_params(base_url, p_s, p_e, params_str)
+            if err:
+                cursor += page_size
+                pages_done += 1
+                time.sleep(0.2)
+                continue
+
+            if SERVICE_ID not in d:
+                cursor += page_size
+                pages_done += 1
+                continue
+
+            res  = d[SERVICE_ID]
+            code = res.get("RESULT", {}).get("CODE", "")
+            if code == "INFO-200":
+                break
+            if code != "INFO-000":
+                break
+
+            rows = res.get("row", [])
+            for row in rows:
+                if not params_str:
+                    # 전체스캔: 클라이언트 필터
+                    if _norm(row.get("PRDLST_DCNM","")) == norm_type:
+                        collected.append(row)
+                else:
+                    # 서버필터: 검증만
+                    if _norm(row.get("PRDLST_DCNM","")) == norm_type:
+                        collected.append(row)
+
+            if len(collected) >= top_n:
+                break
+
+            cursor     += page_size
+            pages_done += 1
+            time.sleep(0.15)
+
+        if collected:
+            # LAST_UPDT_DTM → PRMS_DT 순으로 최신순 정렬
+            collected.sort(
+                key=lambda r: (r.get("LAST_UPDT_DTM","") or
+                               r.get("PRMS_DT","") or "0"),
+                reverse=True
             )
+            elapsed = time.time() - t_start
+            src_msg = (f"{label} | {pages_done}페이지 | "
+                       f"전체 {total:,}건 | {elapsed:.1f}초")
+            return collected[:top_n], src_msg, total, pages_done
 
-        d, err = _fetch_page(base_url, p_s, p_e)
-        if err:
-            pages_done += 1
-            time.sleep(0.1)
-            continue
-
-        if SERVICE_ID not in d:
-            pages_done += 1
-            continue
-
-        res  = d[SERVICE_ID]
-        code = res.get("RESULT", {}).get("CODE", "")
-        if code == "INFO-200":
-            break
-        if code != "INFO-000":
-            pages_done += 1
-            continue
-
-        for row in res.get("row", []):
-            if _norm(row.get("PRDLST_DCNM", "")) == norm_type:
-                collected.append(row)
-
-        pages_done += 1
-        time.sleep(0.15)
-
-    # PRMS_DT 내림차순 정렬 → 최신순
-    collected.sort(key=lambda r: r.get("PRMS_DT", "0") or "0", reverse=True)
-
-    scanned  = pages_done * page_size
-    coverage = round(min(scanned, total) / total * 100, 1) if total else 0
-    elapsed  = time.time() - t_start
-    src_msg  = (f"{pages_done}페이지 스캔({scanned:,}건) / "
-                f"커버리지 {coverage}% / {elapsed:.1f}초")
-    return collected[:top_n], src_msg, total, pages_done
+    return [], "조회 결과 없음 — 식품유형명 확인 필요", 0, 0
 
 
-def fetch_multiple(types_list: list, per_type: int, max_pages: int):
+def fetch_multiple(types_list: list, per_type: int, max_pages: int,
+                   chng_dt: str = ""):
     """복수 유형 순차 조회"""
     all_rows, status = [], {}
     prog        = st.progress(0.0)
@@ -219,7 +257,9 @@ def fetch_multiple(types_list: list, per_type: int, max_pages: int):
         pct = (i + 1) / len(types_list)
         prog.progress(pct)
         status_text.markdown(f"📡 **{ft}** 조회 중… ({i+1}/{len(types_list)})")
-        rows, msg, total, _ = fetch_food_data(ft, top_n=per_type, max_pages=max_pages)
+        rows, msg, total, _ = fetch_food_data(
+            ft, top_n=per_type, max_pages=max_pages, chng_dt=chng_dt
+        )
         status[ft] = {
             "msg":     msg or "",
             "total":   total,
@@ -505,12 +545,22 @@ with st.sidebar:
         per_type = st.slider("유형별 조회 건수", 10, 50, 20, step=5)
 
     st.markdown("---")
-    st.markdown("#### 🔭 스캔 범위")
+    st.markdown("#### 🔭 조회 설정")
     max_pages = st.slider(
-        "스캔 페이지 수", 10, 500, 200, step=10,
-        help="1페이지=1,000건 스캔 / DB 인덱스≠날짜순이므로 많을수록 최신 데이터 정확도↑\n혼합음료 등 대형 유형은 300 이상 권장",
+        "최대 페이지 (fallback용)", 10, 200, 30, step=10,
+        help="서버 필터가 작동하면 1~3페이지만 사용. 실패 시 이 값만큼 전체 스캔",
     )
-    st.caption(f"최대 DB {max_pages*1000:,}건 스캔")
+    st.markdown("#### 📅 변경일자 필터 (CHNG_DT)")
+    use_chng = st.checkbox("변경일자 이후만 조회", value=True,
+                           help="API 명세: 지정일 이후 변경된 데이터만 반환 → 빠름")
+    if use_chng:
+        from datetime import date, timedelta
+        default_dt = date.today() - timedelta(days=365*2)  # 기본 2년
+        chng_date  = st.date_input("변경일자 기준", value=default_dt)
+        chng_dt    = chng_date.strftime("%Y%m%d")
+        st.caption(f"CHNG_DT = {chng_dt} 이후 데이터만 조회")
+    else:
+        chng_dt = ""
 
     st.markdown("---")
     run = st.button("🚀 조회 실행", use_container_width=True, type="primary")
@@ -563,6 +613,7 @@ if run:
 
         rows, src, total, _ = fetch_food_data(
             food_type, top_n=count, max_pages=max_pages,
+            chng_dt=chng_dt,
             prog_bar=prog_bar, status_text=status_text,
         )
         elapsed = time.time() - t0
@@ -587,7 +638,8 @@ if run:
             st.warning("⚠️ 유형을 1개 이상 선택하세요.")
         else:
             t0 = time.time()
-            all_rows, status = fetch_multiple(selected_types, per_type, max_pages)
+            all_rows, status = fetch_multiple(selected_types, per_type, max_pages,
+                                              chng_dt=chng_dt)
             elapsed = time.time() - t0
             df = to_df(all_rows)
             label = ", ".join(selected_types[:3]) + ("…" if len(selected_types) > 3 else "")
