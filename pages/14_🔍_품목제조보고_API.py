@@ -110,17 +110,18 @@ def _fetch_page(base_url: str, p_s: int, p_e: int):
     return _safe_get(f"{base_url}/{p_s}/{p_e}")
 
 
-def fetch_food_data(food_type: str, top_n: int = 100, max_pages: int = 100,
+def fetch_food_data(food_type: str, top_n: int = 100, max_pages: int = 200,
                     prog_bar=None, status_text=None):
     """
-    역순 스캔 + 진행 표시.
-    - @st.cache_data 제거 → st.progress 사용 가능
-    - 페이지 단위 캐시(_fetch_page)로 재실행 시 빠름
-    - _norm()으로 가운뎃점/마침표 혼용 문제 해결
+    개선된 스캔 전략:
+    - DB 인덱스 ≠ 날짜순이므로 끝만 보면 최신 데이터 누락 가능
+    - 전체 DB를 고르게 샘플링 (앞/중간/끝 모두 커버)
+    - 수집 후 PRMS_DT 내림차순 정렬 → 최신순 반환
     반환: (rows | None, msg, total, pages_done)
     """
     base_url = get_base_url()
     t_start  = time.time()
+    norm_type = _norm(food_type)
 
     # total_count 파악
     data, err = _safe_get(f"{base_url}/1/1")
@@ -133,67 +134,80 @@ def fetch_food_data(food_type: str, top_n: int = 100, max_pages: int = 100,
     if total == 0:
         return [], "DB 레코드 0건", 0, 0
 
-    collected  = []
-    cursor     = total
-    pages_done = 0
     page_size  = 1000
-    norm_type  = _norm(food_type)
+    total_pages = (total + page_size - 1) // page_size
 
-    while cursor > 0 and pages_done < max_pages:
-        p_s = max(1, cursor - page_size + 1)
-        p_e = cursor
+    # 스캔할 페이지 인덱스 선택 — 끝(최신우선) + 고르게 샘플링
+    if max_pages >= total_pages:
+        # 전체 스캔
+        scan_indices = list(range(total_pages - 1, -1, -1))
+    else:
+        # 끝 절반 + 나머지를 고르게 샘플링
+        tail_n    = max_pages * 2 // 3          # 끝 2/3
+        sample_n  = max_pages - tail_n           # 앞쪽 1/3 샘플
+        tail_idx  = list(range(total_pages - 1,
+                               max(total_pages - 1 - tail_n, -1), -1))
+        if sample_n > 0 and total_pages - tail_n > 0:
+            import random
+            pool       = list(range(0, total_pages - tail_n))
+            step       = max(1, len(pool) // sample_n)
+            sample_idx = pool[::step][:sample_n]
+        else:
+            sample_idx = []
+        scan_indices = tail_idx + sample_idx
 
-        # 진행 표시 업데이트
+    collected  = []
+    pages_done = 0
+
+    for idx in scan_indices:
+        p_s = idx * page_size + 1
+        p_e = min(p_s + page_size - 1, total)
+
         elapsed = time.time() - t_start
-        pct     = min(pages_done / max(max_pages, 1), 0.99)
+        pct     = min(pages_done / max(len(scan_indices), 1), 0.99)
         if prog_bar:
             prog_bar.progress(pct)
         if status_text:
             status_text.markdown(
-                f"📡 스캔 중… **{pages_done}페이지** / "
-                f"수집 **{len(collected)}건** / "
+                f"📡 스캔 중… **{pages_done}/{len(scan_indices)}페이지** | "
+                f"수집 **{len(collected)}건** | "
                 f"경과 **{elapsed:.0f}초**"
             )
 
         d, err = _fetch_page(base_url, p_s, p_e)
         if err:
-            return None, err, total, pages_done
+            pages_done += 1
+            time.sleep(0.1)
+            continue
 
         if SERVICE_ID not in d:
-            return None, f"API 오류: {d}", total, pages_done
+            pages_done += 1
+            continue
 
         res  = d[SERVICE_ID]
         code = res.get("RESULT", {}).get("CODE", "")
-        msg  = res.get("RESULT", {}).get("MSG", "")
-
         if code == "INFO-200":
             break
         if code != "INFO-000":
-            return None, f"[{code}] {msg}", total, pages_done
+            pages_done += 1
+            continue
 
-        # ③ normalize 비교로 가운뎃점/마침표 혼용 해결
         for row in res.get("row", []):
             if _norm(row.get("PRDLST_DCNM", "")) == norm_type:
                 collected.append(row)
-                if len(collected) >= top_n:
-                    break
 
-        if len(collected) >= top_n:
-            break
-
-        cursor     = p_s - 1
         pages_done += 1
-        time.sleep(0.2)
+        time.sleep(0.15)
 
-    if collected:
-        collected.sort(key=lambda r: r.get("PRMS_DT", "0") or "0", reverse=True)
+    # PRMS_DT 내림차순 정렬 → 최신순
+    collected.sort(key=lambda r: r.get("PRMS_DT", "0") or "0", reverse=True)
 
-    scanned  = min((pages_done + 1) * page_size, total)
-    coverage = round(scanned / total * 100, 1) if total else 0
+    scanned  = pages_done * page_size
+    coverage = round(min(scanned, total) / total * 100, 1) if total else 0
     elapsed  = time.time() - t_start
-    src_msg  = (f"{pages_done+1}페이지({scanned:,}건 스캔) / "
+    src_msg  = (f"{pages_done}페이지 스캔({scanned:,}건) / "
                 f"커버리지 {coverage}% / {elapsed:.1f}초")
-    return collected[:top_n], src_msg, total, pages_done + 1
+    return collected[:top_n], src_msg, total, pages_done
 
 
 def fetch_multiple(types_list: list, per_type: int, max_pages: int):
@@ -298,7 +312,7 @@ GEMINI_CANDIDATES = [
 ]
 
 def _gemini(prompt: str, api_key: str) -> str:
-    """작동하는 모델을 순서대로 시도"""
+    """작동하는 모델 순서대로 시도. 400은 프롬프트 문제이므로 즉시 중단."""
     BASE = "https://generativelanguage.googleapis.com/v1/models"
     last_err = ""
     for model in GEMINI_CANDIDATES:
@@ -309,11 +323,17 @@ def _gemini(prompt: str, api_key: str) -> str:
                 json={"contents": [{"parts": [{"text": prompt}]}]},
                 timeout=60,
             )
+            # 400 = 프롬프트 문제 → 모델 바꿔도 동일, 즉시 에러 메시지 반환
+            if r.status_code == 400:
+                msg = r.json().get("error", {}).get("message", "Bad Request")
+                raise RuntimeError(f"프롬프트 오류 (400): {msg}")
             if r.status_code == 404 or "no longer available" in r.text:
                 last_err = f"{model}: deprecated"
                 continue
             r.raise_for_status()
             return r.json()["candidates"][0]["content"]["parts"][0]["text"]
+        except RuntimeError:
+            raise
         except requests.exceptions.HTTPError as e:
             last_err = f"{model}: {e}"
             continue
@@ -324,28 +344,35 @@ def _gemini(prompt: str, api_key: str) -> str:
 
 
 def _ctx(df: pd.DataFrame, food_type: str) -> dict:
+    """프롬프트용 데이터 — 토큰 절약을 위해 최소화"""
     monthly = {}
     if "보고일자_dt" in df.columns:
         tmp = df.dropna(subset=["보고일자_dt"]).copy()
         if not tmp.empty:
             tmp["연월"] = tmp["보고일자_dt"].dt.to_period("M").astype(str)
-            monthly = tmp["연월"].value_counts().sort_index().tail(24).to_dict()
+            # 최근 12개월만
+            monthly = tmp["연월"].value_counts().sort_index().tail(12).to_dict()
 
-    maker_top = df["제조사"].value_counts().head(10).to_dict() if "제조사" in df.columns else {}
+    # 상위 5개 제조사만
+    maker_top = df["제조사"].value_counts().head(5).to_dict() if "제조사" in df.columns else {}
     maker_n   = df["제조사"].nunique() if "제조사" in df.columns else "N/A"
 
-    cols     = [c for c in ["제품명", "제조사", "보고일자"] if c in df.columns]
-    recent30 = df[cols].head(30).to_dict(orient="records")
+    # 최신 10건만, 제품명과 보고일자만
+    recent = []
+    if "제품명" in df.columns:
+        cols  = [c for c in ["제품명", "보고일자"] if c in df.columns]
+        recent = df[cols].head(10).to_dict(orient="records")
 
+    # 키워드 상위 15개만
     kw_freq = {}
     if "제품명" in df.columns:
         words   = re.findall(r"[가-힣a-zA-Z]{2,}",
                              " ".join(df["제품명"].dropna().astype(str)))
-        kw_freq = dict(Counter(words).most_common(30))
+        kw_freq = dict(Counter(words).most_common(15))
 
     return dict(food_type=food_type, total=len(df),
                 monthly=monthly, maker_top=maker_top,
-                maker_n=maker_n, recent30=recent30, kw_freq=kw_freq)
+                maker_n=maker_n, recent=recent, kw_freq=kw_freq)
 
 
 def render_ai_section(df: pd.DataFrame, food_type: str, api_key: str):
@@ -353,85 +380,60 @@ def render_ai_section(df: pd.DataFrame, food_type: str, api_key: str):
     st.markdown("## 🤖 AI 연구원 분석")
 
     if not api_key:
-        st.warning(
-            "**Gemini API 키 없음**\n\n"
-            "`.streamlit/secrets.toml`:\n"
-            "```toml\nGOOGLE_API_KEY = \"AIza...\"\n```"
-        )
+        st.warning("**Gemini API 키 없음**\n\n`.streamlit/secrets.toml`:\n```toml\nGOOGLE_API_KEY = \"AIza...\"\n```")
         return
 
-    st.info(f"모델: **자동 선택** (2.5-flash 우선) | 대상: **{food_type}** {len(df)}건")
+    st.info(f"모델: **gemini-2.5-pro 우선** | 대상: **{food_type}** {len(df)}건")
 
     if not st.button("🔬 AI 분석 시작", key="btn_ai", type="primary",
                      use_container_width=True):
         return
 
     ctx = _ctx(df, food_type)
+
+    # ── 공통 prefix (간결하게) ──
     prefix = (
-        f"당신은 15년 경력의 식품 R&D 수석 연구원입니다.\n"
-        f"식품안전나라 품목제조보고 DB의 **{food_type}** {ctx['total']}건 데이터를 분석합니다.\n"
-        f"실무에 바로 쓸 수 있는 전문적 인사이트를 한국어로 작성하세요.\n\n"
+        f"식품 R&D 전문가로서 아래 데이터를 분석하세요.\n"
+        f"카테고리: {food_type} | 조회건수: {ctx['total']}건 | 제조사: {ctx['maker_n']}개\n"
+        f"월별추이(최근12개월): {ctx['monthly']}\n"
+        f"주요제조사(상위5): {ctx['maker_top']}\n"
+        f"최신제품(10건): {ctx['recent']}\n"
+        f"키워드빈도(상위15): {ctx['kw_freq']}\n\n"
     )
 
     analyses = [
         {
             "title": "📈 시장 트렌드 분석",
-            "prompt": (
-                prefix
-                + f"### 월별 보고 건수 (최근 24개월)\n{ctx['monthly']}\n\n"
-                + f"### 제조사 상위 10\n{ctx['maker_top']}\n"
-                + f"전체 제조사: {ctx['maker_n']}개\n\n"
-                + f"### 최신 제품 30건\n{ctx['recent30']}\n\n"
-                + "다음을 각 3~4문장으로 분석하세요:\n"
-                + "## 1. 시장 성장성 (월별 트렌드 기반)\n"
-                + "## 2. 경쟁 구도 및 시장 집중도\n"
-                + "## 3. 신제품 출시 패턴\n"
-                + "## 4. R&D 전략 시사점"
+            "prompt": prefix + (
+                "위 데이터를 바탕으로 한국어로 분석하세요 (각 항목 3문장):\n"
+                "1. 시장 성장성\n2. 경쟁 구도\n3. 출시 패턴\n4. R&D 시사점"
             ),
         },
         {
             "title": "🍋 플레이버 & 원료 트렌드",
-            "prompt": (
-                prefix
-                + f"### 제품명 키워드 빈도 상위 30\n{ctx['kw_freq']}\n\n"
-                + f"### 최신 제품 30건\n{ctx['recent30']}\n\n"
-                + "다음을 각 3~4문장으로 분석하세요:\n"
-                + "## 1. 주요 플레이버 트렌드\n"
-                + "## 2. 기능성 원료 트렌드 (콜라겐·비타민·프로바이오틱스 등)\n"
-                + "## 3. 신흥 플레이버 (최근 새롭게 등장한 것)\n"
-                + "## 4. 포뮬레이션 방향 제언"
+            "prompt": prefix + (
+                "위 제품명 키워드를 바탕으로 한국어로 분석하세요 (각 항목 3문장):\n"
+                "1. 주요 플레이버 트렌드\n2. 기능성 원료 트렌드\n"
+                "3. 신흥 플레이버\n4. 포뮬레이션 방향 제언"
             ),
         },
         {
             "title": "🧪 추천 레시피 3종",
-            "prompt": (
-                prefix
-                + f"### 키워드 빈도\n{ctx['kw_freq']}\n\n"
-                + f"### 최신 제품 30건\n{ctx['recent30']}\n\n"
-                + f"시장 데이터를 반영한 **{food_type}** 신제품 레시피 3종을 제안하세요.\n\n"
-                + "각 레시피 형식:\n\n"
-                + "## 레시피 N: [제품명]\n"
-                + "**컨셉**: \n**타겟**: \n\n"
-                + "**배합비**:\n"
-                + "| 원료명 | 함량(%) | 역할 |\n|---|---|---|\n"
-                + "| 정제수 | 00.0 | 기제 |\n\n"
-                + "**제조 공정 포인트**: \n"
-                + "**예상 규격**: pH / Brix / 칼로리\n"
-                + "**차별화 포인트**: \n\n---\n\n"
-                + "배합비 합계는 반드시 100%로 맞추세요."
+            "prompt": prefix + (
+                f"위 트렌드를 반영한 {food_type} 신제품 레시피 3종을 제안하세요.\n"
+                "각 레시피:\n"
+                "- 제품명 / 컨셉 / 타겟\n"
+                "- 주요 원료 및 배합비(%) — 합계 100%\n"
+                "- 예상 규격(pH/Brix/칼로리)\n"
+                "- 차별화 포인트"
             ),
         },
         {
             "title": "💡 종합 R&D 인사이트",
-            "prompt": (
-                prefix
-                + f"조회건수: {ctx['total']}건 | 제조사: {ctx['maker_n']}개\n"
-                + f"키워드: {ctx['kw_freq']}\n월별트렌드: {ctx['monthly']}\n\n"
-                + "다음을 각 3~4문장으로 작성하세요:\n"
-                + "## 1. 시장 기회 (포화되지 않은 틈새)\n"
-                + "## 2. 리스크 요인 (피해야 할 방향)\n"
-                + "## 3. 즉시 출시 추천 컨셉 (6개월 내)\n"
-                + "## 4. 중장기 R&D 방향 (1~3년)"
+            "prompt": prefix + (
+                "위 데이터를 바탕으로 한국어로 작성하세요 (각 항목 3문장):\n"
+                "1. 시장 기회(틈새)\n2. 리스크 요인\n"
+                "3. 즉시 출시 추천 컨셉(6개월 내)\n4. 중장기 R&D 방향(1~3년)"
             ),
         },
     ]
@@ -505,8 +507,8 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("#### 🔭 스캔 범위")
     max_pages = st.slider(
-        "스캔 페이지 수", 10, 200, 50, step=10,
-        help="1페이지 = DB 1,000건 / 혼합음료 등 대형 유형은 100 이상 권장",
+        "스캔 페이지 수", 10, 500, 200, step=10,
+        help="1페이지=1,000건 스캔 / DB 인덱스≠날짜순이므로 많을수록 최신 데이터 정확도↑\n혼합음료 등 대형 유형은 300 이상 권장",
     )
     st.caption(f"최대 DB {max_pages*1000:,}건 스캔")
 
