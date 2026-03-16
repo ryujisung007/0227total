@@ -74,87 +74,58 @@ COL_MAP = {
 @st.cache_data(ttl=600, show_spinner=False)
 def fetch_by_filter(food_type: str, count: int) -> tuple:
     """
-    I1250 API 서버 타임아웃 해결 전략:
-      - 서버가 한 번에 100건+ 처리 시 자체 타임아웃(30초) 발생
-      - 해결: 1회 최대 30건씩 나눠서 순차 요청
-      - 조회 방식: START/END 슬라이딩 + PRDLST_DCNM 필터
+    필터 파라미터 완전 제거.
+    이유: 서버가 필터 처리 시 자체 타임아웃(30초) 발생.
+    
+    전략: 필터 없이 최신 페이지 순차 조회 → 클라이언트 필터
+    - 1회 요청: 30건 (서버 부하 최소화)
+    - 최신순(높은 번호)부터 조회
+    - count건 채우면 즉시 중단
     """
-    import urllib.parse
-
-    CHUNK    = 30           # 1회 요청 건수 (서버 타임아웃 방지)
-    MAX_ITER = 20           # 최대 반복 횟수 (무한루프 방지)
+    CHUNK    = 30
+    MAX_ITER = 30           # 최대 900건 스캔
     headers  = {"Accept": "application/json"}
 
-    # 인코딩 후보 (EUC-KR 우선, UTF-8 fallback)
-    enc_candidates = []
-    for enc in ("euc-kr", "utf-8"):
-        try:
-            enc_candidates.append(urllib.parse.quote(food_type.strip(),
-                                                     encoding=enc, safe=""))
-        except Exception:
-            pass
+    # 전체 건수 파악 (1건만 요청 → 빠름)
+    total = 0
+    try:
+        r = requests.get(f"{BASE_URL}/1/1", headers=headers, timeout=10)
+        total = int(r.json().get(SERVICE_ID, {}).get("total_count", 500000))
+    except Exception:
+        total = 500000
 
     collected = []
-    total     = 0
-    src       = "미조회"
-    page      = 0
 
-    while len(collected) < count and page < MAX_ITER:
-        start = page * CHUNK + 1
-        end   = start + CHUNK - 1
-        page += 1
+    for i in range(MAX_ITER):
+        # 끝(최신)부터 역순으로 페이지 계산
+        end   = total - i * CHUNK
+        start = max(end - CHUNK + 1, 1)
+        if start > end or end <= 0:
+            break
 
-        success = False
-        for encoded in enc_candidates:
-            url = f"{BASE_URL}/{start}/{end}/PRDLST_DCNM={encoded}"
-            try:
-                r = requests.get(url, headers=headers, timeout=25)
-                r.raise_for_status()
-                result = r.json().get(SERVICE_ID, {})
-                code   = result.get("RESULT", {}).get("CODE", "")
-                msg    = result.get("RESULT", {}).get("MSG", "")
+        url = f"{BASE_URL}/{start}/{end}"
+        try:
+            r    = requests.get(url, headers=headers, timeout=10)
+            r.raise_for_status()
+            result = r.json().get(SERVICE_ID, {})
+            code   = result.get("RESULT", {}).get("CODE", "")
 
-                # 서버 타임아웃 에러 → 청크 더 줄여서 재시도 불필요, 중단
-                if "시간 초과" in msg or code == "ERROR-500":
-                    break
+            if code == "INFO-000":
+                rows = result.get("row", [])
+                matched = [
+                    row for row in rows
+                    if row.get("PRDLST_DCNM", "").strip() == food_type.strip()
+                ]
+                collected.extend(matched)
 
-                if code == "INFO-200":      # 더 이상 데이터 없음
-                    return collected[:count], total, src
+            if len(collected) >= count:
+                break
 
-                if code != "INFO-000":
-                    continue
-
-                total = int(result.get("total_count", total))
-                rows  = result.get("row", [])
-                if not rows:
-                    return collected[:count], total, src
-
-                # 서버필터 검증 (일치율 80%+)
-                matched    = [row for row in rows
-                              if row.get("PRDLST_DCNM","").strip() == food_type.strip()]
-                match_rate = len(matched) / len(rows) if rows else 0
-
-                if match_rate >= 0.8:
-                    collected.extend(matched)
-                    src     = f"서버필터 {CHUNK}건×{page}회"
-                    success = True
-                    break
-                else:
-                    # 서버필터 미작동 → 전체 중 클라이언트 필터
-                    collected.extend(matched)
-                    src     = f"클라이언트필터 {CHUNK}건×{page}회"
-                    success = True
-                    break
-
-            except requests.exceptions.Timeout:
-                continue
-            except Exception:
-                continue
-
-        if not success:
-            break   # 모든 인코딩 실패 → 중단
+        except Exception:
+            continue   # 실패한 페이지는 무시하고 계속
 
     collected.sort(key=lambda r: r.get("PRMS_DT", ""), reverse=True)
+    src = f"최신 {min((i+1)*CHUNK, total):,}건 스캔"
     return collected[:count], total, src
 
 
