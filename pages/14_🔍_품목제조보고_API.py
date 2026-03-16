@@ -198,16 +198,18 @@ def _fetch_with_params(base_url: str, p_s: int, p_e: int, params_str: str):
 
 
 def fetch_food_data(food_type: str, top_n: int = 100, max_pages: int = 50,
-                    chng_dt: str = "",
+                    chng_dt: str = "", prdlst_nm: str = "",
                     prog_bar=None, status_text=None):
     """
     API 명세 기반 조회 전략:
-      1순위: PRDLST_DCNM + CHNG_DT 파라미터 → 서버 필터링 (빠름)
-      2순위: PRDLST_DCNM만 → 서버 필터링
-      3순위: 전체 스캔 + 클라이언트 필터 (fallback)
+      1순위: PRDLST_DCNM + PRDLST_NM + CHNG_DT → 서버 필터링 (가장 빠름)
+      2순위: PRDLST_DCNM + PRDLST_NM
+      3순위: PRDLST_DCNM + CHNG_DT
+      4순위: PRDLST_DCNM만
+      5순위: 전체 스캔 + 클라이언트 필터 (fallback)
 
     URL 형식 (API 명세):
-      /api/KEY/I1250/json/1/100/PRDLST_DCNM=혼합음료&CHNG_DT=20230101
+      /api/KEY/I1250/json/1/100/PRDLST_DCNM=혼합음료&PRDLST_NM=제로&CHNG_DT=20230101
     """
     import urllib.parse
     base_url  = get_base_url()
@@ -215,22 +217,33 @@ def fetch_food_data(food_type: str, top_n: int = 100, max_pages: int = 50,
     norm_type = _norm(food_type)
     page_size = 1000
 
-    # ── 파라미터 문자열 구성 ──
-    # API 명세: 추가인자는 URL 경로에 변수명=값&변수명=값 형식
     encoded_type = urllib.parse.quote(food_type.strip(), safe="")
-    param_variants = []
+    encoded_nm   = urllib.parse.quote(prdlst_nm.strip(), safe="") if prdlst_nm.strip() else ""
 
-    if chng_dt:
+    # 파라미터 조합 우선순위
+    param_variants = []
+    if encoded_nm and chng_dt:
         param_variants.append(
-            f"PRDLST_DCNM={encoded_type}&CHNG_DT={chng_dt}"
+            f"PRDLST_DCNM={encoded_type}&PRDLST_NM={encoded_nm}&CHNG_DT={chng_dt}"
         )
+    if encoded_nm:
+        param_variants.append(f"PRDLST_DCNM={encoded_type}&PRDLST_NM={encoded_nm}")
+    if chng_dt:
+        param_variants.append(f"PRDLST_DCNM={encoded_type}&CHNG_DT={chng_dt}")
     param_variants.append(f"PRDLST_DCNM={encoded_type}")
     param_variants.append("")   # fallback: 전체 스캔
 
     for params_str in param_variants:
-        label = ("서버필터+날짜" if "CHNG_DT" in params_str
-                 else "서버필터" if "PRDLST_DCNM" in params_str
-                 else "전체스캔")
+        if "PRDLST_NM" in params_str and "CHNG_DT" in params_str:
+            label = "제품명+유형+날짜 필터"
+        elif "PRDLST_NM" in params_str:
+            label = "제품명+유형 필터"
+        elif "CHNG_DT" in params_str:
+            label = "유형+날짜 필터"
+        elif "PRDLST_DCNM" in params_str:
+            label = "유형 필터"
+        else:
+            label = "전체 스캔(fallback)"
 
         if status_text:
             status_text.markdown(f"📡 **{label}** 방식으로 조회 중…")
@@ -275,9 +288,15 @@ def fetch_food_data(food_type: str, top_n: int = 100, max_pages: int = 50,
             if prog_bar:
                 prog_bar.progress(pct)
             if status_text:
+                pct_disp   = min(int(pct * 100), 99)
+                bar_fill   = "█" * (pct_disp // 5)
+                bar_empty  = "░" * (20 - len(bar_fill))
                 status_text.markdown(
-                    f"📡 **{label}** | 페이지 {pages_done+1} | "
-                    f"수집 {len(collected)}건 | {elapsed:.0f}초"
+                    f"**{label}**\n\n"
+                    f"`{bar_fill}{bar_empty}` **{pct_disp}%**&nbsp;&nbsp;"
+                    f"📄 {pages_done+1}페이지 &nbsp;"
+                    f"✅ {len(collected)}건 &nbsp;"
+                    f"⏱ {elapsed:.0f}초"
                 )
 
             d, err = _fetch_with_params(base_url, p_s, p_e, params_str)
@@ -612,10 +631,11 @@ with st.sidebar:
     if mode == "📋 단일 유형 조회":
         category  = st.selectbox("카테고리", list(FOOD_TYPES.keys()))
         food_type = st.selectbox("식품유형", FOOD_TYPES[category])
-        custom    = st.text_input("직접 입력 (DB 표기 그대로)",
-                                  placeholder="예: 과.채주스")
-        if custom.strip():
-            food_type = custom.strip()
+        prdlst_nm = st.text_input(
+            "🔍 제품명 검색 (선택)",
+            placeholder="예: 제로, 비타민, 콜라겐…",
+            help="입력 시 PRDLST_NM 파라미터로 서버에서 직접 필터링 → 더 빠름",
+        )
         count = st.slider("조회 건수", 10, 300, 100, step=10)
 
     else:
@@ -693,12 +713,14 @@ st.markdown("---")
 if run:
     if mode == "📋 단일 유형 조회":
         t0          = time.time()
+        search_label = f"**{food_type}**" + (f" / 제품명: **{prdlst_nm}**" if prdlst_nm.strip() else "")
+        st.info(f"📡 {search_label} 조회 중…")
         prog_bar    = st.progress(0.0)
         status_text = st.empty()
 
         rows, src, total, _ = fetch_food_data(
             food_type, top_n=count, max_pages=max_pages,
-            chng_dt=chng_dt,
+            chng_dt=chng_dt, prdlst_nm=prdlst_nm,
             prog_bar=prog_bar, status_text=status_text,
         )
         elapsed = time.time() - t0
@@ -709,9 +731,10 @@ if run:
             st.error(f"❌ 조회 실패: {src}")
         else:
             df = to_df(rows)
+            result_label = food_type + (f" [{prdlst_nm}]" if prdlst_nm.strip() else "")
             st.session_state.update({
                 "result_df":    df,
-                "result_label": food_type,
+                "result_label": result_label,
                 "result_total": total,
                 "result_src":   f"✅ **{len(df)}건** | {elapsed:.1f}초 | {src} | 전체: {total:,}건",
                 "result_mode":  "single",
