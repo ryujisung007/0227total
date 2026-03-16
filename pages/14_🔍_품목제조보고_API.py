@@ -1,212 +1,433 @@
 """
-🔍 식품안전나라 품목제조보고 조회 시스템
+식품안전나라 품목제조보고 조회 v5
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-식품유형별 최신 제품 100건 조회 및 분석
-API: 식품(첨가물)품목제조보고 (I1250)
+조회 전략: 병렬 스캔 폐기 → 단일 필터 요청 1회
+  URL: /api/KEY/I1250/json/1/N/PRDLST_DCNM=유형명
+  서버가 필터링해서 반환 → 전체 DB 순회 불필요
 """
 
 import streamlit as st
 import requests
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 from datetime import datetime
+from collections import Counter
+import re
 import time
-# urllib 불필요 — API에 한글 직접 전달
 
-# ━━━ 페이지 설정 ━━━
-# set_page_config is in main app.py
+try:
+    import google.generativeai as genai
+    GENAI_AVAILABLE = True
+except ImportError:
+    GENAI_AVAILABLE = False
 
-# ━━━ 스타일 ━━━
-st.markdown("""
-<style>
-[data-testid="stSidebar"] { background: #f8f9fb; }
-.big-num { font-size: 2.2rem; font-weight: 700; color: #1a2740; }
-.sub-label { font-size: 0.85rem; color: #888; }
-div[data-testid="stMetric"] { background: #f0f2f5; border-radius: 10px; padding: 12px; }
-</style>
-""", unsafe_allow_html=True)
 
-# ━━━ API 설정 ━━━
-API_KEY = "9171f7ffd72f4ffcb62f"
-SERVICE_ID = "I1250"
-BASE_URL = f"http://openapi.foodsafetykorea.go.kr/api/{API_KEY}/{SERVICE_ID}/json"
+# ══════════════════════════════════════════════════════
+#  설정
+# ══════════════════════════════════════════════════════
+def _secret(*keys, default=""):
+    try:
+        for k in keys:
+            v = st.secrets.get(k, "")
+            if v:
+                return v
+    except Exception:
+        pass
+    return default
 
-# ━━━ 식품유형 목록 ━━━
+FOOD_API_KEY = _secret("FOOD_SAFETY_API_KEY", default="9171f7ffd72f4ffcb62f")
+GEMINI_KEY   = _secret("GEMINI_API_KEY", "GOOGLE_API_KEY")
+SERVICE_ID   = "I1250"
+BASE_URL     = f"http://openapi.foodsafetykorea.go.kr/api/{FOOD_API_KEY}/{SERVICE_ID}/json"
+
+GEMINI_MODELS = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.5-flash-preview-04-17"]
+
 FOOD_TYPES = {
-    "음료류": ["혼합음료", "과.채음료", "과.채주스", "탄산음료", "두유류", "유산균음료", "커피", "인삼.홍삼음료"],
-    "과자류": ["과자", "캔디류", "추잉껌", "빙과", "아이스크림"],
-    "빵·면류": ["빵류", "떡류", "면류", "즉석섭취식품"],
-    "조미·소스류": ["소스", "복합조미식품", "향신료가공품", "식초", "드레싱"],
-    "유가공품": ["치즈", "버터", "발효유", "우유류", "가공유"],
+    "음료류": [
+        "혼합음료", "다류", "커피",
+        "농축과.채즙", "과.채주스", "과.채음료",
+        "탄산음료", "탄산수",
+        "두유류", "유산균음료", "발효음료류",
+        "인삼.홍삼음료", "기타음료",
+    ],
+    "과자류":      ["과자", "캔디류", "추잉껌", "빙과", "아이스크림"],
+    "빵.면류":     ["빵류", "떡류", "면류", "즉석섭취식품"],
+    "조미.소스류": ["소스", "복합조미식품", "향신료가공품", "식초", "드레싱"],
+    "유가공품":    ["치즈", "버터", "발효유", "우유류", "가공유"],
     "건강기능식품": ["건강기능식품"],
-    "기타": ["잼류", "식용유지", "김치류", "두부류", "즉석조리식품", "레토르트식품"],
+    "기타":        ["잼류", "식용유지", "김치류", "두부류", "즉석조리식품", "레토르트식품"],
+}
+TYPE_TO_CAT = {t: c for c, ts in FOOD_TYPES.items() for t in ts}
+
+COL_MAP = {
+    "PRDLST_NM": "제품명", "PRDLST_DCNM": "식품유형", "BSSH_NM": "제조사",
+    "PRMS_DT": "보고일자", "RAWMTRL_NM": "주요원재료",
+    "POG_DAYCNT": "유통기한", "PRODUCTION": "생산종료",
+    "INDUTY_CD_NM": "업종", "LCNS_NO": "인허가번호",
+    "PRDLST_REPORT_NO": "품목제조번호", "LAST_UPDT_DTM": "최종수정일",
+    "HIENG_LNTRT_DVS_NM": "고열량저영양", "CHILD_CRTFC_YN": "어린이기호식품인증",
+    "DISPOS": "제품형태", "FRMLC_MTRQLT": "포장재질",
 }
 
-# ━━━ API 호출 함수 ━━━
+
+# ══════════════════════════════════════════════════════
+#  조회 — 검증된 역순 스캔 방식 (1,000건 청크)
+# ══════════════════════════════════════════════════════
+def _safe_get(url: str):
+    """GET 요청 → (dict | None, error_msg | None)"""
+    try:
+        r = requests.get(url, timeout=30)
+        r.raise_for_status()
+    except requests.exceptions.Timeout:
+        return None, "응답 시간 초과 (30초)"
+    except requests.exceptions.ConnectionError:
+        return None, "서버 연결 실패"
+    except Exception as e:
+        return None, f"HTTP 오류: {e}"
+
+    raw = r.text.strip()
+    if not raw:
+        return None, f"빈 응답 (HTTP {r.status_code})"
+    try:
+        return r.json(), None
+    except Exception:
+        return None, f"JSON 파싱 실패: {raw[:200]}"
+
+
 @st.cache_data(ttl=600, show_spinner=False)
-def fetch_food_data(food_type, start=1, end=100):
-    """식품안전나라 I1250 API 호출 (서버사이드 필터링)"""
+def fetch_food_data(food_type: str, top_n: int = 100, max_pages: int = 100):
+    """
+    작동이 검증된 역순 스캔 방식.
+    - 1,000건 청크로 DB 끝(최신)부터 역순 조회
+    - PRDLST_DCNM 클라이언트 필터 (서버 필터 X → 타임아웃 없음)
+    - top_n건 채우거나 max_pages 소진 시 중단
+    반환: (rows | None, msg, total, pages_done)
+    """
+    # total_count 확인
+    data, err = _safe_get(f"{BASE_URL}/1/1")
+    if err:
+        return None, err, 0, 0
+    if SERVICE_ID not in data:
+        return None, f"API 오류: {data}", 0, 0
 
-    # 방법 1: 서버사이드 필터링 시도 (PRDLST_DCNM 파라미터)
-    url_filtered = f"{BASE_URL}/{start}/{end}/PRDLST_DCNM={food_type}"
+    total = int(data[SERVICE_ID].get("total_count", 0))
+    if total == 0:
+        return [], "DB 레코드 0건", 0, 0
 
-    # 방법 2: 전체 조회 후 클라이언트 필터링 (fallback)
-    url_all = f"{BASE_URL}/{start}/{end}"
+    collected  = []
+    cursor     = total
+    pages_done = 0
+    page_size  = 1000
 
-    for attempt, (url, is_filtered) in enumerate([
-        (url_filtered, True),
-        (url_all, False),
-    ]):
-        try:
-            # requests에 한글 인코딩 맡기지 않고 직접 바이트로 전송
-            if is_filtered:
-                response = requests.get(
-                    url,
-                    timeout=30,
-                    headers={"Accept": "application/json"}
-                )
-            else:
-                response = requests.get(url, timeout=30)
+    while cursor > 0 and pages_done < max_pages:
+        p_s = max(1, cursor - page_size + 1)
+        p_e = cursor
 
-            response.raise_for_status()
-            data = response.json()
+        d, err = _safe_get(f"{BASE_URL}/{p_s}/{p_e}")
+        if err:
+            return None, err, total, pages_done
 
-            if SERVICE_ID not in data:
-                if is_filtered:
-                    continue  # fallback으로 재시도
-                return None, "API 응답에 데이터가 없습니다.", 0
+        if SERVICE_ID not in d:
+            return None, f"API 오류: {d}", total, pages_done
 
-            result = data[SERVICE_ID]
-            code = result.get("RESULT", {}).get("CODE", "")
-            msg = result.get("RESULT", {}).get("MSG", "")
+        res  = d[SERVICE_ID]
+        code = res.get("RESULT", {}).get("CODE", "")
+        msg  = res.get("RESULT", {}).get("MSG", "")
 
-            if code == "ERROR-500" and is_filtered:
-                continue  # 서버사이드 필터링 실패 → fallback
+        if code == "INFO-200":
+            break
+        if code != "INFO-000":
+            return None, f"[{code}] {msg}", total, pages_done
 
-            if code == "INFO-200":
-                if is_filtered:
-                    continue  # 데이터 없으면 fallback 시도
-                return [], "해당 식품유형의 데이터가 없습니다.", 0
-            elif code != "INFO-000":
-                if is_filtered:
-                    continue
-                return None, f"[{code}] {msg}", 0
+        for row in res.get("row", []):
+            if row.get("PRDLST_DCNM", "").strip() == food_type.strip():
+                collected.append(row)
+                if len(collected) >= top_n:
+                    break
 
-            total = int(result.get("total_count", 0))
-            rows = result.get("row", [])
+        if len(collected) >= top_n:
+            break
 
-            # fallback인 경우 클라이언트측 필터링
-            if not is_filtered and rows:
-                filtered = [r for r in rows if r.get("PRDLST_DCNM", "")
-                           and food_type in r.get("PRDLST_DCNM", "")]
-                return filtered, "정상 (클라이언트 필터링)", total
-            else:
-                return rows, "정상", total
+        cursor     = p_s - 1
+        pages_done += 1
+        time.sleep(0.2)
 
-        except requests.exceptions.Timeout:
-            if is_filtered:
-                continue
-            return None, "API 응답 시간 초과 (30초)", 0
-        except requests.exceptions.ConnectionError:
-            return None, "API 서버 연결 실패", 0
-        except Exception as e:
-            if is_filtered:
-                continue
-            return None, f"오류: {str(e)}", 0
+    if collected:
+        collected.sort(key=lambda r: r.get("PRMS_DT", "0") or "0", reverse=True)
 
-    return None, "모든 조회 방법 실패", 0
+    scanned  = min((pages_done + 1) * page_size, total)
+    coverage = round(scanned / total * 100, 1) if total else 0
+    src_msg  = f"{pages_done+1}페이지({scanned:,}건 스캔) / 커버리지 {coverage}%"
+    return collected[:top_n], src_msg, total, pages_done + 1
 
-def fetch_multiple_types(types_list, per_type=20):
-    """여러 식품유형을 한번에 조회"""
-    all_rows = []
-    progress = st.progress(0, text="조회 중...")
-    status_msgs = {}
 
+def fetch_multiple(types_list: list, per_type: int, max_pages: int):
+    """복수 유형 순차 조회"""
+    all_rows, status = [], {}
+    prog = st.progress(0, text="조회 중…")
     for i, ft in enumerate(types_list):
-        progress.progress((i + 1) / len(types_list), text=f"📡 {ft} 조회 중...")
-        # fallback 대비 넉넉하게 요청 (서버필터링 실패 시 클라이언트 필터링)
-        rows, msg, total = fetch_food_data(ft, 1, min(per_type * 5, 1000))
-        if rows:
-            rows = rows[:per_type]  # 요청 건수만큼만
-        status_msgs[ft] = {"msg": msg, "total": total, "fetched": len(rows) if rows else 0}
+        prog.progress((i + 1) / len(types_list), text=f"📡 {ft} 조회 중…")
+        rows, msg, total, _ = fetch_food_data(ft, top_n=per_type, max_pages=max_pages)
+        status[ft] = {
+            "msg":     msg or "",
+            "total":   total,
+            "fetched": len(rows) if rows else 0,
+        }
         if rows:
             all_rows.extend(rows)
-        time.sleep(0.5)  # API 부하 방지
+        time.sleep(0.2)
+    prog.empty()
+    return all_rows, status
 
-    progress.empty()
-    return all_rows, status_msgs
 
-def to_dataframe(rows):
-    """API 응답을 DataFrame으로 변환"""
+def to_df(rows: list) -> pd.DataFrame:
     if not rows:
         return pd.DataFrame()
-
     df = pd.DataFrame(rows)
-
-    col_map = {
-        "PRDLST_NM": "제품명",
-        "PRDLST_DCNM": "식품유형",
-        "BSSH_NM": "제조사",
-        "PRMS_DT": "보고일자",
-        "POG_DAYCNT": "유통기한",
-        "PRODUCTION": "생산종료",
-        "INDUTY_CD_NM": "업종",
-        "USAGE": "용법",
-        "PRPOS": "용도",
-        "LCNS_NO": "인허가번호",
-        "PRDLST_REPORT_NO": "품목제조번호",
-        "HIENG_LNTRT_DVS_NM": "고열량저영양",
-        "CHILD_CRTFC_YN": "어린이기호식품인증",
-        "LAST_UPDT_DTM": "최종수정일",
-        "DISPOS": "제품형태",
-        "FRMLC_MTRQLT": "포장재질",
-        "QLITY_MNTNC_TMLMT_DAYCNT": "품질유지기한일수",
-        "ETQTY_XPORT_PRDLST_YN": "내수겸용",
-    }
-
-    rename = {k: v for k, v in col_map.items() if k in df.columns}
+    rename = {k: v for k, v in COL_MAP.items() if k in df.columns}
     df = df.rename(columns=rename)
-
-    # 보고일자 정리
     if "보고일자" in df.columns:
         df["보고일자"] = df["보고일자"].astype(str)
         df["보고일자_dt"] = pd.to_datetime(df["보고일자"], format="%Y%m%d", errors="coerce")
         df = df.sort_values("보고일자_dt", ascending=False).reset_index(drop=True)
-
     return df
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# ══════════════════════════════════════════════════════
+#  차트
+# ══════════════════════════════════════════════════════
+def render_charts(df: pd.DataFrame, food_type: str):
+    st.markdown("### 📊 데이터 분석")
+    c1, c2 = st.columns(2)
+
+    if "제조사" in df.columns:
+        with c1:
+            mc = df["제조사"].value_counts().head(15)
+            fig = px.bar(x=mc.values, y=mc.index, orientation="h",
+                         title="제조사별 제품 수 (상위 15)",
+                         color=mc.values, color_continuous_scale="Blues",
+                         labels={"x": "제품 수", "y": "제조사"})
+            fig.update_layout(height=400, showlegend=False,
+                               yaxis=dict(autorange="reversed"))
+            fig.update_coloraxes(showscale=False)
+            st.plotly_chart(fig, use_container_width=True)
+
+    if "보고일자_dt" in df.columns:
+        with c2:
+            tmp = df.dropna(subset=["보고일자_dt"]).copy()
+            if not tmp.empty:
+                tmp["연월"] = tmp["보고일자_dt"].dt.to_period("M").astype(str)
+                mo = tmp["연월"].value_counts().sort_index().tail(24)
+                fig2 = px.area(x=mo.index, y=mo.values,
+                               title="월별 신규 보고 건수 (최근 24개월)",
+                               labels={"x": "연월", "y": "건수"})
+                fig2.update_traces(fill="tozeroy", line_color="#1975BC")
+                fig2.update_layout(height=400)
+                st.plotly_chart(fig2, use_container_width=True)
+
+    c3, c4 = st.columns(2)
+    if "생산종료" in df.columns:
+        with c3:
+            pc = df["생산종료"].value_counts()
+            fig3 = px.pie(values=pc.values, names=pc.index,
+                          title="생산종료 현황",
+                          color_discrete_sequence=px.colors.qualitative.Set2)
+            fig3.update_layout(height=320)
+            st.plotly_chart(fig3, use_container_width=True)
+
+    if "제조사" in df.columns:
+        with c4:
+            top10  = df["제조사"].value_counts().head(10)
+            others = max(0, len(df) - top10.sum())
+            labels = list(top10.index) + (["기타"] if others > 0 else [])
+            values = list(top10.values) + ([others] if others > 0 else [])
+            fig4 = px.pie(values=values, names=labels,
+                          title="제조사 점유율 (상위 10)",
+                          color_discrete_sequence=px.colors.qualitative.Pastel)
+            fig4.update_layout(height=320)
+            st.plotly_chart(fig4, use_container_width=True)
+
+
+# ══════════════════════════════════════════════════════
+#  AI 분석
+# ══════════════════════════════════════════════════════
+@st.cache_data(ttl=1800, show_spinner=False)
+def _gemini(prompt: str, model_name: str) -> str:
+    genai.configure(api_key=GEMINI_KEY)
+    return genai.GenerativeModel(model_name).generate_content(prompt).text
+
+
+def _ctx(df: pd.DataFrame, food_type: str) -> dict:
+    monthly = {}
+    if "보고일자_dt" in df.columns:
+        tmp = df.dropna(subset=["보고일자_dt"]).copy()
+        if not tmp.empty:
+            tmp["연월"] = tmp["보고일자_dt"].dt.to_period("M").astype(str)
+            monthly = tmp["연월"].value_counts().sort_index().tail(24).to_dict()
+
+    maker_top = df["제조사"].value_counts().head(10).to_dict() if "제조사" in df.columns else {}
+    maker_n   = df["제조사"].nunique() if "제조사" in df.columns else "N/A"
+
+    cols     = [c for c in ["제품명", "제조사", "보고일자"] if c in df.columns]
+    recent30 = df[cols].head(30).to_dict(orient="records")
+
+    kw_freq = {}
+    if "제품명" in df.columns:
+        words   = re.findall(r"[가-힣a-zA-Z]{2,}",
+                             " ".join(df["제품명"].dropna().astype(str)))
+        kw_freq = dict(Counter(words).most_common(30))
+
+    return dict(food_type=food_type, total=len(df),
+                monthly=monthly, maker_top=maker_top,
+                maker_n=maker_n, recent30=recent30, kw_freq=kw_freq)
+
+
+def render_ai_section(df: pd.DataFrame, food_type: str, model_name: str):
+    st.markdown("---")
+    st.markdown("## 🤖 AI 연구원 분석")
+
+    if not GENAI_AVAILABLE:
+        st.error("google-generativeai 미설치\n```bash\npip install google-generativeai\n```")
+        return
+    if not GEMINI_KEY:
+        st.warning(
+            "**Gemini API 키 없음**\n\n"
+            "`.streamlit/secrets.toml`:\n"
+            "```toml\nGEMINI_API_KEY = \"AIza...\"\n```\n\n"
+            "[🔑 Google AI Studio 무료 발급](https://aistudio.google.com/app/apikey)"
+        )
+        return
+
+    st.info(f"모델: **{model_name}** | 대상: **{food_type}** {len(df)}건")
+
+    if not st.button("🔬 AI 분석 시작", key="btn_ai", type="primary",
+                     use_container_width=True):
+        return
+
+    ctx = _ctx(df, food_type)
+    prefix = (
+        f"당신은 15년 경력의 식품 R&D 수석 연구원입니다.\n"
+        f"식품안전나라 품목제조보고 DB의 **{food_type}** {ctx['total']}건 데이터를 분석합니다.\n"
+        f"실무에 바로 쓸 수 있는 전문적 인사이트를 한국어로 작성하세요.\n\n"
+    )
+
+    analyses = [
+        {
+            "title": "📈 시장 트렌드 분석",
+            "prompt": (
+                prefix
+                + f"### 월별 보고 건수 (최근 24개월)\n{ctx['monthly']}\n\n"
+                + f"### 제조사 상위 10\n{ctx['maker_top']}\n"
+                + f"전체 제조사: {ctx['maker_n']}개\n\n"
+                + f"### 최신 제품 30건\n{ctx['recent30']}\n\n"
+                + "다음을 각 3~4문장으로 분석하세요:\n"
+                + "## 1. 시장 성장성 (월별 트렌드 기반)\n"
+                + "## 2. 경쟁 구도 및 시장 집중도\n"
+                + "## 3. 신제품 출시 패턴\n"
+                + "## 4. R&D 전략 시사점"
+            ),
+        },
+        {
+            "title": "🍋 플레이버 & 원료 트렌드",
+            "prompt": (
+                prefix
+                + f"### 제품명 키워드 빈도 상위 30\n{ctx['kw_freq']}\n\n"
+                + f"### 최신 제품 30건\n{ctx['recent30']}\n\n"
+                + "다음을 각 3~4문장으로 분석하세요:\n"
+                + "## 1. 주요 플레이버 트렌드\n"
+                + "## 2. 기능성 원료 트렌드 (콜라겐·비타민·프로바이오틱스 등)\n"
+                + "## 3. 신흥 플레이버 (최근 새롭게 등장한 것)\n"
+                + "## 4. 포뮬레이션 방향 제언"
+            ),
+        },
+        {
+            "title": "🧪 추천 레시피 3종",
+            "prompt": (
+                prefix
+                + f"### 키워드 빈도\n{ctx['kw_freq']}\n\n"
+                + f"### 최신 제품 30건\n{ctx['recent30']}\n\n"
+                + f"시장 데이터를 반영한 **{food_type}** 신제품 레시피 3종을 제안하세요.\n\n"
+                + "각 레시피 형식:\n\n"
+                + "## 레시피 N: [제품명]\n"
+                + "**컨셉**: \n**타겟**: \n\n"
+                + "**배합비**:\n"
+                + "| 원료명 | 함량(%) | 역할 |\n|---|---|---|\n"
+                + "| 정제수 | 00.0 | 기제 |\n\n"
+                + "**제조 공정 포인트**: \n"
+                + "**예상 규격**: pH / Brix / 칼로리\n"
+                + "**차별화 포인트**: \n\n---\n\n"
+                + "배합비 합계는 반드시 100%로 맞추세요."
+            ),
+        },
+        {
+            "title": "💡 종합 R&D 인사이트",
+            "prompt": (
+                prefix
+                + f"조회건수: {ctx['total']}건 | 제조사: {ctx['maker_n']}개\n"
+                + f"키워드: {ctx['kw_freq']}\n월별트렌드: {ctx['monthly']}\n\n"
+                + "다음을 각 3~4문장으로 작성하세요:\n"
+                + "## 1. 시장 기회 (포화되지 않은 틈새)\n"
+                + "## 2. 리스크 요인 (피해야 할 방향)\n"
+                + "## 3. 즉시 출시 추천 컨셉 (6개월 내)\n"
+                + "## 4. 중장기 R&D 방향 (1~3년)"
+            ),
+        },
+    ]
+
+    all_results = {}
+    for item in analyses:
+        st.markdown(f"#### {item['title']}")
+        box = st.empty()
+        box.info("분석 중…")
+        try:
+            text = _gemini(item["prompt"], model_name)
+            all_results[item["title"]] = text
+            box.markdown(text)
+        except Exception as e:
+            msg = f"❌ {e}"
+            all_results[item["title"]] = msg
+            box.error(msg)
+        st.markdown("")
+
+    if all_results:
+        full = "\n\n---\n\n".join(f"{t}\n\n{c}" for t, c in all_results.items())
+        st.download_button(
+            "📥 AI 분석 전체 다운로드 (TXT)",
+            full.encode("utf-8"),
+            f"{food_type}_AI분석_{datetime.now().strftime('%Y%m%d_%H%M')}.txt",
+            "text/plain", use_container_width=True,
+        )
+
+
+# ══════════════════════════════════════════════════════
+#  스타일
+# ══════════════════════════════════════════════════════
+st.markdown("""
+<style>
+[data-testid="stSidebar"] { background: #f8f9fb; }
+div[data-testid="stMetric"] { background: #f0f2f5; border-radius: 10px; padding: 12px; }
+</style>
+""", unsafe_allow_html=True)
+
+
+# ══════════════════════════════════════════════════════
 #  사이드바
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ══════════════════════════════════════════════════════
 with st.sidebar:
     st.markdown("## 🔍 조회 설정")
     st.markdown("---")
 
-    # 조회 모드
-    mode = st.radio(
-        "조회 방식",
-        ["📋 단일 유형 조회", "📊 복수 유형 비교"],
-        help="단일: 한 유형 100건 상세 / 복수: 여러 유형 동시 비교"
-    )
-
+    mode = st.radio("조회 방식", ["📋 단일 유형 조회", "📊 복수 유형 비교"])
     st.markdown("---")
 
     if mode == "📋 단일 유형 조회":
-        # 카테고리 → 유형 선택
-        category = st.selectbox("카테고리", list(FOOD_TYPES.keys()))
+        category  = st.selectbox("카테고리", list(FOOD_TYPES.keys()))
         food_type = st.selectbox("식품유형", FOOD_TYPES[category])
-
-        # 직접 입력도 가능
-        custom_type = st.text_input(
-            "또는 직접 입력",
-            placeholder="예: 혼합음료, 초콜릿, 잼류...",
-            help="API의 PRDLST_DCNM 파라미터로 전달됩니다"
-        )
-        if custom_type.strip():
-            food_type = custom_type.strip()
-
-        count = st.slider("조회 건수", 10, 200, 100, step=10)
+        custom    = st.text_input("직접 입력 (DB 표기 그대로)",
+                                  placeholder="예: 과.채주스")
+        if custom.strip():
+            food_type = custom.strip()
+        count = st.slider("조회 건수", 10, 300, 100, step=10)
 
     else:
         st.markdown("**비교할 유형 선택:**")
@@ -214,261 +435,191 @@ with st.sidebar:
         for cat, types in FOOD_TYPES.items():
             with st.expander(cat, expanded=(cat == "음료류")):
                 for t in types:
-                    if st.checkbox(t, value=(t in ["혼합음료", "과.채음료"]), key=f"cb_{t}"):
+                    if st.checkbox(t, key=f"cb_{t}",
+                                   value=t in ["혼합음료", "과.채주스"]):
                         selected_types.append(t)
-
         per_type = st.slider("유형별 조회 건수", 10, 50, 20, step=5)
+
+    st.markdown("---")
+    st.markdown("#### 🔭 스캔 범위")
+    max_pages = st.slider(
+        "스캔 페이지 수", 10, 200, 50, step=10,
+        help="1페이지 = DB 1,000건 / 혼합음료 등 대형 유형은 100 이상 권장",
+    )
+    st.caption(f"최대 DB {max_pages*1000:,}건 스캔")
 
     st.markdown("---")
     run = st.button("🚀 조회 실행", use_container_width=True, type="primary")
 
     st.markdown("---")
-    st.caption("📡 데이터: 식품안전나라 I1250 API")
-    st.caption(f"🔑 키: {API_KEY[:8]}...")
-    st.caption("⚠️ 일일 API 호출 2,000회 제한")
+    st.markdown("### 🤖 Gemini 설정")
+    if GEMINI_KEY:
+        st.success("API 키 연결됨", icon="✅")
+    else:
+        st.warning("GEMINI_API_KEY 없음", icon="⚠️")
+    gemini_model = st.selectbox("모델", GEMINI_MODELS, index=0)
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    st.markdown("---")
+    if st.button("🔄 캐시 초기화", use_container_width=True):
+        st.cache_data.clear()
+        st.success("완료")
+    st.caption("📡 식품안전나라 I1250")
+    st.caption("⚠️ 일일 2,000회 호출 제한")
+
+
+# ══════════════════════════════════════════════════════
 #  메인
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ══════════════════════════════════════════════════════
 st.markdown("# 🏭 식품안전나라 품목제조보고 조회")
-st.markdown("식품유형별 최신 품목제조보고 데이터를 실시간으로 조회합니다.")
+st.markdown("서버사이드 필터 단일 요청 — 빠르고 안정적으로 조회합니다.")
 st.markdown("---")
 
-if run:
-    # ━━━ 단일 유형 조회 ━━━
-    if mode == "📋 단일 유형 조회":
-        with st.spinner(f"📡 '{food_type}' 데이터 조회 중..."):
-            # fallback(클라이언트 필터링) 대비 넉넉하게 요청
-            request_count = min(count * 5, 1000)
-            rows, msg, total = fetch_food_data(food_type, 1, request_count)
-            if rows and len(rows) > count:
-                rows = rows[:count]
+if not run:
+    st.info("👈 사이드바에서 식품유형을 선택하고 **[조회 실행]**을 누르세요.")
+    st.markdown("""
+**조회 방식 변경 (v5)**
 
-        if rows is None:
-            st.error(f"❌ 조회 실패: {msg}")
-        elif len(rows) == 0:
-            st.warning(f"⚠️ '{food_type}'에 해당하는 데이터가 없습니다.")
+| 구분 | 기존 (병렬 스캔) | 현재 (단일 필터) |
+|---|---|---|
+| 요청 수 | 10~100개 동시 | **1~3개** |
+| 타임아웃 위험 | 높음 | 낮음 |
+| 예상 소요 | 불안정 | **5~15초** |
+| 방식 | 전체 DB 순회 | 서버 직접 필터링 |
+
+> 💡 결과가 없거나 적으면 **직접 입력란**에서 DB의 정확한 유형명을 입력해보세요.
+""")
+
+
+# ─────────────── 단일 유형 ───────────────
+elif mode == "📋 단일 유형 조회":
+    t0  = time.time()
+    box = st.empty()
+    box.info(f"📡 **'{food_type}'** 조회 중… (최대 {max_pages*1000:,}건 스캔)")
+
+    rows, src, total, _ = fetch_food_data(food_type, top_n=count, max_pages=max_pages)
+    elapsed = time.time() - t0
+    df = to_df(rows if rows else [])
+
+    if rows is None:
+        box.error(f"❌ 조회 실패: {src}")
+    elif df.empty:
+        box.warning(
+            f"⚠️ **'{food_type}'** 결과 없음\n\n"
+            f"스캔 범위를 늘리거나 식품유형명을 확인하세요. (스캔: {src})"
+        )
+    else:
+        box.success(f"✅ **{len(df)}건** | 소요: **{elapsed:.1f}초** | {src} | 전체: {total:,}건")
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("조회 결과",    f"{len(df)}건")
+        m2.metric("전체 DB",      f"{total:,}건")
+        m3.metric("식품유형",      food_type)
+        if "제조사" in df.columns:
+            m4.metric("제조사 수", f"{df['제조사'].nunique()}개")
+
+        st.markdown("---")
+        tab1, tab2, tab3 = st.tabs(["📋 제품 목록", "📊 분석 차트", "📥 원시 데이터"])
+
+        with tab1:
+            ca, cb = st.columns(2)
+            with ca:
+                kw = st.text_input("🔎 검색", placeholder="제품명·제조사·원재료")
+            with cb:
+                makers = (["전체"] + sorted(df["제조사"].dropna().unique().tolist())
+                          if "제조사" in df.columns else ["전체"])
+                sel_mk = st.selectbox("제조사 필터", makers)
+
+            fdf = df.copy()
+            if kw:
+                fdf = fdf[fdf.apply(lambda r: kw.lower() in str(r).lower(), axis=1)]
+            if "제조사" in df.columns and sel_mk != "전체":
+                fdf = fdf[fdf["제조사"] == sel_mk]
+
+            sc = [c for c in ["제품명", "식품유형", "제조사", "보고일자",
+                               "주요원재료", "유통기한", "생산종료"]
+                  if c in fdf.columns]
+            st.dataframe(fdf[sc].reset_index(drop=True),
+                         use_container_width=True, height=480)
+            st.caption(f"총 {len(fdf)}건 표시")
+
+        with tab2:
+            render_charts(df, food_type)
+
+        with tab3:
+            st.dataframe(df, use_container_width=True, height=480)
+            csv = df.to_csv(index=False).encode("utf-8-sig")
+            st.download_button(
+                "📥 CSV 다운로드", csv,
+                f"{food_type}_{datetime.now().strftime('%Y%m%d')}.csv",
+                "text/csv", use_container_width=True,
+            )
+
+        render_ai_section(df, food_type, gemini_model)
+
+
+# ─────────────── 복수 유형 비교 ───────────────
+else:
+    if not selected_types:
+        st.warning("⚠️ 유형을 1개 이상 선택하세요.")
+    else:
+        t0       = time.time()
+        all_rows, status = fetch_multiple(selected_types, per_type, max_pages)
+        elapsed  = time.time() - t0
+        st.success(f"✅ {len(selected_types)}개 유형 완료 ({elapsed:.1f}초)")
+
+        cols = st.columns(min(len(selected_types), 5))
+        for i, ft in enumerate(selected_types):
+            info = status[ft]
+            with cols[i % len(cols)]:
+                st.metric(ft, f"{info['fetched']}건",
+                          f"전체 {info['total']:,}건")
+
+        if not all_rows:
+            st.warning("조회된 데이터가 없습니다.")
         else:
-            if "클라이언트" in msg:
-                st.info(f"ℹ️ 서버 필터링 불가 → 전체 데이터에서 '{food_type}' 추출 ({len(rows)}건)")
-            df = to_dataframe(rows)
-
-            # ━━ 상단 메트릭 ━━
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("조회 결과", f"{len(df)}건")
-            c2.metric("전체 등록 수", f"{total:,}건")
-            c3.metric("식품유형", food_type)
-            if "제조사" in df.columns:
-                c4.metric("제조사 수", f"{df['제조사'].nunique()}개")
-
+            df = to_df(all_rows)
             st.markdown("---")
-
-            # ━━ 탭 ━━
-            tab1, tab2, tab3 = st.tabs(["📋 제품 목록", "📊 분석 차트", "📥 원시 데이터"])
+            tab1, tab2, tab3 = st.tabs(["📋 통합 목록", "📊 유형별 비교", "📥 데이터"])
 
             with tab1:
-                st.markdown(f"### 📋 {food_type} 최신 품목제조보고 ({len(df)}건)")
-
-                # 검색 필터
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    search = st.text_input("🔎 제품명/제조사 검색", placeholder="검색어 입력...")
-                with col_b:
-                    if "제조사" in df.columns:
-                        makers = ["전체"] + sorted(df["제조사"].dropna().unique().tolist())
-                        sel_maker = st.selectbox("제조사 필터", makers)
-
-                filtered = df.copy()
-                if search:
-                    mask = filtered.apply(lambda r: search.lower() in str(r).lower(), axis=1)
-                    filtered = filtered[mask]
-                if "제조사" in df.columns and sel_maker != "전체":
-                    filtered = filtered[filtered["제조사"] == sel_maker]
-
-                # 테이블 표시
-                show_cols = ["제품명", "식품유형", "제조사", "보고일자", "유통기한", "생산종료"]
-                show_cols = [c for c in show_cols if c in filtered.columns]
-
-                st.dataframe(
-                    filtered[show_cols].reset_index(drop=True),
-                    use_container_width=True,
-                    height=500,
-                )
-                st.caption(f"총 {len(filtered)}건 표시 중")
+                types_in = ["전체"] + sorted(df["식품유형"].dropna().unique().tolist())
+                sel_t    = st.selectbox("식품유형 필터", types_in)
+                sdf      = df if sel_t == "전체" else df[df["식품유형"] == sel_t]
+                sc = [c for c in ["제품명", "식품유형", "제조사", "보고일자", "유통기한"]
+                      if c in sdf.columns]
+                st.dataframe(sdf[sc].reset_index(drop=True),
+                             use_container_width=True, height=480)
 
             with tab2:
-                st.markdown(f"### 📊 {food_type} 데이터 분석")
+                c1, c2 = st.columns(2)
+                with c1:
+                    tc  = df["식품유형"].value_counts()
+                    fig = px.bar(x=tc.index, y=tc.values, title="유형별 조회 건수",
+                                 color=tc.index, labels={"x": "식품유형", "y": "건수"})
+                    fig.update_layout(height=380, showlegend=False)
+                    st.plotly_chart(fig, use_container_width=True)
+                with c2:
+                    if "제조사" in df.columns:
+                        mt = (df.groupby("식품유형")["제조사"].nunique()
+                              .reset_index().rename(columns={"제조사": "제조사수"}))
+                        fig2 = px.bar(mt, x="식품유형", y="제조사수",
+                                      title="유형별 제조사 다양성", color="식품유형")
+                        fig2.update_layout(height=380, showlegend=False)
+                        st.plotly_chart(fig2, use_container_width=True)
 
-                ch1, ch2 = st.columns(2)
-
-                # 제조사별 제품 수
-                if "제조사" in df.columns:
-                    with ch1:
-                        maker_counts = df["제조사"].value_counts().head(15)
-                        fig1 = px.bar(
-                            x=maker_counts.values,
-                            y=maker_counts.index,
-                            orientation="h",
-                            title="제조사별 제품 수 (상위 15)",
-                            labels={"x": "제품 수", "y": "제조사"},
-                            color=maker_counts.values,
-                            color_continuous_scale="Blues",
-                        )
-                        fig1.update_layout(height=450, showlegend=False, yaxis=dict(autorange="reversed"))
-                        fig1.update_coloraxes(showscale=False)
-                        st.plotly_chart(fig1, use_container_width=True)
-
-                # 보고일자 분포
-                if "보고일자_dt" in df.columns:
-                    with ch2:
-                        df_dt = df.dropna(subset=["보고일자_dt"]).copy()
-                        if not df_dt.empty:
-                            df_dt["연월"] = df_dt["보고일자_dt"].dt.to_period("M").astype(str)
-                            monthly = df_dt["연월"].value_counts().sort_index().tail(24)
-                            fig2 = px.line(
-                                x=monthly.index,
-                                y=monthly.values,
-                                title="월별 보고 건수 추이 (최근 24개월)",
-                                labels={"x": "연월", "y": "건수"},
-                                markers=True,
-                            )
-                            fig2.update_layout(height=450)
-                            st.plotly_chart(fig2, use_container_width=True)
-
-                # 생산종료 현황
-                if "생산종료" in df.columns:
-                    prod_counts = df["생산종료"].value_counts()
-                    fig3 = px.pie(
-                        values=prod_counts.values,
-                        names=prod_counts.index,
-                        title="생산종료 현황",
-                        color_discrete_sequence=px.colors.qualitative.Set2,
-                    )
-                    fig3.update_layout(height=350)
-                    st.plotly_chart(fig3, use_container_width=True)
+                for ft in selected_types:
+                    ft_df = df[df["식품유형"] == ft]
+                    if not ft_df.empty and "제조사" in ft_df.columns:
+                        top = ft_df["제조사"].value_counts().head(5)
+                        with st.expander(f"**{ft}** 상위 제조사 ({len(ft_df)}건)"):
+                            for rank, (mk, cnt) in enumerate(top.items(), 1):
+                                st.markdown(f"{rank}. **{mk}** — {cnt}건")
 
             with tab3:
-                st.markdown("### 📥 원시 데이터 (전체 필드)")
-                st.dataframe(df, use_container_width=True, height=500)
-
-                # CSV 다운로드
+                st.dataframe(df, use_container_width=True, height=480)
                 csv = df.to_csv(index=False).encode("utf-8-sig")
                 st.download_button(
-                    "📥 CSV 다운로드",
-                    csv,
-                    f"{food_type}_품목제조보고_{datetime.now().strftime('%Y%m%d')}.csv",
-                    "text/csv",
-                    use_container_width=True,
+                    "📥 CSV 다운로드", csv,
+                    f"품목비교_{datetime.now().strftime('%Y%m%d')}.csv",
+                    "text/csv", use_container_width=True,
                 )
-
-    # ━━━ 복수 유형 비교 ━━━
-    else:
-        if not selected_types:
-            st.warning("⚠️ 비교할 식품유형을 1개 이상 선택하세요.")
-        else:
-            all_rows, status_msgs = fetch_multiple_types(selected_types, per_type)
-
-            # 조회 결과 요약
-            st.markdown("### 📡 조회 결과 요약")
-            summary_cols = st.columns(min(len(selected_types), 5))
-            for i, ft in enumerate(selected_types):
-                info = status_msgs[ft]
-                with summary_cols[i % len(summary_cols)]:
-                    if info["msg"] == "정상":
-                        st.metric(ft, f"{info['fetched']}건", f"전체 {info['total']:,}건")
-                    else:
-                        st.metric(ft, "❌", info["msg"])
-
-            if all_rows:
-                df = to_dataframe(all_rows)
-
-                st.markdown("---")
-
-                tab1, tab2, tab3 = st.tabs(["📋 통합 목록", "📊 유형별 비교", "📥 데이터"])
-
-                with tab1:
-                    st.markdown(f"### 📋 통합 품목 목록 ({len(df)}건)")
-
-                    # 유형별 필터
-                    types_in_data = ["전체"] + sorted(df["식품유형"].dropna().unique().tolist())
-                    sel_type = st.selectbox("식품유형 필터", types_in_data)
-
-                    show_df = df if sel_type == "전체" else df[df["식품유형"] == sel_type]
-
-                    show_cols = ["제품명", "식품유형", "제조사", "보고일자", "유통기한"]
-                    show_cols = [c for c in show_cols if c in show_df.columns]
-                    st.dataframe(show_df[show_cols].reset_index(drop=True), use_container_width=True, height=500)
-
-                with tab2:
-                    st.markdown("### 📊 식품유형별 비교 분석")
-
-                    ch1, ch2 = st.columns(2)
-
-                    with ch1:
-                        type_counts = df["식품유형"].value_counts()
-                        fig = px.bar(
-                            x=type_counts.index,
-                            y=type_counts.values,
-                            title="식품유형별 조회 건수",
-                            labels={"x": "식품유형", "y": "건수"},
-                            color=type_counts.index,
-                        )
-                        fig.update_layout(height=400, showlegend=False)
-                        st.plotly_chart(fig, use_container_width=True)
-
-                    with ch2:
-                        if "제조사" in df.columns:
-                            maker_type = df.groupby("식품유형")["제조사"].nunique().reset_index()
-                            maker_type.columns = ["식품유형", "제조사수"]
-                            fig2 = px.bar(
-                                maker_type, x="식품유형", y="제조사수",
-                                title="유형별 제조사 다양성",
-                                color="식품유형",
-                            )
-                            fig2.update_layout(height=400, showlegend=False)
-                            st.plotly_chart(fig2, use_container_width=True)
-
-                    # 유형별 상위 제조사
-                    st.markdown("#### 🏢 유형별 상위 제조사")
-                    for ft in selected_types:
-                        ft_df = df[df["식품유형"] == ft]
-                        if not ft_df.empty and "제조사" in ft_df.columns:
-                            top = ft_df["제조사"].value_counts().head(5)
-                            with st.expander(f"**{ft}** — 상위 제조사 (총 {len(ft_df)}건)"):
-                                for rank, (maker, cnt) in enumerate(top.items(), 1):
-                                    st.markdown(f"{rank}. **{maker}** — {cnt}건")
-
-                with tab3:
-                    st.dataframe(df, use_container_width=True, height=500)
-                    csv = df.to_csv(index=False).encode("utf-8-sig")
-                    st.download_button(
-                        "📥 CSV 다운로드",
-                        csv,
-                        f"품목제조보고_비교_{datetime.now().strftime('%Y%m%d')}.csv",
-                        "text/csv",
-                        use_container_width=True,
-                    )
-
-else:
-    # 초기 안내
-    st.info("👈 왼쪽 사이드바에서 식품유형을 선택하고 **[조회 실행]** 버튼을 누르세요.")
-
-    st.markdown("""
-    ### 사용 방법
-
-    **단일 유형 조회** — 한 가지 식품유형의 최신 제품 100건을 상세 조회합니다.
-    제품 목록, 제조사 분석, 보고일자 추이 차트를 확인할 수 있습니다.
-
-    **복수 유형 비교** — 여러 식품유형을 동시에 조회하여 비교합니다.
-    유형별 제품 수, 제조사 다양성 등을 한눈에 비교할 수 있습니다.
-
-    ### API 정보
-
-    | 항목 | 내용 |
-    |---|---|
-    | 서비스명 | 식품(첨가물)품목제조보고 |
-    | 서비스ID | I1250 |
-    | 제공기관 | 행정안전부 |
-    | 서버필터링 | PRDLST_DCNM (식품유형명) |
-    | 호출제한 | 1회 최대 1,000건 / 일 2,000회 |
-    """)
