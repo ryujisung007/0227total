@@ -77,53 +77,55 @@ COL_MAP = {
 # 총 레코드 수 추정값 (캐시)
 # → 첫 실행 시 1회 조회 후 session_state에 저장, 이후 재사용
 def _get_total() -> int:
-    """DB 총 건수 — session_state 캐시 우선, 실패 시 추정값 즉시 반환"""
+    """
+    DB 총 건수 조회 — session_state 캐시 우선.
+    반드시 st 컨텍스트(캐시 함수 밖)에서 호출해야 함.
+    """
     if "db_total" in st.session_state:
         return st.session_state["db_total"]
     try:
-        r = requests.get(f"{BASE_URL}/1/1", timeout=8)
+        r = requests.get(f"{BASE_URL}/1/1", timeout=6)
         total = int(r.json().get(SERVICE_ID, {}).get("total_count", 0))
         if total > 0:
             st.session_state["db_total"] = total
             return total
     except Exception:
         pass
-    # 조회 실패 시 추정값(50만) 사용 — 끝 페이지부터 스캔하므로 문제없음
-    st.session_state["db_total"] = 500000
+    st.session_state["db_total"] = 500000  # 추정값
     return 500000
 
 
+# requests Session — TCP 연결 재사용으로 속도 향상
+_session = requests.Session()
+_adapter = requests.adapters.HTTPAdapter(
+    pool_connections=10, pool_maxsize=20,
+    max_retries=0,   # 재시도는 코드에서 직접 제어
+)
+_session.mount("http://", _adapter)
+
+
 def _fetch_page(start: int, end: int) -> list:
-    """단일 페이지 호출 — 타임아웃 15초, 1회 재시도"""
-    for attempt in range(2):
-        try:
-            r = requests.get(f"{BASE_URL}/{start}/{end}", timeout=15)
-            r.raise_for_status()
-            result = r.json().get(SERVICE_ID, {})
-            if result.get("RESULT", {}).get("CODE") == "INFO-000":
-                return result.get("row", [])
-            return []
-        except requests.exceptions.Timeout:
-            if attempt == 0:
-                continue   # 1회 재시도
-            return []
-        except Exception:
-            return []
+    """단일 페이지 호출 — timeout 8초, 실패 시 빈 리스트 즉시 반환"""
+    url = f"{BASE_URL}/{start}/{end}"
+    try:
+        r = _session.get(url, timeout=8)
+        r.raise_for_status()
+        result = r.json().get(SERVICE_ID, {})
+        if result.get("RESULT", {}).get("CODE") == "INFO-000":
+            return result.get("row", [])
+    except Exception:
+        pass
     return []
 
 
 @st.cache_data(ttl=600, show_spinner=False)
-def fetch_fast(food_type: str, count: int, scan_pages: int = 10) -> tuple:
+def fetch_fast(food_type: str, count: int,
+               scan_pages: int, total: int) -> tuple:
     """
-    핵심 속도 전략:
-      1. total_count → session_state 캐시 (매번 API 호출 X)
-      2. DB 끝 scan_pages 페이지만 병렬 호출 (기본 10 = 1만건)
-      3. 타임아웃 15초 / 1회 재시도 / 실패 페이지 무시
+    total을 파라미터로 받음 (캐시 함수 내부에서 session_state 접근 불가 문제 해결).
+    DB 끝 scan_pages 페이지만 병렬 호출.
     """
     PAGE = 1000
-    total = _get_total()
-
-    # 끝 scan_pages 페이지 범위 계산
     pages = []
     end = total
     for _ in range(scan_pages):
@@ -134,21 +136,21 @@ def fetch_fast(food_type: str, count: int, scan_pages: int = 10) -> tuple:
         end = start - 1
 
     collected = []
-    success_pages = 0
+    ok_pages  = 0
 
     with ThreadPoolExecutor(max_workers=8) as ex:
         futures = {ex.submit(_fetch_page, s, e): None for s, e in pages}
         for fut in as_completed(futures):
             rows = fut.result()
-            if rows is not None:
-                success_pages += 1
+            if rows:
+                ok_pages += 1
                 collected.extend(
                     r for r in rows
                     if r.get("PRDLST_DCNM", "").strip() == food_type.strip()
                 )
 
     collected.sort(key=lambda r: r.get("PRMS_DT", ""), reverse=True)
-    return collected[:count], total, success_pages
+    return collected[:count], ok_pages
 
 
 def to_df(rows: list) -> pd.DataFrame:
@@ -495,7 +497,9 @@ elif mode == "📋 단일 유형 조회":
     msg = st.empty()
     msg.info(f"📡 **'{food_type}'** 최근 {scan_pages * 1000:,}건 스캔 중…")
 
-    rows, total, n_pages = fetch_fast(food_type, count, scan_pages)
+    # total은 캐시 함수 밖에서 계산 (session_state 사용 가능)
+    total = _get_total()
+    rows, ok_pages = fetch_fast(food_type, count, scan_pages, total)
     elapsed = time.time() - t0
     df = to_df(rows)
 
@@ -508,7 +512,7 @@ elif mode == "📋 단일 유형 조회":
         msg.success(
             f"✅ **{len(df)}건** 조회 완료 | "
             f"소요: **{elapsed:.1f}초** | "
-            f"응답 페이지: {n_pages}개 / 스캔: 최근 {scan_pages*1000:,}건"
+            f"응답 성공: {ok_pages}/{scan_pages}페이지"
         )
 
         # 메트릭
@@ -571,11 +575,12 @@ else:
         t0 = time.time()
         all_rows, status_map = [], {}
         prog = st.progress(0)
+        total = _get_total()   # 캐시 함수 밖에서 1회 계산
 
         for i, ft in enumerate(selected_types):
             prog.progress((i + 1) / len(selected_types),
                           text=f"📡 {ft} 조회 중… ({i+1}/{len(selected_types)})")
-            rows, total, _ = fetch_fast(ft, per_type, scan_pages=10)
+            rows, _ = fetch_fast(ft, per_type, 10, total)
             status_map[ft] = {"fetched": len(rows), "total": total}
             all_rows.extend(rows)
         prog.empty()
