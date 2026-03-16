@@ -58,7 +58,7 @@ st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700;900&display=swap');
 html, body, [class*="css"] { font-family: 'Noto Sans KR', sans-serif; font-size: 15px; }
-.stApp { background-color: #0E1117; color: #E0E0E0; }
+.stApp { color: inherit; }
 
 .main-header { background: linear-gradient(135deg, #2D1B69 0%, #7B2D8E 50%, #A855F7 100%); padding: 26px 30px; border-radius: 14px; margin-bottom: 22px; }
 .main-header h1 { color: #FFFFFF; font-size: 28px; font-weight: 900; margin: 0; }
@@ -79,8 +79,8 @@ html, body, [class*="css"] { font-family: 'Noto Sans KR', sans-serif; font-size:
 .mc-teal   { background: linear-gradient(135deg, #0D9488, #14B8A6); }
 
 .bar-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
-.bar-label      { width: 75px;  text-align: right; font-size: 13px; color: #D1D5DB; font-weight: 500; flex-shrink: 0; }
-.bar-label-wide { width: 110px; text-align: right; font-size: 13px; color: #D1D5DB; font-weight: 500; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bar-label      { width: 75px;  text-align: right; font-size: 13px; color: var(--text-color, #D1D5DB); font-weight: 500; flex-shrink: 0; }
+.bar-label-wide { width: 110px; text-align: right; font-size: 13px; color: var(--text-color, #D1D5DB); font-weight: 500; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bar { height: 22px; border-radius: 5px; }
 .bar-purple { background: linear-gradient(90deg, #A855F7, #7C3AED); }
 .bar-blue   { background: linear-gradient(90deg, #3B82F6, #2563EB); }
@@ -88,23 +88,23 @@ html, body, [class*="css"] { font-family: 'Noto Sans KR', sans-serif; font-size:
 .bar-red    { background: linear-gradient(90deg, #EF4444, #DC2626); }
 .bar-count  { font-size: 12px; color: #9CA3AF; white-space: nowrap; }
 
-.section-title { font-size: 17px; font-weight: 700; margin: 18px 0 10px; padding-bottom: 5px; border-bottom: 2px solid #374151; color: #E5E7EB; }
+.section-title { font-size: 17px; font-weight: 700; margin: 18px 0 10px; padding-bottom: 5px; border-bottom: 2px solid #374151; color: var(--text-color, #E5E7EB); }
 .st-purple { color: #C084FC; } .st-blue { color: #60A5FA; } .st-green { color: #34D399; } .st-red { color: #F87171; }
 
-.product-table { width: 100%; border-collapse: collapse; font-size: 13px; background: #1F2937; }
+.product-table { width: 100%; border-collapse: collapse; font-size: 13px; background: var(--background-color, #1F2937); }
 .product-table thead tr { background: linear-gradient(90deg, #7C3AED, #A855F7); color: white; }
 .product-table.naver thead tr { background: linear-gradient(90deg, #059669, #10B981); color: white; }
 .product-table th { padding: 11px 7px; font-weight: 600; position: sticky; top: 0; z-index: 10; font-size: 13px; }
 .product-table thead tr th { background: inherit; }
-.product-table td { padding: 6px 7px; border-bottom: 1px solid #374151; color: #E5E7EB; font-size: 13px; vertical-align: middle; }
-.product-table tr:nth-child(even) { background: #111827; }
+.product-table td { padding: 6px 7px; border-bottom: 1px solid var(--fade-color, #374151); color: var(--text-color, #E5E7EB); font-size: 13px; vertical-align: middle; }
+.product-table tr:nth-child(even) { background: var(--secondary-background-color, #111827); }
 .product-table tr:hover { background: #312E81; }
 .product-table.naver tr:hover { background: #064E3B; }
-.product-name a { color: #E5E7EB; text-decoration: none; font-weight: 500; font-size: 13px; }
+.product-name a { color: var(--text-color, #E5E7EB); text-decoration: none; font-weight: 500; font-size: 13px; }
 .product-name a:hover { color: #C084FC; }
 .product-table.naver .product-name a:hover { color: #34D399; }
-.product-desc { font-size: 11px; color: #6B7280; margin-top: 2px; }
-.price-original  { text-decoration: line-through; color: #6B7280; font-size: 12px; }
+.product-desc { font-size: 11px; color: var(--fade-color, #6B7280); margin-top: 2px; }
+.price-original  { text-decoration: line-through; color: var(--fade-color, #6B7280); font-size: 12px; }
 .price-discount  { color: #F87171; font-weight: 700; font-size: 14px; }
 .discount-rate   { color: #F87171; font-weight: 700; }
 
@@ -116,42 +116,42 @@ html, body, [class*="css"] { font-family: 'Noto Sans KR', sans-serif; font-size:
 .badge-naver  { background: #064E3B; color: #34D399; }
 .badge-brand  { background: #1E3A5F; color: #60A5FA; }
 
-.detail-panel   { border: 1px solid #374151; border-radius: 14px; overflow: hidden; box-shadow: 0 4px 16px rgba(0,0,0,0.3); background: #1F2937; }
+.detail-panel   { border: 1px solid var(--fade-color, #374151); border-radius: 14px; overflow: hidden; box-shadow: 0 4px 16px rgba(0,0,0,0.3); background: var(--background-color, #1F2937); }
 .detail-header  { background: linear-gradient(135deg, #7C3AED, #A855F7); padding: 16px 20px; color: white; }
 .detail-header.naver { background: linear-gradient(135deg, #059669, #10B981); }
 .detail-header h3 { margin: 0; font-size: 16px; font-weight: 700; color: white; }
 .detail-header p  { margin: 4px 0 0; font-size: 12px; color: rgba(255,255,255,0.8); }
 .detail-body { padding: 16px 20px; }
-.detail-img  { width: 100%; border-radius: 10px; margin-bottom: 14px; max-height: 320px; object-fit: contain; background: #111827; }
+.detail-img  { width: 100%; border-radius: 10px; margin-bottom: 14px; max-height: 320px; object-fit: contain; background: var(--secondary-background-color, #111827); }
 .detail-price-box { background: #312E81; border-radius: 10px; padding: 14px; margin-bottom: 14px; }
 .detail-price-box.naver { background: #064E3B; }
 .detail-price-big { font-size: 24px; font-weight: 900; color: #C084FC; }
 .detail-price-box.naver .detail-price-big { color: #34D399; }
 .detail-info-grid  { display: grid; grid-template-columns: 85px 1fr; gap: 6px 12px; font-size: 14px; margin-bottom: 14px; }
 .detail-info-label { color: #9CA3AF; font-weight: 600; }
-.detail-info-value { color: #E5E7EB; }
-.detail-option      { padding: 8px 12px; margin: 4px 0; background: #111827; border-radius: 8px; font-size: 13px; display: flex; justify-content: space-between; border: 1px solid #374151; }
-.detail-option-name  { color: #E5E7EB; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.detail-info-value { color: var(--text-color, #E5E7EB); }
+.detail-option      { padding: 8px 12px; margin: 4px 0; background: var(--secondary-background-color, #111827); border-radius: 8px; font-size: 13px; display: flex; justify-content: space-between; border: 1px solid var(--fade-color, #374151); }
+.detail-option-name  { color: var(--text-color, #E5E7EB); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .detail-option-price { color: #C084FC; font-weight: 700; margin-left: 8px; }
 .detail-allergy     { background: #451A03; border: 1px solid #78350F; border-radius: 8px; padding: 10px 14px; font-size: 13px; color: #FCD34D; margin-top: 10px; }
-.detail-placeholder { text-align: center; padding: 80px 20px; color: #6B7280; }
+.detail-placeholder { text-align: center; padding: 80px 20px; color: var(--fade-color, #6B7280); }
 .detail-placeholder .icon { font-size: 48px; margin-bottom: 12px; }
 
 .ai-box { background: #1E1B4B; border: 1px solid #4338CA; border-radius: 14px; padding: 20px; margin: 16px 0; }
 .ai-box h3 { color: #A5B4FC; font-size: 17px; font-weight: 700; margin: 0 0 12px; }
 .ai-box .ai-content { color: #E0E7FF; font-size: 14px; line-height: 1.8; white-space: pre-wrap; }
 
-.trend-table { width: 100%; border-collapse: collapse; font-size: 14px; margin-top: 10px; background: #1F2937; }
+.trend-table { width: 100%; border-collapse: collapse; font-size: 14px; margin-top: 10px; background: var(--background-color, #1F2937); }
 .trend-table th { padding: 10px 8px; background: linear-gradient(90deg, #059669, #10B981); color: white; font-weight: 600; text-align: center; }
-.trend-table td { padding: 9px 8px; border-bottom: 1px solid #374151; text-align: center; color: #E5E7EB; }
-.trend-table tr:nth-child(even) { background: #111827; }
+.trend-table td { padding: 9px 8px; border-bottom: 1px solid var(--fade-color, #374151); text-align: center; color: var(--text-color, #E5E7EB); }
+.trend-table tr:nth-child(even) { background: var(--secondary-background-color, #111827); }
 .trend-rank { font-size: 18px; font-weight: 900; color: #34D399; }
 
-.compare-box { background: #1F2937; border: 1px solid #374151; border-radius: 12px; padding: 16px; }
+.compare-box { background: var(--background-color, #1F2937); border: 1px solid var(--fade-color, #374151); border-radius: 12px; padding: 16px; }
 .compare-label-a { color: #60A5FA; font-weight: 700; font-size: 16px; }
 .compare-label-b { color: #34D399; font-weight: 700; font-size: 16px; }
 
-section[data-testid="stSidebar"] { background: linear-gradient(180deg, #0F172A 0%, #1E293B 100%); }
+/* sidebar: Streamlit 기본 테마 사용 */
 section[data-testid="stSidebar"] .stMarkdown h1,
 section[data-testid="stSidebar"] .stMarkdown h2,
 section[data-testid="stSidebar"] .stMarkdown h3 { color: #F1F5F9 !important; }
@@ -706,7 +706,7 @@ def render_flavor_compare(agg_a: pd.DataFrame, agg_b: pd.DataFrame, label_a: str
     ))
     fig.update_layout(
         barmode="group", height=420,
-        paper_bgcolor="#0E1117", plot_bgcolor="#1F2937",
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
         font=dict(color="#E5E7EB"), legend=dict(orientation="h", y=1.1),
         margin=dict(l=10, r=10, t=20, b=10),
         xaxis=dict(title="빈도", gridcolor="#374151"),
@@ -742,7 +742,7 @@ def render_trend_heatmap(agg_a: pd.DataFrame, agg_b: pd.DataFrame, label_a: str,
         labels=dict(x="트렌드", y="검색어", color="비율(%)"),
     )
     fig.update_layout(
-        height=220, paper_bgcolor="#0E1117", plot_bgcolor="#1F2937",
+        height=220, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
         font=dict(color="#E5E7EB"), margin=dict(l=10, r=10, t=20, b=10),
         coloraxis_showscale=True,
     )
@@ -766,7 +766,7 @@ def render_price_compare(agg_a: pd.DataFrame, agg_b: pd.DataFrame, label_a: str,
         ))
     fig.update_layout(
         barmode="overlay", height=320,
-        paper_bgcolor="#0E1117", plot_bgcolor="#1F2937",
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
         font=dict(color="#E5E7EB"),
         xaxis=dict(title="평균최저가(원)", gridcolor="#374151"),
         yaxis=dict(title="제품 수", gridcolor="#374151"),
@@ -1147,7 +1147,7 @@ def tab_naver():
                     x=top_f["빈도"], y=top_f["태그"], orientation="h",
                     marker_color="#10B981"
                 ))
-                fig.update_layout(height=340, paper_bgcolor="#0E1117", plot_bgcolor="#1F2937",
+                fig.update_layout(height=340, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
                                   font=dict(color="#E5E7EB"), margin=dict(l=10,r=10,t=20,b=10),
                                   xaxis=dict(gridcolor="#374151"), yaxis=dict(gridcolor="#374151"))
                 st.plotly_chart(fig, use_container_width=True)
@@ -1164,7 +1164,7 @@ def tab_naver():
                     x=top_t["빈도"], y=top_t["태그"], orientation="h",
                     marker_color="#3B82F6"
                 ))
-                fig2.update_layout(height=340, paper_bgcolor="#0E1117", plot_bgcolor="#1F2937",
+                fig2.update_layout(height=340, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
                                    font=dict(color="#E5E7EB"), margin=dict(l=10,r=10,t=20,b=10),
                                    xaxis=dict(gridcolor="#374151"), yaxis=dict(gridcolor="#374151"))
                 st.plotly_chart(fig2, use_container_width=True)
@@ -1175,7 +1175,7 @@ def tab_naver():
         ps = agg_df["평균최저가"].replace(0, np.nan).dropna()
         if len(ps)>0:
             fig3 = go.Figure(go.Histogram(x=ps, nbinsx=15, marker_color="#A855F7"))
-            fig3.update_layout(height=260, paper_bgcolor="#0E1117", plot_bgcolor="#1F2937",
+            fig3.update_layout(height=260, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
                                font=dict(color="#E5E7EB"), margin=dict(l=10,r=10,t=10,b=10),
                                xaxis=dict(gridcolor="#374151"), yaxis=dict(gridcolor="#374151"))
             st.plotly_chart(fig3, use_container_width=True)
