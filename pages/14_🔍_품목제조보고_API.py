@@ -46,7 +46,7 @@ SERVICE_ID = "I1250"
 def get_base_url():
     return f"http://openapi.foodsafetykorea.go.kr/api/{get_food_api_key()}/{SERVICE_ID}/json"
 
-GEMINI_MODELS = ["gemini-2.0-flash"]  # 확인된 사용 모델
+GEMINI_MODELS = ["gemini-2.0-flash-001"]  # REST API 정식 모델명
 
 FOOD_TYPES = {
     "음료류": [
@@ -292,16 +292,37 @@ def render_charts(df: pd.DataFrame, food_type: str):
 # ══════════════════════════════════════════════════════
 @st.cache_data(ttl=1800, show_spinner=False)
 def _gemini(prompt: str, model_name: str) -> str:
-    """Gemini REST API 직접 호출 (SDK 설치 불필요)"""
-    url = (
-        f"https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{model_name}:generateContent?key={get_gemini_key()}"
-    )
-    payload = {"contents": [{"parts": [{"text": prompt}]}]}
-    r = requests.post(url, headers={"Content-Type": "application/json"},
-                      json=payload, timeout=60)
-    r.raise_for_status()
-    return r.json()["candidates"][0]["content"]["parts"][0]["text"]
+    """Gemini REST API 직접 호출 — 모델명 fallback 포함"""
+    # 모델명 후보: 입력값 → -001 suffix → exp
+    candidates = [model_name]
+    if not model_name.endswith("-001") and "preview" not in model_name:
+        candidates.append(model_name + "-001")
+    candidates.append("gemini-2.0-flash-001")
+    candidates.append("gemini-1.5-flash-latest")
+
+    last_err = None
+    for m in candidates:
+        url = (
+            f"https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{m}:generateContent?key={get_gemini_key()}"
+        )
+        try:
+            r = requests.post(
+                url,
+                headers={"Content-Type": "application/json"},
+                json={"contents": [{"parts": [{"text": prompt}]}]},
+                timeout=60,
+            )
+            if r.status_code == 404:
+                last_err = f"모델 없음: {m}"
+                continue
+            r.raise_for_status()
+            return r.json()["candidates"][0]["content"]["parts"][0]["text"]
+        except Exception as e:
+            last_err = str(e)
+            continue
+
+    raise RuntimeError(f"모든 모델 시도 실패: {last_err}")
 
 
 def _ctx(df: pd.DataFrame, food_type: str) -> dict:
@@ -502,8 +523,8 @@ with st.sidebar:
     else:
         st.warning("GOOGLE_API_KEY 없음", icon="⚠️")
         st.caption("secrets.toml: GOOGLE_API_KEY = \"AIza...\"")
-    gemini_model = "gemini-2.0-flash"
-    st.caption("모델: gemini-2.0-flash")
+    gemini_model = "gemini-2.0-flash-001"
+    st.caption("모델: gemini-2.0-flash-001")
 
     st.markdown("---")
     if st.button("🔄 캐시 초기화", use_container_width=True):
