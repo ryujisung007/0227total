@@ -57,9 +57,11 @@ BEV_BRANDS = [
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700;900&display=swap');
-html, body, [class*="css"] { font-family: 'Noto Sans KR', sans-serif; font-size: 15px; }
-.stApp { color: inherit; }
 
+/* 폰트만 지정 — 배경/텍스트 색상은 Streamlit 테마에 맡김 */
+html, body { font-family: 'Noto Sans KR', sans-serif !important; }
+
+/* ── 헤더 배너 (의도적 브랜드 색상) ── */
 .main-header { background: linear-gradient(135deg, #2D1B69 0%, #7B2D8E 50%, #A855F7 100%); padding: 26px 30px; border-radius: 14px; margin-bottom: 22px; }
 .main-header h1 { color: #FFFFFF; font-size: 28px; font-weight: 900; margin: 0; }
 .main-header p  { color: #D8B4FE; font-size: 14px; margin: 5px 0 0; }
@@ -67,6 +69,7 @@ html, body, [class*="css"] { font-family: 'Noto Sans KR', sans-serif; font-size:
 .naver-header h1 { color: #FFFFFF; font-size: 28px; font-weight: 900; margin: 0; }
 .naver-header p  { color: #A7F3D0; font-size: 14px; margin: 5px 0 0; }
 
+/* ── 메트릭 카드 ── */
 .metric-row { display: flex; gap: 12px; margin: 16px 0 22px; flex-wrap: wrap; }
 .metric-card { flex: 1; min-width: 130px; padding: 18px 14px; border-radius: 14px; text-align: center; color: white; box-shadow: 0 4px 16px rgba(0,0,0,0.3); }
 .metric-card .num   { font-size: 30px; font-weight: 900; letter-spacing: -1px; }
@@ -78,85 +81,81 @@ html, body, [class*="css"] { font-family: 'Noto Sans KR', sans-serif; font-size:
 .mc-green  { background: linear-gradient(135deg, #059669, #10B981); }
 .mc-teal   { background: linear-gradient(135deg, #0D9488, #14B8A6); }
 
+/* ── 바 차트 ── */
 .bar-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
-.bar-label      { width: 75px;  text-align: right; font-size: 13px; color: var(--text-color, #D1D5DB); font-weight: 500; flex-shrink: 0; }
-.bar-label-wide { width: 110px; text-align: right; font-size: 13px; color: var(--text-color, #D1D5DB); font-weight: 500; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bar-label      { width: 75px;  text-align: right; font-size: 13px; font-weight: 500; flex-shrink: 0; }
+.bar-label-wide { width: 110px; text-align: right; font-size: 13px; font-weight: 500; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bar { height: 22px; border-radius: 5px; }
 .bar-purple { background: linear-gradient(90deg, #A855F7, #7C3AED); }
 .bar-blue   { background: linear-gradient(90deg, #3B82F6, #2563EB); }
 .bar-green  { background: linear-gradient(90deg, #10B981, #059669); }
 .bar-red    { background: linear-gradient(90deg, #EF4444, #DC2626); }
-.bar-count  { font-size: 12px; color: #9CA3AF; white-space: nowrap; }
+.bar-count  { font-size: 12px; opacity: 0.7; white-space: nowrap; }
 
-.section-title { font-size: 17px; font-weight: 700; margin: 18px 0 10px; padding-bottom: 5px; border-bottom: 2px solid #374151; color: var(--text-color, #E5E7EB); }
-.st-purple { color: #C084FC; } .st-blue { color: #60A5FA; } .st-green { color: #34D399; } .st-red { color: #F87171; }
+/* ── 섹션 타이틀 ── */
+.section-title { font-size: 17px; font-weight: 700; margin: 18px 0 10px; padding-bottom: 5px; border-bottom: 2px solid rgba(128,128,128,0.3); }
+.st-purple { color: #A855F7; } .st-blue { color: #3B82F6; } .st-green { color: #10B981; } .st-red { color: #EF4444; }
 
-.product-table { width: 100%; border-collapse: collapse; font-size: 13px; background: var(--background-color, #1F2937); }
+/* ── 제품 테이블 (배경 제거 — 테마 따름) ── */
+.product-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .product-table thead tr { background: linear-gradient(90deg, #7C3AED, #A855F7); color: white; }
 .product-table.naver thead tr { background: linear-gradient(90deg, #059669, #10B981); color: white; }
 .product-table th { padding: 11px 7px; font-weight: 600; position: sticky; top: 0; z-index: 10; font-size: 13px; }
 .product-table thead tr th { background: inherit; }
-.product-table td { padding: 6px 7px; border-bottom: 1px solid var(--fade-color, #374151); color: var(--text-color, #E5E7EB); font-size: 13px; vertical-align: middle; }
-.product-table tr:nth-child(even) { background: var(--secondary-background-color, #111827); }
-.product-table tr:hover { background: #312E81; }
-.product-table.naver tr:hover { background: #064E3B; }
-.product-name a { color: var(--text-color, #E5E7EB); text-decoration: none; font-weight: 500; font-size: 13px; }
-.product-name a:hover { color: #C084FC; }
-.product-table.naver .product-name a:hover { color: #34D399; }
-.product-desc { font-size: 11px; color: var(--fade-color, #6B7280); margin-top: 2px; }
-.price-original  { text-decoration: line-through; color: var(--fade-color, #6B7280); font-size: 12px; }
-.price-discount  { color: #F87171; font-weight: 700; font-size: 14px; }
-.discount-rate   { color: #F87171; font-weight: 700; }
+.product-table td { padding: 6px 7px; border-bottom: 1px solid rgba(128,128,128,0.2); font-size: 13px; vertical-align: middle; }
+.product-name a { text-decoration: none; font-weight: 500; font-size: 13px; }
+.product-name a:hover { color: #A855F7; }
+.product-table.naver .product-name a:hover { color: #10B981; }
+.product-desc { font-size: 11px; opacity: 0.5; margin-top: 2px; }
+.price-original  { text-decoration: line-through; opacity: 0.5; font-size: 12px; }
+.price-discount  { color: #EF4444; font-weight: 700; font-size: 14px; }
+.discount-rate   { color: #EF4444; font-weight: 700; }
 
+/* ── 배지 ── */
 .badge { display: inline-block; padding: 3px 7px; border-radius: 8px; font-size: 11px; font-weight: 700; margin: 1px; }
-.badge-top10  { background: #312E81; color: #C084FC; }
-.badge-new    { background: #1E3A5F; color: #60A5FA; }
-.badge-sale   { background: #450A0A; color: #FCA5A5; }
-.badge-low    { background: #451A03; color: #FCD34D; }
-.badge-naver  { background: #064E3B; color: #34D399; }
-.badge-brand  { background: #1E3A5F; color: #60A5FA; }
+.badge-top10  { background: rgba(124,58,237,0.2); color: #A855F7; }
+.badge-new    { background: rgba(37,99,235,0.2);  color: #3B82F6; }
+.badge-sale   { background: rgba(220,38,38,0.2);  color: #EF4444; }
+.badge-low    { background: rgba(217,119,6,0.2);  color: #F59E0B; }
+.badge-naver  { background: rgba(5,150,105,0.2);  color: #10B981; }
+.badge-brand  { background: rgba(37,99,235,0.2);  color: #3B82F6; }
 
-.detail-panel   { border: 1px solid var(--fade-color, #374151); border-radius: 14px; overflow: hidden; box-shadow: 0 4px 16px rgba(0,0,0,0.3); background: var(--background-color, #1F2937); }
-.detail-header  { background: linear-gradient(135deg, #7C3AED, #A855F7); padding: 16px 20px; color: white; }
+/* ── 상세 패널 ── */
+.detail-panel   { border: 1px solid rgba(128,128,128,0.2); border-radius: 14px; overflow: hidden; }
+.detail-header  { background: linear-gradient(135deg, #7C3AED, #A855F7); padding: 16px 20px; }
 .detail-header.naver { background: linear-gradient(135deg, #059669, #10B981); }
 .detail-header h3 { margin: 0; font-size: 16px; font-weight: 700; color: white; }
 .detail-header p  { margin: 4px 0 0; font-size: 12px; color: rgba(255,255,255,0.8); }
 .detail-body { padding: 16px 20px; }
-.detail-img  { width: 100%; border-radius: 10px; margin-bottom: 14px; max-height: 320px; object-fit: contain; background: var(--secondary-background-color, #111827); }
-.detail-price-box { background: #312E81; border-radius: 10px; padding: 14px; margin-bottom: 14px; }
-.detail-price-box.naver { background: #064E3B; }
-.detail-price-big { font-size: 24px; font-weight: 900; color: #C084FC; }
-.detail-price-box.naver .detail-price-big { color: #34D399; }
+.detail-img  { width: 100%; border-radius: 10px; margin-bottom: 14px; max-height: 320px; object-fit: contain; }
+.detail-price-box { background: rgba(124,58,237,0.15); border-radius: 10px; padding: 14px; margin-bottom: 14px; }
+.detail-price-box.naver { background: rgba(5,150,105,0.15); }
+.detail-price-big { font-size: 24px; font-weight: 900; color: #A855F7; }
+.detail-price-box.naver .detail-price-big { color: #10B981; }
 .detail-info-grid  { display: grid; grid-template-columns: 85px 1fr; gap: 6px 12px; font-size: 14px; margin-bottom: 14px; }
-.detail-info-label { color: #9CA3AF; font-weight: 600; }
-.detail-info-value { color: var(--text-color, #E5E7EB); }
-.detail-option      { padding: 8px 12px; margin: 4px 0; background: var(--secondary-background-color, #111827); border-radius: 8px; font-size: 13px; display: flex; justify-content: space-between; border: 1px solid var(--fade-color, #374151); }
-.detail-option-name  { color: var(--text-color, #E5E7EB); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.detail-option-price { color: #C084FC; font-weight: 700; margin-left: 8px; }
-.detail-allergy     { background: #451A03; border: 1px solid #78350F; border-radius: 8px; padding: 10px 14px; font-size: 13px; color: #FCD34D; margin-top: 10px; }
-.detail-placeholder { text-align: center; padding: 80px 20px; color: var(--fade-color, #6B7280); }
+.detail-info-label { opacity: 0.6; font-weight: 600; }
+.detail-option      { padding: 8px 12px; margin: 4px 0; border-radius: 8px; font-size: 13px; display: flex; justify-content: space-between; border: 1px solid rgba(128,128,128,0.2); }
+.detail-option-name  { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.detail-option-price { color: #A855F7; font-weight: 700; margin-left: 8px; }
+.detail-allergy     { background: rgba(217,119,6,0.15); border: 1px solid rgba(217,119,6,0.3); border-radius: 8px; padding: 10px 14px; font-size: 13px; color: #F59E0B; margin-top: 10px; }
+.detail-placeholder { text-align: center; padding: 80px 20px; opacity: 0.4; }
 .detail-placeholder .icon { font-size: 48px; margin-bottom: 12px; }
 
-.ai-box { background: #1E1B4B; border: 1px solid #4338CA; border-radius: 14px; padding: 20px; margin: 16px 0; }
-.ai-box h3 { color: #A5B4FC; font-size: 17px; font-weight: 700; margin: 0 0 12px; }
-.ai-box .ai-content { color: #E0E7FF; font-size: 14px; line-height: 1.8; white-space: pre-wrap; }
+/* ── AI 박스 ── */
+.ai-box { background: rgba(67,56,202,0.1); border: 1px solid rgba(99,102,241,0.3); border-radius: 14px; padding: 20px; margin: 16px 0; }
+.ai-box h3 { color: #818CF8; font-size: 17px; font-weight: 700; margin: 0 0 12px; }
+.ai-box .ai-content { font-size: 14px; line-height: 1.8; white-space: pre-wrap; }
 
-.trend-table { width: 100%; border-collapse: collapse; font-size: 14px; margin-top: 10px; background: var(--background-color, #1F2937); }
+/* ── 트렌드 테이블 ── */
+.trend-table { width: 100%; border-collapse: collapse; font-size: 14px; margin-top: 10px; }
 .trend-table th { padding: 10px 8px; background: linear-gradient(90deg, #059669, #10B981); color: white; font-weight: 600; text-align: center; }
-.trend-table td { padding: 9px 8px; border-bottom: 1px solid var(--fade-color, #374151); text-align: center; color: var(--text-color, #E5E7EB); }
-.trend-table tr:nth-child(even) { background: var(--secondary-background-color, #111827); }
-.trend-rank { font-size: 18px; font-weight: 900; color: #34D399; }
+.trend-table td { padding: 9px 8px; border-bottom: 1px solid rgba(128,128,128,0.2); text-align: center; }
+.trend-rank { font-size: 18px; font-weight: 900; color: #10B981; }
 
-.compare-box { background: var(--background-color, #1F2937); border: 1px solid var(--fade-color, #374151); border-radius: 12px; padding: 16px; }
-.compare-label-a { color: #60A5FA; font-weight: 700; font-size: 16px; }
-.compare-label-b { color: #34D399; font-weight: 700; font-size: 16px; }
+/* ── 비교 레이블 ── */
+.compare-label-a { color: #3B82F6; font-weight: 700; font-size: 16px; }
+.compare-label-b { color: #10B981; font-weight: 700; font-size: 16px; }
 
-/* sidebar: Streamlit 기본 테마 사용 */
-section[data-testid="stSidebar"] .stMarkdown h1,
-section[data-testid="stSidebar"] .stMarkdown h2,
-section[data-testid="stSidebar"] .stMarkdown h3 { color: #F1F5F9 !important; }
-section[data-testid="stSidebar"] .stMarkdown p,
-section[data-testid="stSidebar"] .stMarkdown label { color: #CBD5E1 !important; }
 footer { visibility: hidden; }
 </style>
 """, unsafe_allow_html=True)
@@ -638,10 +637,10 @@ def render_naver_product_table(agg_df: pd.DataFrame, max_rows: int = 200):
         # 이미지 셀
         if img:
             img_html = (f'<img src="{img}" width="56" height="56" '
-                        f'style="border-radius:6px;object-fit:cover;background:#111827;" '
+                        f'style="border-radius:6px;object-fit:cover;background:rgba(128,128,128,0.1);" '
                         f'onerror="this.style.display=\'none\'">')
         else:
-            img_html = '<div style="width:56px;height:56px;background:#1F2937;border-radius:6px;"></div>'
+            img_html = '<div style="width:56px;height:56px;background:rgba(128,128,128,0.15);border-radius:6px;"></div>'
 
         # 배지
         bd = ""
@@ -656,14 +655,14 @@ def render_naver_product_table(agg_df: pd.DataFrame, max_rows: int = 200):
             f'<td style="text-align:center;padding:6px;">{img_html}</td>'
             f'<td class="product-name"><a href="{url}" target="_blank">{nm}</a>'
             f'<div class="product-desc">{row.get("대표판매처","")}</div></td>'
-            f'<td style="text-align:right;font-weight:600;color:#E5E7EB;">₩{int(row.get("평균최저가",0)):,}</td>'
+            f'<td style="text-align:right;font-weight:600;color:inherit;">₩{int(row.get("평균최저가",0)):,}</td>'
             f'<td style="text-align:center;">{int(row.get("상품수",0))}</td>'
             f'<td style="text-align:center;">{bd}</td>'
             f'</tr>'
         )
 
     st.markdown(
-        f'<div style="max-height:520px;overflow-y:auto;border:1px solid #374151;border-radius:10px;">'
+        f'<div style="max-height:520px;overflow-y:auto;border:1px solid rgba(128,128,128,0.2);border-radius:10px;">'
         f'<table class="product-table naver">'
         f'<thead><tr><th>#</th><th>사진</th><th>상품명</th><th>평균가</th><th>중복수</th><th>정보</th></tr></thead>'
         f'<tbody>{rows_html}</tbody></table></div>',
@@ -707,10 +706,10 @@ def render_flavor_compare(agg_a: pd.DataFrame, agg_b: pd.DataFrame, label_a: str
     fig.update_layout(
         barmode="group", height=420,
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(color="#E5E7EB"), legend=dict(orientation="h", y=1.1),
+        font=dict(color=None), legend=dict(orientation="h", y=1.1),
         margin=dict(l=10, r=10, t=20, b=10),
-        xaxis=dict(title="빈도", gridcolor="#374151"),
-        yaxis=dict(autorange="reversed", gridcolor="#374151"),
+        xaxis=dict(title="빈도", gridcolor="rgba(128,128,128,0.2)"),
+        yaxis=dict(autorange="reversed", gridcolor="rgba(128,128,128,0.2)"),
     )
     st.plotly_chart(fig, use_container_width=True)
 
@@ -743,7 +742,7 @@ def render_trend_heatmap(agg_a: pd.DataFrame, agg_b: pd.DataFrame, label_a: str,
     )
     fig.update_layout(
         height=220, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(color="#E5E7EB"), margin=dict(l=10, r=10, t=20, b=10),
+        font=dict(color=None), margin=dict(l=10, r=10, t=20, b=10),
         coloraxis_showscale=True,
     )
     fig.update_xaxes(side="bottom")
@@ -767,9 +766,9 @@ def render_price_compare(agg_a: pd.DataFrame, agg_b: pd.DataFrame, label_a: str,
     fig.update_layout(
         barmode="overlay", height=320,
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(color="#E5E7EB"),
-        xaxis=dict(title="평균최저가(원)", gridcolor="#374151"),
-        yaxis=dict(title="제품 수", gridcolor="#374151"),
+        font=dict(color=None),
+        xaxis=dict(title="평균최저가(원)", gridcolor="rgba(128,128,128,0.2)"),
+        yaxis=dict(title="제품 수", gridcolor="rgba(128,128,128,0.2)"),
         legend=dict(orientation="h", y=1.1),
         margin=dict(l=10, r=10, t=20, b=10),
     )
@@ -902,7 +901,7 @@ def tab_kurly():
             if row.get("저재고")=="Y": bd += '<span class="badge badge-low">⚡임박</span>'
             cn = str(row.get("카테고리명",""))[:8]
             rows += f'<tr><td style="text-align:center;color:#C084FC;font-weight:700;">{row["순위"]}</td><td style="text-align:center;font-size:12px;">{cn}</td><td class="product-name"><a href="{url}" target="_blank">{nm}</a></td><td style="text-align:right;">{ph}</td><td style="text-align:center;">{dh}</td><td style="text-align:center;">{bd}</td></tr>'
-        st.markdown(f'<div style="max-height:520px;overflow-y:auto;border:1px solid #374151;border-radius:10px;"><table class="product-table"><thead><tr><th>#</th><th>카테고리</th><th>상품명</th><th>가격</th><th>할인</th><th>상태</th></tr></thead><tbody>{rows}</tbody></table></div>', unsafe_allow_html=True)
+        st.markdown(f'<div style="max-height:520px;overflow-y:auto;border:1px solid rgba(128,128,128,0.2);border-radius:10px;"><table class="product-table"><thead><tr><th>#</th><th>카테고리</th><th>상품명</th><th>가격</th><th>할인</th><th>상태</th></tr></thead><tbody>{rows}</tbody></table></div>', unsafe_allow_html=True)
         d1c, d2c = st.columns(2)
         with d1c: st.download_button("📥 엑셀", to_excel(df), f"kurly_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx", type="primary", key="k_dl")
         with d2c: st.download_button("📥 CSV",  to_csv(df),   f"kurly_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",  type="secondary", key="k_csv")
@@ -1127,12 +1126,12 @@ def tab_naver():
         trows = ""
         for idx, row in agg_df.head(10).iterrows():
             trows += (f'<tr><td><span class="trend-rank">{idx+1}</span></td>'
-                      f'<td style="text-align:left;font-weight:600;color:#E5E7EB;">{str(row["대표상품명"])[:40]}</td>'
-                      f'<td style="color:#D1D5DB;">{row.get("대표브랜드","")}</td>'
-                      f'<td style="color:#D1D5DB;">₩{int(row["평균최저가"]):,}</td>'
-                      f'<td style="color:#D1D5DB;">{row["상품수"]}</td>'
+                      f'<td style="text-align:left;font-weight:600;color:inherit;">{str(row["대표상품명"])[:40]}</td>'
+                      f'<td style="color:inherit;">{row.get("대표브랜드","")}</td>'
+                      f'<td style="color:inherit;">₩{int(row["평균최저가"]):,}</td>'
+                      f'<td style="color:inherit;">{row["상품수"]}</td>'
                       f'<td style="font-weight:700;color:#34D399;">{row["순위점수"]}</td></tr>')
-        st.markdown(f'<div style="overflow-x:auto;border-radius:10px;border:1px solid #374151;"><table class="trend-table"><thead><tr><th>#</th><th>제품군</th><th>브랜드</th><th>평균가</th><th>상품수</th><th>종합점수</th></tr></thead><tbody>{trows}</tbody></table></div>', unsafe_allow_html=True)
+        st.markdown(f'<div style="overflow-x:auto;border-radius:10px;border:1px solid rgba(128,128,128,0.2);"><table class="trend-table"><thead><tr><th>#</th><th>제품군</th><th>브랜드</th><th>평균가</th><th>상품수</th><th>종합점수</th></tr></thead><tbody>{trows}</tbody></table></div>', unsafe_allow_html=True)
 
         st.markdown("---")
         c1, c2 = st.columns([1.05, 1.2])
@@ -1148,8 +1147,8 @@ def tab_naver():
                     marker_color="#10B981"
                 ))
                 fig.update_layout(height=340, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                                  font=dict(color="#E5E7EB"), margin=dict(l=10,r=10,t=20,b=10),
-                                  xaxis=dict(gridcolor="#374151"), yaxis=dict(gridcolor="#374151"))
+                                  font=dict(color=None), margin=dict(l=10,r=10,t=20,b=10),
+                                  xaxis=dict(gridcolor="rgba(128,128,128,0.2)"), yaxis=dict(gridcolor="rgba(128,128,128,0.2)"))
                 st.plotly_chart(fig, use_container_width=True)
 
         c3, c4 = st.columns([1.05, 1.2])
@@ -1165,8 +1164,8 @@ def tab_naver():
                     marker_color="#3B82F6"
                 ))
                 fig2.update_layout(height=340, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                                   font=dict(color="#E5E7EB"), margin=dict(l=10,r=10,t=20,b=10),
-                                   xaxis=dict(gridcolor="#374151"), yaxis=dict(gridcolor="#374151"))
+                                   font=dict(color=None), margin=dict(l=10,r=10,t=20,b=10),
+                                   xaxis=dict(gridcolor="rgba(128,128,128,0.2)"), yaxis=dict(gridcolor="rgba(128,128,128,0.2)"))
                 st.plotly_chart(fig2, use_container_width=True)
 
         # 가격 분포
@@ -1176,8 +1175,8 @@ def tab_naver():
         if len(ps)>0:
             fig3 = go.Figure(go.Histogram(x=ps, nbinsx=15, marker_color="#A855F7"))
             fig3.update_layout(height=260, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                               font=dict(color="#E5E7EB"), margin=dict(l=10,r=10,t=10,b=10),
-                               xaxis=dict(gridcolor="#374151"), yaxis=dict(gridcolor="#374151"))
+                               font=dict(color=None), margin=dict(l=10,r=10,t=10,b=10),
+                               xaxis=dict(gridcolor="rgba(128,128,128,0.2)"), yaxis=dict(gridcolor="rgba(128,128,128,0.2)"))
             st.plotly_chart(fig3, use_container_width=True)
 
         st.markdown("---")
