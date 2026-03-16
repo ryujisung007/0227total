@@ -290,40 +290,15 @@ def render_charts(df: pd.DataFrame, food_type: str):
 # ══════════════════════════════════════════════════════
 #  AI 분석
 # ══════════════════════════════════════════════════════
-@st.cache_data(ttl=3600, show_spinner=False)
-def _get_available_model(api_key: str) -> str:
-    """
-    API 키로 사용 가능한 모델 목록 조회 → 가장 적합한 flash 모델 반환.
-    우선순위: gemini-2.0-flash 계열 > gemini-1.5-flash 계열 > 기타
-    """
-    try:
-        r = requests.get(
-            f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}",
-            timeout=10,
-        )
-        r.raise_for_status()
-        models = [m["name"].replace("models/", "")
-                  for m in r.json().get("models", [])
-                  if "generateContent" in m.get("supportedGenerationMethods", [])]
-
-        # 우선순위 순으로 선택
-        for prefix in ("gemini-2.0-flash", "gemini-2.0", "gemini-1.5-flash", "gemini-1.5"):
-            found = [m for m in models if m.startswith(prefix) and "embedding" not in m]
-            if found:
-                return sorted(found)[0]   # 알파벳 첫 번째 (가장 안정적)
-
-        return models[0] if models else "gemini-1.5-flash"
-    except Exception:
-        return "gemini-1.5-flash"
-
-
-@st.cache_data(ttl=1800, show_spinner=False)
 def _gemini(prompt: str, api_key: str) -> str:
-    """Gemini REST API 직접 호출 — 사용 가능한 모델 자동 선택"""
-    model = _get_available_model(api_key)
-    url   = (
-        f"https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{model}:generateContent?key={api_key}"
+    """
+    Gemini REST API 직접 호출.
+    사용자 작동 코드와 동일한 방식 — gemini-2.0-flash / v1beta
+    캐시 없음: 캐시된 오류가 계속 반환되는 문제 방지
+    """
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models"
+        f"/gemini-2.0-flash:generateContent?key={api_key}"
     )
     r = requests.post(
         url,
@@ -372,8 +347,7 @@ def render_ai_section(df: pd.DataFrame, food_type: str, api_key: str):
         )
         return
 
-    auto_model = _get_available_model(api_key)
-    st.info(f"모델: **{auto_model}** (자동 감지) | 대상: **{food_type}** {len(df)}건")
+    st.info(f"모델: **gemini-2.0-flash** | 대상: **{food_type}** {len(df)}건")
 
     if not st.button("🔬 AI 분석 시작", key="btn_ai", type="primary",
                      use_container_width=True):
