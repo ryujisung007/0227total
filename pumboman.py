@@ -77,26 +77,38 @@ COL_MAP = {
 # 총 레코드 수 추정값 (캐시)
 # → 첫 실행 시 1회 조회 후 session_state에 저장, 이후 재사용
 def _get_total() -> int:
-    if "db_total" not in st.session_state:
-        try:
-            r = requests.get(f"{BASE_URL}/1/1", timeout=10)
-            st.session_state["db_total"] = int(
-                r.json().get(SERVICE_ID, {}).get("total_count", 500000)
-            )
-        except Exception:
-            st.session_state["db_total"] = 500000  # 추정값
-    return st.session_state["db_total"]
+    """DB 총 건수 — session_state 캐시 우선, 실패 시 추정값 즉시 반환"""
+    if "db_total" in st.session_state:
+        return st.session_state["db_total"]
+    try:
+        r = requests.get(f"{BASE_URL}/1/1", timeout=8)
+        total = int(r.json().get(SERVICE_ID, {}).get("total_count", 0))
+        if total > 0:
+            st.session_state["db_total"] = total
+            return total
+    except Exception:
+        pass
+    # 조회 실패 시 추정값(50만) 사용 — 끝 페이지부터 스캔하므로 문제없음
+    st.session_state["db_total"] = 500000
+    return 500000
 
 
 def _fetch_page(start: int, end: int) -> list:
-    try:
-        r = requests.get(f"{BASE_URL}/{start}/{end}", timeout=20)
-        r.raise_for_status()
-        result = r.json().get(SERVICE_ID, {})
-        if result.get("RESULT", {}).get("CODE") == "INFO-000":
-            return result.get("row", [])
-    except Exception:
-        pass
+    """단일 페이지 호출 — 타임아웃 15초, 1회 재시도"""
+    for attempt in range(2):
+        try:
+            r = requests.get(f"{BASE_URL}/{start}/{end}", timeout=15)
+            r.raise_for_status()
+            result = r.json().get(SERVICE_ID, {})
+            if result.get("RESULT", {}).get("CODE") == "INFO-000":
+                return result.get("row", [])
+            return []
+        except requests.exceptions.Timeout:
+            if attempt == 0:
+                continue   # 1회 재시도
+            return []
+        except Exception:
+            return []
     return []
 
 
@@ -104,15 +116,14 @@ def _fetch_page(start: int, end: int) -> list:
 def fetch_fast(food_type: str, count: int, scan_pages: int = 10) -> tuple:
     """
     핵심 속도 전략:
-      1. total_count를 session_state에 캐시 (매번 API 호출 안 함)
-      2. DB 끝 scan_pages개 페이지만 병렬 호출 (기본 10 = 1만건)
-      3. 부족하면 자동으로 scan_pages 확장
-    기본 10페이지 × 8 worker = 보통 3~8초
+      1. total_count → session_state 캐시 (매번 API 호출 X)
+      2. DB 끝 scan_pages 페이지만 병렬 호출 (기본 10 = 1만건)
+      3. 타임아웃 15초 / 1회 재시도 / 실패 페이지 무시
     """
     PAGE = 1000
     total = _get_total()
 
-    # 끝에서 scan_pages개 페이지 범위 계산
+    # 끝 scan_pages 페이지 범위 계산
     pages = []
     end = total
     for _ in range(scan_pages):
@@ -123,19 +134,21 @@ def fetch_fast(food_type: str, count: int, scan_pages: int = 10) -> tuple:
         end = start - 1
 
     collected = []
+    success_pages = 0
+
     with ThreadPoolExecutor(max_workers=8) as ex:
         futures = {ex.submit(_fetch_page, s, e): None for s, e in pages}
         for fut in as_completed(futures):
             rows = fut.result()
-            collected.extend(
-                r for r in rows
-                if r.get("PRDLST_DCNM", "").strip() == food_type.strip()
-            )
+            if rows is not None:
+                success_pages += 1
+                collected.extend(
+                    r for r in rows
+                    if r.get("PRDLST_DCNM", "").strip() == food_type.strip()
+                )
 
-    collected.sort(
-        key=lambda r: r.get("PRMS_DT", ""), reverse=True
-    )
-    return collected[:count], total, len(pages)
+    collected.sort(key=lambda r: r.get("PRMS_DT", ""), reverse=True)
+    return collected[:count], total, success_pages
 
 
 def to_df(rows: list) -> pd.DataFrame:
@@ -495,7 +508,7 @@ elif mode == "📋 단일 유형 조회":
         msg.success(
             f"✅ **{len(df)}건** 조회 완료 | "
             f"소요: **{elapsed:.1f}초** | "
-            f"스캔: 최근 {n_pages * 1000:,}건 / 전체 {total:,}건"
+            f"응답 페이지: {n_pages}개 / 스캔: 최근 {scan_pages*1000:,}건"
         )
 
         # 메트릭
