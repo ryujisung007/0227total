@@ -17,14 +17,14 @@ import time
 
 import json
 
-# google-generativeai SDK 불필요 — REST API 직접 호출
-GENAI_AVAILABLE = True  # 항상 True (requests만 필요)
+GENAI_AVAILABLE = True  # REST API 직접 호출 — SDK 불필요
 
 
 # ══════════════════════════════════════════════════════
-#  설정
+#  설정 — Lazy loading (앱 시작 후 secrets 접근)
 # ══════════════════════════════════════════════════════
 def _secret(*keys, default=""):
+    """st.secrets를 lazy하게 읽음 (모듈 최상단에서 호출 금지)"""
     try:
         for k in keys:
             v = st.secrets.get(k, "")
@@ -34,10 +34,17 @@ def _secret(*keys, default=""):
         pass
     return default
 
-FOOD_API_KEY = _secret("FOOD_SAFETY_API_KEY", default="9171f7ffd72f4ffcb62f")
-GEMINI_KEY   = _secret("GOOGLE_API_KEY", "GEMINI_API_KEY", "google_api_key")
-SERVICE_ID   = "I1250"
-BASE_URL     = f"http://openapi.foodsafetykorea.go.kr/api/{FOOD_API_KEY}/{SERVICE_ID}/json"
+def get_food_api_key():
+    return _secret("FOOD_SAFETY_API_KEY", default="9171f7ffd72f4ffcb62f")
+
+def get_gemini_key():
+    return _secret("GOOGLE_API_KEY", "GEMINI_API_KEY", "google_api_key",
+                   "GEMINI_KEY", "gemini_api_key")
+
+SERVICE_ID = "I1250"
+
+def get_base_url():
+    return f"http://openapi.foodsafetykorea.go.kr/api/{get_food_api_key()}/{SERVICE_ID}/json"
 
 GEMINI_MODELS = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.5-flash-preview-04-17"]
 
@@ -70,8 +77,13 @@ COL_MAP = {
 
 
 # ══════════════════════════════════════════════════════
-#  조회 — 검증된 역순 스캔 방식 (1,000건 청크)
+#  조회 — 페이지 단위 캐시 + 진행 표시 + normalize 비교
 # ══════════════════════════════════════════════════════
+def _norm(s: str) -> str:
+    """DB 표기 정규화: 가운뎃점↔마침표, 공백 제거, 소문자"""
+    return s.strip().replace("·", ".").replace(" ", "").lower()
+
+
 def _safe_get(url: str):
     """GET 요청 → (dict | None, error_msg | None)"""
     try:
@@ -83,7 +95,6 @@ def _safe_get(url: str):
         return None, "서버 연결 실패"
     except Exception as e:
         return None, f"HTTP 오류: {e}"
-
     raw = r.text.strip()
     if not raw:
         return None, f"빈 응답 (HTTP {r.status_code})"
@@ -94,16 +105,25 @@ def _safe_get(url: str):
 
 
 @st.cache_data(ttl=600, show_spinner=False)
-def fetch_food_data(food_type: str, top_n: int = 100, max_pages: int = 100):
+def _fetch_page(base_url: str, p_s: int, p_e: int):
+    """페이지 단위 캐시 — 같은 페이지 재요청 시 즉시 반환"""
+    return _safe_get(f"{base_url}/{p_s}/{p_e}")
+
+
+def fetch_food_data(food_type: str, top_n: int = 100, max_pages: int = 100,
+                    prog_bar=None, status_text=None):
     """
-    작동이 검증된 역순 스캔 방식.
-    - 1,000건 청크로 DB 끝(최신)부터 역순 조회
-    - PRDLST_DCNM 클라이언트 필터 (서버 필터 X → 타임아웃 없음)
-    - top_n건 채우거나 max_pages 소진 시 중단
+    역순 스캔 + 진행 표시.
+    - @st.cache_data 제거 → st.progress 사용 가능
+    - 페이지 단위 캐시(_fetch_page)로 재실행 시 빠름
+    - _norm()으로 가운뎃점/마침표 혼용 문제 해결
     반환: (rows | None, msg, total, pages_done)
     """
-    # total_count 확인
-    data, err = _safe_get(f"{BASE_URL}/1/1")
+    base_url = get_base_url()
+    t_start  = time.time()
+
+    # total_count 파악
+    data, err = _safe_get(f"{base_url}/1/1")
     if err:
         return None, err, 0, 0
     if SERVICE_ID not in data:
@@ -117,12 +137,25 @@ def fetch_food_data(food_type: str, top_n: int = 100, max_pages: int = 100):
     cursor     = total
     pages_done = 0
     page_size  = 1000
+    norm_type  = _norm(food_type)
 
     while cursor > 0 and pages_done < max_pages:
         p_s = max(1, cursor - page_size + 1)
         p_e = cursor
 
-        d, err = _safe_get(f"{BASE_URL}/{p_s}/{p_e}")
+        # 진행 표시 업데이트
+        elapsed = time.time() - t_start
+        pct     = min(pages_done / max(max_pages, 1), 0.99)
+        if prog_bar:
+            prog_bar.progress(pct)
+        if status_text:
+            status_text.markdown(
+                f"📡 스캔 중… **{pages_done}페이지** / "
+                f"수집 **{len(collected)}건** / "
+                f"경과 **{elapsed:.0f}초**"
+            )
+
+        d, err = _fetch_page(base_url, p_s, p_e)
         if err:
             return None, err, total, pages_done
 
@@ -138,8 +171,9 @@ def fetch_food_data(food_type: str, top_n: int = 100, max_pages: int = 100):
         if code != "INFO-000":
             return None, f"[{code}] {msg}", total, pages_done
 
+        # ③ normalize 비교로 가운뎃점/마침표 혼용 해결
         for row in res.get("row", []):
-            if row.get("PRDLST_DCNM", "").strip() == food_type.strip():
+            if _norm(row.get("PRDLST_DCNM", "")) == norm_type:
                 collected.append(row)
                 if len(collected) >= top_n:
                     break
@@ -156,16 +190,21 @@ def fetch_food_data(food_type: str, top_n: int = 100, max_pages: int = 100):
 
     scanned  = min((pages_done + 1) * page_size, total)
     coverage = round(scanned / total * 100, 1) if total else 0
-    src_msg  = f"{pages_done+1}페이지({scanned:,}건 스캔) / 커버리지 {coverage}%"
+    elapsed  = time.time() - t_start
+    src_msg  = (f"{pages_done+1}페이지({scanned:,}건 스캔) / "
+                f"커버리지 {coverage}% / {elapsed:.1f}초")
     return collected[:top_n], src_msg, total, pages_done + 1
 
 
 def fetch_multiple(types_list: list, per_type: int, max_pages: int):
     """복수 유형 순차 조회"""
     all_rows, status = [], {}
-    prog = st.progress(0, text="조회 중…")
+    prog        = st.progress(0.0)
+    status_text = st.empty()
     for i, ft in enumerate(types_list):
-        prog.progress((i + 1) / len(types_list), text=f"📡 {ft} 조회 중…")
+        pct = (i + 1) / len(types_list)
+        prog.progress(pct)
+        status_text.markdown(f"📡 **{ft}** 조회 중… ({i+1}/{len(types_list)})")
         rows, msg, total, _ = fetch_food_data(ft, top_n=per_type, max_pages=max_pages)
         status[ft] = {
             "msg":     msg or "",
@@ -176,6 +215,7 @@ def fetch_multiple(types_list: list, per_type: int, max_pages: int):
             all_rows.extend(rows)
         time.sleep(0.2)
     prog.empty()
+    status_text.empty()
     return all_rows, status
 
 
@@ -255,7 +295,7 @@ def _gemini(prompt: str, model_name: str) -> str:
     """Gemini REST API 직접 호출 (SDK 설치 불필요)"""
     url = (
         f"https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{model_name}:generateContent?key={GEMINI_KEY}"
+        f"{model_name}:generateContent?key={get_gemini_key()}"
     )
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
     r = requests.post(url, headers={"Content-Type": "application/json"},
@@ -293,7 +333,7 @@ def render_ai_section(df: pd.DataFrame, food_type: str, model_name: str):
     st.markdown("---")
     st.markdown("## 🤖 AI 연구원 분석")
 
-    if not GEMINI_KEY:
+    if not get_gemini_key():
         st.warning(
             "**Gemini API 키 없음**\n\n"
             "`.streamlit/secrets.toml`에 아래 중 하나를 추가하세요:\n"
@@ -457,7 +497,7 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("### 🤖 Gemini 설정")
-    if GEMINI_KEY:
+    if get_gemini_key():
         st.success("API 키 연결됨", icon="✅")
     else:
         st.warning("GOOGLE_API_KEY 없음", icon="⚠️")
@@ -497,12 +537,19 @@ if not run:
 
 # ─────────────── 단일 유형 ───────────────
 elif mode == "📋 단일 유형 조회":
-    t0  = time.time()
-    box = st.empty()
+    t0          = time.time()
+    box         = st.empty()
+    prog_bar    = st.progress(0.0)
+    status_text = st.empty()
     box.info(f"📡 **'{food_type}'** 조회 중… (최대 {max_pages*1000:,}건 스캔)")
 
-    rows, src, total, _ = fetch_food_data(food_type, top_n=count, max_pages=max_pages)
+    rows, src, total, _ = fetch_food_data(
+        food_type, top_n=count, max_pages=max_pages,
+        prog_bar=prog_bar, status_text=status_text,
+    )
     elapsed = time.time() - t0
+    prog_bar.empty()
+    status_text.empty()
     df = to_df(rows if rows else [])
 
     if rows is None:
