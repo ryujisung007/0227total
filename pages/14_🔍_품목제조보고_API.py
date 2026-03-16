@@ -290,39 +290,49 @@ def render_charts(df: pd.DataFrame, food_type: str):
 # ══════════════════════════════════════════════════════
 #  AI 분석
 # ══════════════════════════════════════════════════════
-@st.cache_data(ttl=1800, show_spinner=False)
-def _gemini(prompt: str, model_name: str) -> str:
-    """Gemini REST API 직접 호출 — 모델명 fallback 포함"""
-    # 모델명 후보: 입력값 → -001 suffix → exp
-    candidates = [model_name]
-    if not model_name.endswith("-001") and "preview" not in model_name:
-        candidates.append(model_name + "-001")
-    candidates.append("gemini-2.0-flash-001")
-    candidates.append("gemini-1.5-flash-latest")
-
-    last_err = None
-    for m in candidates:
-        url = (
-            f"https://generativelanguage.googleapis.com/v1beta/models/"
-            f"{m}:generateContent?key={get_gemini_key()}"
+@st.cache_data(ttl=3600, show_spinner=False)
+def _get_available_model(api_key: str) -> str:
+    """
+    API 키로 사용 가능한 모델 목록 조회 → 가장 적합한 flash 모델 반환.
+    우선순위: gemini-2.0-flash 계열 > gemini-1.5-flash 계열 > 기타
+    """
+    try:
+        r = requests.get(
+            f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}",
+            timeout=10,
         )
-        try:
-            r = requests.post(
-                url,
-                headers={"Content-Type": "application/json"},
-                json={"contents": [{"parts": [{"text": prompt}]}]},
-                timeout=60,
-            )
-            if r.status_code == 404:
-                last_err = f"모델 없음: {m}"
-                continue
-            r.raise_for_status()
-            return r.json()["candidates"][0]["content"]["parts"][0]["text"]
-        except Exception as e:
-            last_err = str(e)
-            continue
+        r.raise_for_status()
+        models = [m["name"].replace("models/", "")
+                  for m in r.json().get("models", [])
+                  if "generateContent" in m.get("supportedGenerationMethods", [])]
 
-    raise RuntimeError(f"모든 모델 시도 실패: {last_err}")
+        # 우선순위 순으로 선택
+        for prefix in ("gemini-2.0-flash", "gemini-2.0", "gemini-1.5-flash", "gemini-1.5"):
+            found = [m for m in models if m.startswith(prefix) and "embedding" not in m]
+            if found:
+                return sorted(found)[0]   # 알파벳 첫 번째 (가장 안정적)
+
+        return models[0] if models else "gemini-1.5-flash"
+    except Exception:
+        return "gemini-1.5-flash"
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _gemini(prompt: str, api_key: str) -> str:
+    """Gemini REST API 직접 호출 — 사용 가능한 모델 자동 선택"""
+    model = _get_available_model(api_key)
+    url   = (
+        f"https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{model}:generateContent?key={api_key}"
+    )
+    r = requests.post(
+        url,
+        headers={"Content-Type": "application/json"},
+        json={"contents": [{"parts": [{"text": prompt}]}]},
+        timeout=60,
+    )
+    r.raise_for_status()
+    return r.json()["candidates"][0]["content"]["parts"][0]["text"]
 
 
 def _ctx(df: pd.DataFrame, food_type: str) -> dict:
@@ -350,20 +360,20 @@ def _ctx(df: pd.DataFrame, food_type: str) -> dict:
                 maker_n=maker_n, recent30=recent30, kw_freq=kw_freq)
 
 
-def render_ai_section(df: pd.DataFrame, food_type: str, model_name: str):
+def render_ai_section(df: pd.DataFrame, food_type: str, api_key: str):
     st.markdown("---")
     st.markdown("## 🤖 AI 연구원 분석")
 
-    if not get_gemini_key():
+    if not api_key:
         st.warning(
             "**Gemini API 키 없음**\n\n"
-            "`.streamlit/secrets.toml`에 아래 중 하나를 추가하세요:\n"
-            "```toml\nGOOGLE_API_KEY = \"AIza...\"\n```\n\n"
-            "[🔑 Google AI Studio 무료 발급](https://aistudio.google.com/app/apikey)"
+            "`.streamlit/secrets.toml`:\n"
+            "```toml\nGOOGLE_API_KEY = \"AIza...\"\n```"
         )
         return
 
-    st.info(f"모델: **{model_name}** | 대상: **{food_type}** {len(df)}건")
+    auto_model = _get_available_model(api_key)
+    st.info(f"모델: **{auto_model}** (자동 감지) | 대상: **{food_type}** {len(df)}건")
 
     if not st.button("🔬 AI 분석 시작", key="btn_ai", type="primary",
                      use_container_width=True):
@@ -445,7 +455,7 @@ def render_ai_section(df: pd.DataFrame, food_type: str, model_name: str):
         box = st.empty()
         box.info("분석 중…")
         try:
-            text = _gemini(item["prompt"], model_name)
+            text = _gemini(item["prompt"], api_key)
             all_results[item["title"]] = text
             box.markdown(text)
         except Exception as e:
@@ -523,8 +533,8 @@ with st.sidebar:
     else:
         st.warning("GOOGLE_API_KEY 없음", icon="⚠️")
         st.caption("secrets.toml: GOOGLE_API_KEY = \"AIza...\"")
-    gemini_model = "gemini-2.0-flash-001"
-    st.caption("모델: gemini-2.0-flash-001")
+    gemini_model = get_gemini_key()   # api_key 전달용
+    st.caption("모델: 자동 감지 (gemini-2.0-flash 계열)")
 
     st.markdown("---")
     if st.button("🔄 캐시 초기화", use_container_width=True):
