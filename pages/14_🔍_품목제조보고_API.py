@@ -46,7 +46,7 @@ SERVICE_ID = "I1250"
 def get_base_url():
     return f"http://openapi.foodsafetykorea.go.kr/api/{get_food_api_key()}/{SERVICE_ID}/json"
 
-GEMINI_MODELS = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.5-flash-preview-04-17"]
+GEMINI_MODELS = ["gemini-2.0-flash"]  # 확인된 사용 모델
 
 FOOD_TYPES = {
     "음료류": [
@@ -502,7 +502,8 @@ with st.sidebar:
     else:
         st.warning("GOOGLE_API_KEY 없음", icon="⚠️")
         st.caption("secrets.toml: GOOGLE_API_KEY = \"AIza...\"")
-    gemini_model = st.selectbox("모델", GEMINI_MODELS, index=0)
+    gemini_model = "gemini-2.0-flash"
+    st.caption("모델: gemini-2.0-flash")
 
     st.markdown("---")
     if st.button("🔄 캐시 초기화", use_container_width=True):
