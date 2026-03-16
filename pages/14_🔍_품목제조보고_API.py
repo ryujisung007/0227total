@@ -15,11 +15,10 @@ from collections import Counter
 import re
 import time
 
-try:
-    import google.generativeai as genai
-    GENAI_AVAILABLE = True
-except ImportError:
-    GENAI_AVAILABLE = False
+import json
+
+# google-generativeai SDK 불필요 — REST API 직접 호출
+GENAI_AVAILABLE = True  # 항상 True (requests만 필요)
 
 
 # ══════════════════════════════════════════════════════
@@ -36,7 +35,7 @@ def _secret(*keys, default=""):
     return default
 
 FOOD_API_KEY = _secret("FOOD_SAFETY_API_KEY", default="9171f7ffd72f4ffcb62f")
-GEMINI_KEY   = _secret("GEMINI_API_KEY", "GOOGLE_API_KEY")
+GEMINI_KEY   = _secret("GOOGLE_API_KEY", "GEMINI_API_KEY", "google_api_key")
 SERVICE_ID   = "I1250"
 BASE_URL     = f"http://openapi.foodsafetykorea.go.kr/api/{FOOD_API_KEY}/{SERVICE_ID}/json"
 
@@ -253,8 +252,16 @@ def render_charts(df: pd.DataFrame, food_type: str):
 # ══════════════════════════════════════════════════════
 @st.cache_data(ttl=1800, show_spinner=False)
 def _gemini(prompt: str, model_name: str) -> str:
-    genai.configure(api_key=GEMINI_KEY)
-    return genai.GenerativeModel(model_name).generate_content(prompt).text
+    """Gemini REST API 직접 호출 (SDK 설치 불필요)"""
+    url = (
+        f"https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{model_name}:generateContent?key={GEMINI_KEY}"
+    )
+    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+    r = requests.post(url, headers={"Content-Type": "application/json"},
+                      json=payload, timeout=60)
+    r.raise_for_status()
+    return r.json()["candidates"][0]["content"]["parts"][0]["text"]
 
 
 def _ctx(df: pd.DataFrame, food_type: str) -> dict:
@@ -286,14 +293,11 @@ def render_ai_section(df: pd.DataFrame, food_type: str, model_name: str):
     st.markdown("---")
     st.markdown("## 🤖 AI 연구원 분석")
 
-    if not GENAI_AVAILABLE:
-        st.error("google-generativeai 미설치\n```bash\npip install google-generativeai\n```")
-        return
     if not GEMINI_KEY:
         st.warning(
             "**Gemini API 키 없음**\n\n"
-            "`.streamlit/secrets.toml`:\n"
-            "```toml\nGEMINI_API_KEY = \"AIza...\"\n```\n\n"
+            "`.streamlit/secrets.toml`에 아래 중 하나를 추가하세요:\n"
+            "```toml\nGOOGLE_API_KEY = \"AIza...\"\n```\n\n"
             "[🔑 Google AI Studio 무료 발급](https://aistudio.google.com/app/apikey)"
         )
         return
@@ -456,7 +460,8 @@ with st.sidebar:
     if GEMINI_KEY:
         st.success("API 키 연결됨", icon="✅")
     else:
-        st.warning("GEMINI_API_KEY 없음", icon="⚠️")
+        st.warning("GOOGLE_API_KEY 없음", icon="⚠️")
+        st.caption("secrets.toml: GOOGLE_API_KEY = \"AIza...\"")
     gemini_model = st.selectbox("모델", GEMINI_MODELS, index=0)
 
     st.markdown("---")
