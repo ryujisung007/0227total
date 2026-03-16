@@ -74,68 +74,88 @@ COL_MAP = {
 @st.cache_data(ttl=600, show_spinner=False)
 def fetch_by_filter(food_type: str, count: int) -> tuple:
     """
-    I1250 서버사이드 필터 단일 요청.
-    URL: BASE/1/count/PRDLST_DCNM=유형명
-    - 병렬 없음 → rate-limit/타임아웃 없음
-    - 서버가 해당 유형만 필터해서 반환
-    - 반환값: (rows, total, msg)
+    I1250 API 서버 타임아웃 해결 전략:
+      - 서버가 한 번에 100건+ 처리 시 자체 타임아웃(30초) 발생
+      - 해결: 1회 최대 30건씩 나눠서 순차 요청
+      - 조회 방식: START/END 슬라이딩 + PRDLST_DCNM 필터
     """
     import urllib.parse
 
-    # 한글 URL 인코딩
-    encoded = urllib.parse.quote(food_type.strip(), encoding="euc-kr", safe="")
-    url_euckr = f"{BASE_URL}/1/{count}/PRDLST_DCNM={encoded}"
+    CHUNK    = 30           # 1회 요청 건수 (서버 타임아웃 방지)
+    MAX_ITER = 20           # 최대 반복 횟수 (무한루프 방지)
+    headers  = {"Accept": "application/json"}
 
-    # UTF-8 인코딩도 시도
-    encoded_utf8 = urllib.parse.quote(food_type.strip(), encoding="utf-8", safe="")
-    url_utf8 = f"{BASE_URL}/1/{count}/PRDLST_DCNM={encoded_utf8}"
-
-    # 필터 없이 전체 조회 후 클라이언트 필터 (최후 수단)
-    url_plain = f"{BASE_URL}/1/{min(count * 10, 1000)}"
-
-    headers = {"Accept": "application/json"}
-
-    for label, url in [
-        ("EUC-KR 필터", url_euckr),
-        ("UTF-8 필터",  url_utf8),
-        ("전체조회+필터", url_plain),
-    ]:
+    # 인코딩 후보 (EUC-KR 우선, UTF-8 fallback)
+    enc_candidates = []
+    for enc in ("euc-kr", "utf-8"):
         try:
-            r = requests.get(url, headers=headers, timeout=30)
-            r.raise_for_status()
-            data   = r.json()
-            result = data.get(SERVICE_ID, {})
-            code   = result.get("RESULT", {}).get("CODE", "")
-
-            if code not in ("INFO-000", "INFO-200"):
-                continue
-
-            total = int(result.get("total_count", 0))
-            rows  = result.get("row", [])
-            if not rows:
-                continue
-
-            # 클라이언트 필터 (전체조회 fallback 시 필수, 필터 요청 시도 검증)
-            matched = [
-                row for row in rows
-                if row.get("PRDLST_DCNM", "").strip() == food_type.strip()
-            ]
-
-            # 서버필터 성공 판정: 일치율 80% 이상
-            match_rate = len(matched) / len(rows) if rows else 0
-            if match_rate >= 0.8:
-                return matched[:count], total, f"서버필터({label})"
-
-            # 전체조회 fallback: 일치 건 반환
-            if "전체조회" in label and matched:
-                return matched[:count], total, "전체조회+클라이언트필터"
-
-        except requests.exceptions.Timeout:
-            continue
+            enc_candidates.append(urllib.parse.quote(food_type.strip(),
+                                                     encoding=enc, safe=""))
         except Exception:
-            continue
+            pass
 
-    return [], 0, "조회 실패"
+    collected = []
+    total     = 0
+    src       = "미조회"
+    page      = 0
+
+    while len(collected) < count and page < MAX_ITER:
+        start = page * CHUNK + 1
+        end   = start + CHUNK - 1
+        page += 1
+
+        success = False
+        for encoded in enc_candidates:
+            url = f"{BASE_URL}/{start}/{end}/PRDLST_DCNM={encoded}"
+            try:
+                r = requests.get(url, headers=headers, timeout=25)
+                r.raise_for_status()
+                result = r.json().get(SERVICE_ID, {})
+                code   = result.get("RESULT", {}).get("CODE", "")
+                msg    = result.get("RESULT", {}).get("MSG", "")
+
+                # 서버 타임아웃 에러 → 청크 더 줄여서 재시도 불필요, 중단
+                if "시간 초과" in msg or code == "ERROR-500":
+                    break
+
+                if code == "INFO-200":      # 더 이상 데이터 없음
+                    return collected[:count], total, src
+
+                if code != "INFO-000":
+                    continue
+
+                total = int(result.get("total_count", total))
+                rows  = result.get("row", [])
+                if not rows:
+                    return collected[:count], total, src
+
+                # 서버필터 검증 (일치율 80%+)
+                matched    = [row for row in rows
+                              if row.get("PRDLST_DCNM","").strip() == food_type.strip()]
+                match_rate = len(matched) / len(rows) if rows else 0
+
+                if match_rate >= 0.8:
+                    collected.extend(matched)
+                    src     = f"서버필터 {CHUNK}건×{page}회"
+                    success = True
+                    break
+                else:
+                    # 서버필터 미작동 → 전체 중 클라이언트 필터
+                    collected.extend(matched)
+                    src     = f"클라이언트필터 {CHUNK}건×{page}회"
+                    success = True
+                    break
+
+            except requests.exceptions.Timeout:
+                continue
+            except Exception:
+                continue
+
+        if not success:
+            break   # 모든 인코딩 실패 → 중단
+
+    collected.sort(key=lambda r: r.get("PRMS_DT", ""), reverse=True)
+    return collected[:count], total, src
 
 
 def to_df(rows: list) -> pd.DataFrame:
