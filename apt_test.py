@@ -28,7 +28,7 @@ else:
     st.error("❌ API 키 없음 — secrets.toml 에 GOOGLE_API_KEY 추가 필요")
     st.stop()
 
-BASE = "https://generativelanguage.googleapis.com/v1beta/models"
+BASE = "https://generativelanguage.googleapis.com/v1/models"
 
 # ── 사용 가능한 모델 목록 자동 조회 ──
 @st.cache_data(ttl=3600)
@@ -51,15 +51,12 @@ with st.spinner("사용 가능한 모델 조회 중..."):
 
 # 우선순위 후보 목록 (최신 → 구버전 순)
 CANDIDATES = [
+    "gemini-2.0-flash",
+    "gemini-2.0-flash-lite",
+    "gemini-1.5-flash",
+    "gemini-1.5-pro",
     "gemini-2.5-flash-preview-04-17",
     "gemini-2.5-pro-preview-03-25",
-    "gemini-2.0-flash-lite",
-    "gemini-2.0-flash-001",
-    "gemini-2.0-flash-exp",
-    "gemini-1.5-flash",
-    "gemini-1.5-flash-latest",
-    "gemini-1.5-flash-001",
-    "gemini-1.5-pro",
 ]
 
 if available:
