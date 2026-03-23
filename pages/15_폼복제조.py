@@ -1,8 +1,8 @@
 """
-식품안전나라 품목제조보고 조회 v6
+식품안전나라 품목제조보고 조회 v6.1
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 v6: 조회 간소화 — PRDLST_DCNM 서버필터 1회 방식
-    fallback 체인·CHNG_DT·match_rate 검증 모두 제거
+v6.1: HTTP/HTTPS 자동 전환 + 응답 디버깅 강화
 """
 
 import streamlit as st
@@ -41,8 +41,32 @@ def get_gemini_key():
 
 SERVICE_ID = "I1250"
 
+API_BASE_URLS = [
+    "http://openapi.foodsafetykorea.go.kr/api",
+    "https://openapi.foodsafetykorea.go.kr/api",
+]
+
 def get_base_url():
-    return f"http://openapi.foodsafetykorea.go.kr/api/{get_food_api_key()}/{SERVICE_ID}/json"
+    """작동하는 프로토콜(HTTP/HTTPS) 자동 감지"""
+    key = get_food_api_key()
+    if "working_base_url" in st.session_state:
+        return st.session_state["working_base_url"]
+
+    for base in API_BASE_URLS:
+        test_url = f"{base}/{key}/{SERVICE_ID}/json/1/1"
+        try:
+            r = requests.get(test_url, timeout=10)
+            if r.status_code == 200 and r.text.strip().startswith("{"):
+                url = f"{base}/{key}/{SERVICE_ID}/json"
+                st.session_state["working_base_url"] = url
+                return url
+        except Exception:
+            continue
+
+    url = f"{API_BASE_URLS[0]}/{key}/{SERVICE_ID}/json"
+    st.session_state["working_base_url"] = url
+    return url
+
 
 FOOD_TYPES = {
     "당류 및 잼류": [
@@ -158,54 +182,81 @@ COL_MAP = {
 
 
 # ══════════════════════════════════════════════════════
-#  조회 — 간소화 (PRDLST_DCNM 서버필터 1회)
+#  API 호출 헬퍼
 # ══════════════════════════════════════════════════════
 def _norm(s: str) -> str:
     return s.strip().replace("·", ".").replace(" ", "").lower()
 
 
+def _api_get(url: str):
+    """API GET → (json_dict, error_msg)"""
+    try:
+        r = requests.get(url, timeout=30)
+    except requests.exceptions.Timeout:
+        return None, "응답 시간 초과 (30초)"
+    except requests.exceptions.ConnectionError as e:
+        return None, f"서버 연결 실패: {e}"
+    except Exception as e:
+        return None, f"요청 오류: {e}"
+
+    if r.status_code != 200:
+        return None, f"HTTP {r.status_code}: {r.text[:200]}"
+
+    raw = r.text.strip()
+    if not raw:
+        return None, f"빈 응답 (HTTP {r.status_code})"
+
+    if raw.startswith("<") or raw.startswith("<!"):
+        return None, f"HTML 응답 (API 서버 오류): {raw[:150]}"
+
+    try:
+        return r.json(), None
+    except Exception:
+        return None, f"JSON 파싱 실패: {raw[:200]}"
+
+
+# ══════════════════════════════════════════════════════
+#  조회 — 간소화 (PRDLST_DCNM 서버필터 1회)
+# ══════════════════════════════════════════════════════
 def fetch_food_data(food_type: str, top_n: int = 100,
                     prdlst_nm: str = "",
                     prog_bar=None, status_text=None):
-    """
-    간소화 조회 — PRDLST_DCNM 서버 필터 1회 방식
-    ① total_count 확인
-    ② 1000건 단위 페이지네이션으로 top_n건 수집
-    ③ PRDLST_DCNM 일치 검증 + 최신순 정렬
-    """
     base_url   = get_base_url()
     t_start    = time.time()
     norm_type  = _norm(food_type)
     page_size  = 1000
     collected  = []
 
-    # URL 파라미터
     encoded_type = urllib.parse.quote(food_type.strip(), safe="")
     params_str   = f"PRDLST_DCNM={encoded_type}"
     if prdlst_nm.strip():
         encoded_nm  = urllib.parse.quote(prdlst_nm.strip(), safe="")
         params_str += f"&PRDLST_NM={encoded_nm}"
 
-    # 1) total_count 확인
+    # 1) total_count
     probe_url = f"{base_url}/1/1/{params_str}"
-    try:
-        r = requests.get(probe_url, timeout=30)
-        r.raise_for_status()
-        data = r.json()
-        total = int(data[SERVICE_ID].get("total_count", 0))
-    except Exception as e:
-        return [], f"API 연결 실패: {e}", 0, 0
+    if status_text:
+        status_text.markdown(f"📡 API 연결 확인 중…")
 
+    data, err = _api_get(probe_url)
+    if err:
+        return [], f"API 연결 실패: {err}", 0, 0
+
+    if SERVICE_ID not in data:
+        detail = json.dumps(data, ensure_ascii=False)[:300]
+        return [], f"API 응답 오류: {detail}", 0, 0
+
+    total = int(data[SERVICE_ID].get("total_count", 0))
     if total == 0:
         return [], f"'{food_type}' 조회 결과 0건", 0, 0
 
     if status_text:
         status_text.markdown(
             f"📡 **{food_type}** 전체 {total:,}건 → "
-            f"최신 {min(top_n, total)}건 수집 시작"
+            f"최신 {min(top_n, total)}건 수집"
         )
 
-    # 2) 페이지네이션 수집
+    # 2) 페이지네이션
     cursor = 1
     page   = 0
 
@@ -214,7 +265,6 @@ def fetch_food_data(food_type: str, top_n: int = 100,
         p_e = min(cursor + page_size - 1, total)
         url = f"{base_url}/{p_s}/{p_e}/{params_str}"
 
-        # 진행률
         elapsed = time.time() - t_start
         pct     = min(len(collected) / max(top_n, 1), 0.99)
         if prog_bar:
@@ -230,10 +280,8 @@ def fetch_food_data(food_type: str, top_n: int = 100,
                 f"⏱ {elapsed:.0f}초"
             )
 
-        try:
-            r = requests.get(url, timeout=30)
-            data = r.json()
-        except Exception:
+        data, err = _api_get(url)
+        if err:
             cursor += page_size
             page += 1
             time.sleep(0.3)
@@ -275,7 +323,6 @@ def fetch_food_data(food_type: str, top_n: int = 100,
 
 
 def fetch_multiple(types_list: list, per_type: int):
-    """복수 유형 순차 조회"""
     all_rows, status = [], {}
     prog        = st.progress(0.0)
     status_text = st.empty()
@@ -285,8 +332,7 @@ def fetch_multiple(types_list: list, per_type: int):
         status_text.markdown(f"📡 **{ft}** 조회 중… ({i+1}/{len(types_list)})")
         rows, msg, total, _ = fetch_food_data(ft, top_n=per_type)
         status[ft] = {
-            "msg":     msg or "",
-            "total":   total,
+            "msg": msg or "", "total": total,
             "fetched": len(rows) if rows else 0,
         }
         if rows:
@@ -318,61 +364,47 @@ def to_df(rows: list) -> pd.DataFrame:
 def render_charts(df: pd.DataFrame, food_type: str):
     st.markdown("### 📊 데이터 분석")
     c1, c2 = st.columns(2)
-
     if "제조사" in df.columns:
         with c1:
             mc = df["제조사"].value_counts().head(15)
-            fig = px.bar(
-                x=mc.values, y=mc.index, orientation="h",
-                title="제조사별 제품 수 (상위 15)",
-                color=mc.values, color_continuous_scale="Blues",
-                labels={"x": "제품 수", "y": "제조사"},
-            )
-            fig.update_layout(
-                height=400, showlegend=False,
-                yaxis=dict(autorange="reversed"),
-            )
+            fig = px.bar(x=mc.values, y=mc.index, orientation="h",
+                         title="제조사별 제품 수 (상위 15)",
+                         color=mc.values, color_continuous_scale="Blues",
+                         labels={"x": "제품 수", "y": "제조사"})
+            fig.update_layout(height=400, showlegend=False,
+                              yaxis=dict(autorange="reversed"))
             fig.update_coloraxes(showscale=False)
             st.plotly_chart(fig, use_container_width=True)
-
     if "보고일자_dt" in df.columns:
         with c2:
             tmp = df.dropna(subset=["보고일자_dt"]).copy()
             if not tmp.empty:
                 tmp["연월"] = tmp["보고일자_dt"].dt.to_period("M").astype(str)
                 mo = tmp["연월"].value_counts().sort_index().tail(24)
-                fig2 = px.area(
-                    x=mo.index, y=mo.values,
-                    title="월별 신규 보고 건수 (최근 24개월)",
-                    labels={"x": "연월", "y": "건수"},
-                )
+                fig2 = px.area(x=mo.index, y=mo.values,
+                               title="월별 신규 보고 건수 (최근 24개월)",
+                               labels={"x": "연월", "y": "건수"})
                 fig2.update_traces(fill="tozeroy", line_color="#1975BC")
                 fig2.update_layout(height=400)
                 st.plotly_chart(fig2, use_container_width=True)
-
     c3, c4 = st.columns(2)
     if "생산종료" in df.columns:
         with c3:
             pc = df["생산종료"].value_counts()
-            fig3 = px.pie(
-                values=pc.values, names=pc.index,
-                title="생산종료 현황",
-                color_discrete_sequence=px.colors.qualitative.Set2,
-            )
+            fig3 = px.pie(values=pc.values, names=pc.index,
+                          title="생산종료 현황",
+                          color_discrete_sequence=px.colors.qualitative.Set2)
             fig3.update_layout(height=320)
             st.plotly_chart(fig3, use_container_width=True)
-
     if "제조사" in df.columns:
         with c4:
             top10  = df["제조사"].value_counts().head(10)
             others = max(0, len(df) - top10.sum())
             labels = list(top10.index) + (["기타"] if others > 0 else [])
             values = list(top10.values) + ([others] if others > 0 else [])
-            fig4 = px.pie(
-                values=values, names=labels,
-                title="제조사 점유율 (상위 10)",
-                color_discrete_sequence=px.colors.qualitative.Pastel,
-            )
+            fig4 = px.pie(values=values, names=labels,
+                          title="제조사 점유율 (상위 10)",
+                          color_discrete_sequence=px.colors.qualitative.Pastel)
             fig4.update_layout(height=320)
             st.plotly_chart(fig4, use_container_width=True)
 
@@ -381,12 +413,9 @@ def render_charts(df: pd.DataFrame, food_type: str):
 #  AI 분석
 # ══════════════════════════════════════════════════════
 GEMINI_CANDIDATES = [
-    "gemini-2.5-pro",
-    "gemini-2.5-flash",
-    "gemini-1.5-pro",
-    "gemini-1.5-flash",
+    "gemini-2.5-pro", "gemini-2.5-flash",
+    "gemini-1.5-pro", "gemini-1.5-flash",
 ]
-
 
 def _gemini(prompt: str, api_key: str) -> str:
     BASE = "https://generativelanguage.googleapis.com/v1/models"
@@ -403,8 +432,7 @@ def _gemini(prompt: str, api_key: str) -> str:
                 msg = r.json().get("error", {}).get("message", "Bad Request")
                 raise RuntimeError(f"프롬프트 오류 (400): {msg}")
             if r.status_code == 429:
-                msg = r.json().get("error", {}).get("message", "Rate limited")
-                last_err = f"{model}: 429 — {msg}"
+                last_err = f"{model}: 429 spending cap"
                 continue
             if r.status_code == 404 or "no longer available" in r.text:
                 last_err = f"{model}: deprecated"
@@ -413,118 +441,62 @@ def _gemini(prompt: str, api_key: str) -> str:
             return r.json()["candidates"][0]["content"]["parts"][0]["text"]
         except RuntimeError:
             raise
-        except requests.exceptions.HTTPError as e:
-            last_err = f"{model}: {e}"
-            continue
         except Exception as e:
             last_err = f"{model}: {e}"
             continue
-    raise RuntimeError(f"모든 모델 실패. 마지막 오류: {last_err}")
+    raise RuntimeError(f"모든 모델 실패: {last_err}")
 
 
-def _ctx(df: pd.DataFrame, food_type: str) -> dict:
+def _ctx(df, food_type):
     monthly = {}
     if "보고일자_dt" in df.columns:
         tmp = df.dropna(subset=["보고일자_dt"]).copy()
         if not tmp.empty:
             tmp["연월"] = tmp["보고일자_dt"].dt.to_period("M").astype(str)
             monthly = tmp["연월"].value_counts().sort_index().tail(12).to_dict()
-
-    maker_top = (
-        df["제조사"].value_counts().head(5).to_dict()
-        if "제조사" in df.columns else {}
-    )
+    maker_top = df["제조사"].value_counts().head(5).to_dict() if "제조사" in df.columns else {}
     maker_n = df["제조사"].nunique() if "제조사" in df.columns else "N/A"
-
     recent = []
     if "제품명" in df.columns:
         cols = [c for c in ["제품명", "보고일자"] if c in df.columns]
         recent = df[cols].head(10).to_dict(orient="records")
-
     kw_freq = {}
     if "제품명" in df.columns:
-        words = re.findall(
-            r"[가-힣a-zA-Z]{2,}",
-            " ".join(df["제품명"].dropna().astype(str)),
-        )
+        words = re.findall(r"[가-힣a-zA-Z]{2,}",
+                           " ".join(df["제품명"].dropna().astype(str)))
         kw_freq = dict(Counter(words).most_common(15))
-
-    return dict(
-        food_type=food_type, total=len(df),
-        monthly=monthly, maker_top=maker_top,
-        maker_n=maker_n, recent=recent, kw_freq=kw_freq,
-    )
+    return dict(food_type=food_type, total=len(df), monthly=monthly,
+                maker_top=maker_top, maker_n=maker_n, recent=recent, kw_freq=kw_freq)
 
 
-def render_ai_section(df: pd.DataFrame, food_type: str, api_key: str):
+def render_ai_section(df, food_type, api_key):
     st.markdown("---")
     st.markdown("## 🤖 AI 연구원 분석")
-
     if not api_key:
-        st.warning(
-            "**Gemini API 키 없음**\n\n"
-            "`.streamlit/secrets.toml`:\n"
-            "```toml\nGOOGLE_API_KEY = \"AIza...\"\n```"
-        )
+        st.warning("**Gemini API 키 없음**\n\n`.streamlit/secrets.toml`:\n```toml\nGOOGLE_API_KEY = \"AIza...\"\n```")
         return
-
     st.info(f"모델: **gemini-2.5-pro 우선** | 대상: **{food_type}** {len(df)}건")
-
-    if not st.button("🔬 AI 분석 시작", key="btn_ai", type="primary",
-                     use_container_width=True):
+    if not st.button("🔬 AI 분석 시작", key="btn_ai", type="primary", use_container_width=True):
         return
-
     ctx = _ctx(df, food_type)
-
     prefix = (
         f"식품 R&D 전문가로서 아래 데이터를 분석하세요.\n"
-        f"카테고리: {food_type} | 조회건수: {ctx['total']}건 | "
-        f"제조사: {ctx['maker_n']}개\n"
+        f"카테고리: {food_type} | 조회건수: {ctx['total']}건 | 제조사: {ctx['maker_n']}개\n"
         f"월별추이(최근12개월): {ctx['monthly']}\n"
         f"주요제조사(상위5): {ctx['maker_top']}\n"
         f"최신제품(10건): {ctx['recent']}\n"
         f"키워드빈도(상위15): {ctx['kw_freq']}\n\n"
     )
-
     analyses = [
-        {
-            "title": "📈 시장 트렌드 분석",
-            "prompt": prefix + (
-                "위 데이터를 바탕으로 한국어로 분석하세요 (각 항목 3문장):\n"
-                "1. 시장 성장성\n2. 경쟁 구도\n"
-                "3. 출시 패턴\n4. R&D 시사점"
-            ),
-        },
-        {
-            "title": "🍋 플레이버 & 원료 트렌드",
-            "prompt": prefix + (
-                "위 제품명 키워드를 바탕으로 한국어로 분석하세요 (각 항목 3문장):\n"
-                "1. 주요 플레이버 트렌드\n2. 기능성 원료 트렌드\n"
-                "3. 신흥 플레이버\n4. 포뮬레이션 방향 제언"
-            ),
-        },
-        {
-            "title": "🧪 추천 레시피 3종",
-            "prompt": prefix + (
-                f"위 트렌드를 반영한 {food_type} 신제품 레시피 3종을 제안하세요.\n"
-                "각 레시피:\n"
-                "- 제품명 / 컨셉 / 타겟\n"
-                "- 주요 원료 및 배합비(%) — 합계 100%\n"
-                "- 예상 규격(pH/Brix/칼로리)\n"
-                "- 차별화 포인트"
-            ),
-        },
-        {
-            "title": "💡 종합 R&D 인사이트",
-            "prompt": prefix + (
-                "위 데이터를 바탕으로 한국어로 작성하세요 (각 항목 3문장):\n"
-                "1. 시장 기회(틈새)\n2. 리스크 요인\n"
-                "3. 즉시 출시 추천 컨셉(6개월 내)\n"
-                "4. 중장기 R&D 방향(1~3년)"
-            ),
-        },
+        {"title": "📈 시장 트렌드 분석",
+         "prompt": prefix + "위 데이터를 바탕으로 한국어로 분석하세요 (각 항목 3문장):\n1. 시장 성장성\n2. 경쟁 구도\n3. 출시 패턴\n4. R&D 시사점"},
+        {"title": "🍋 플레이버 & 원료 트렌드",
+         "prompt": prefix + "위 제품명 키워드를 바탕으로 한국어로 분석하세요 (각 항목 3문장):\n1. 주요 플레이버 트렌드\n2. 기능성 원료 트렌드\n3. 신흥 플레이버\n4. 포뮬레이션 방향 제언"},
+        {"title": "🧪 추천 레시피 3종",
+         "prompt": prefix + f"위 트렌드를 반영한 {food_type} 신제품 레시피 3종을 제안하세요.\n각 레시피:\n- 제품명 / 컨셉 / 타겟\n- 주요 원료 및 배합비(%) — 합계 100%\n- 예상 규격(pH/Brix/칼로리)\n- 차별화 포인트"},
+        {"title": "💡 종합 R&D 인사이트",
+         "prompt": prefix + "위 데이터를 바탕으로 한국어로 작성하세요 (각 항목 3문장):\n1. 시장 기회(틈새)\n2. 리스크 요인\n3. 즉시 출시 추천 컨셉(6개월 내)\n4. 중장기 R&D 방향(1~3년)"},
     ]
-
     all_results = {}
     for item in analyses:
         st.markdown(f"#### {item['title']}")
@@ -539,63 +511,44 @@ def render_ai_section(df: pd.DataFrame, food_type: str, api_key: str):
             all_results[item["title"]] = msg
             box.error(msg)
         st.markdown("")
-
     if all_results:
-        full = "\n\n---\n\n".join(
-            f"{t}\n\n{c}" for t, c in all_results.items()
-        )
-        st.download_button(
-            "📥 AI 분석 전체 다운로드 (TXT)",
-            full.encode("utf-8"),
-            f"{food_type}_AI분석_{datetime.now().strftime('%Y%m%d_%H%M')}.txt",
-            "text/plain",
-            use_container_width=True,
-        )
+        full = "\n\n---\n\n".join(f"{t}\n\n{c}" for t, c in all_results.items())
+        st.download_button("📥 AI 분석 전체 다운로드 (TXT)", full.encode("utf-8"),
+                           f"{food_type}_AI분석_{datetime.now().strftime('%Y%m%d_%H%M')}.txt",
+                           "text/plain", use_container_width=True)
 
 
 # ══════════════════════════════════════════════════════
-#  스타일
+#  스타일 + 사이드바 + 메인
 # ══════════════════════════════════════════════════════
 st.markdown("""
 <style>
 [data-testid="stSidebar"] { background: #f8f9fb; }
-div[data-testid="stMetric"] {
-    background: #f0f2f5; border-radius: 10px; padding: 12px;
-}
+div[data-testid="stMetric"] { background: #f0f2f5; border-radius: 10px; padding: 12px; }
 </style>
 """, unsafe_allow_html=True)
 
-
-# ══════════════════════════════════════════════════════
-#  사이드바 — 간소화 (max_pages·CHNG_DT 제거)
-# ══════════════════════════════════════════════════════
 with st.sidebar:
     st.markdown("## 🔍 조회 설정")
     st.markdown("---")
-
     mode = st.radio("조회 방식", ["📋 단일 유형 조회", "📊 복수 유형 비교"])
     st.markdown("---")
 
     if mode == "📋 단일 유형 조회":
         category  = st.selectbox("카테고리", list(FOOD_TYPES.keys()))
         food_type = st.selectbox("식품유형", FOOD_TYPES[category])
-        prdlst_nm = st.text_input(
-            "🔍 제품명 검색 (선택)",
-            placeholder="예: 제로, 비타민, 콜라겐…",
-            help="입력 시 PRDLST_NM 파라미터로 서버에서 직접 필터링",
-        )
+        prdlst_nm = st.text_input("🔍 제품명 검색 (선택)",
+                                  placeholder="예: 제로, 비타민, 콜라겐…",
+                                  help="PRDLST_NM 파라미터로 서버 필터링")
         count = st.slider("조회 건수", 10, 300, 100, step=10)
-
     else:
         st.markdown("**비교할 유형 선택:**")
         selected_types = []
         for cat, types in FOOD_TYPES.items():
             with st.expander(cat, expanded=(cat == "음료 및 다류")):
                 for t in types:
-                    if st.checkbox(
-                        t, key=f"cb_{t}",
-                        value=t in ["혼합음료", "과.채주스", "탄산음료"],
-                    ):
+                    if st.checkbox(t, key=f"cb_{t}",
+                                   value=t in ["혼합음료", "과.채주스", "탄산음료"]):
                         selected_types.append(t)
         per_type = st.slider("유형별 조회 건수", 10, 50, 20, step=5)
 
@@ -614,72 +567,48 @@ with st.sidebar:
     st.markdown("---")
     if st.button("🔄 캐시 초기화", use_container_width=True):
         st.cache_data.clear()
+        if "working_base_url" in st.session_state:
+            del st.session_state["working_base_url"]
         st.success("완료")
     st.caption("📡 식품안전나라 I1250")
     st.caption("⚠️ 일일 2,000회 호출 제한")
 
 
-# ══════════════════════════════════════════════════════
-#  session_state 초기화
-# ══════════════════════════════════════════════════════
-for _k, _v in {
-    "result_df": None,
-    "result_label": "",
-    "result_total": 0,
-    "result_src": "",
-    "result_mode": "",
-    "status_msgs": {},
-}.items():
+for _k, _v in {"result_df": None, "result_label": "", "result_total": 0,
+               "result_src": "", "result_mode": "", "status_msgs": {}}.items():
     if _k not in st.session_state:
         st.session_state[_k] = _v
 
 
-# ══════════════════════════════════════════════════════
-#  메인
-# ══════════════════════════════════════════════════════
 st.markdown("# 🏭 식품안전나라 품목제조보고 조회")
 st.markdown("---")
 
 if run:
     if mode == "📋 단일 유형 조회":
         t0 = time.time()
-        search_label = f"**{food_type}**" + (
-            f" / 제품명: **{prdlst_nm}**" if prdlst_nm.strip() else ""
-        )
+        search_label = f"**{food_type}**" + (f" / 제품명: **{prdlst_nm}**" if prdlst_nm.strip() else "")
         st.info(f"📡 {search_label} 조회 중…")
         prog_bar    = st.progress(0.0)
         status_text = st.empty()
-
         rows, src, total, _ = fetch_food_data(
-            food_type,
-            top_n=count,
-            prdlst_nm=prdlst_nm,
-            prog_bar=prog_bar,
-            status_text=status_text,
+            food_type, top_n=count, prdlst_nm=prdlst_nm,
+            prog_bar=prog_bar, status_text=status_text,
         )
         elapsed = time.time() - t0
         prog_bar.empty()
         status_text.empty()
-
         if not rows:
             st.error(f"❌ 조회 실패: {src}")
         else:
             df = to_df(rows)
-            result_label = food_type + (
-                f" [{prdlst_nm}]" if prdlst_nm.strip() else ""
-            )
+            result_label = food_type + (f" [{prdlst_nm}]" if prdlst_nm.strip() else "")
             st.session_state.update({
-                "result_df": df,
-                "result_label": result_label,
+                "result_df": df, "result_label": result_label,
                 "result_total": total,
-                "result_src": (
-                    f"✅ **{len(df)}건** | {elapsed:.1f}초 | {src}"
-                ),
-                "result_mode": "single",
-                "status_msgs": {},
+                "result_src": f"✅ **{len(df)}건** | {elapsed:.1f}초 | {src}",
+                "result_mode": "single", "status_msgs": {},
             })
-
-    else:  # 복수 유형
+    else:
         if not selected_types:
             st.warning("⚠️ 유형을 1개 이상 선택하세요.")
         else:
@@ -687,22 +616,13 @@ if run:
             all_rows, status = fetch_multiple(selected_types, per_type)
             elapsed = time.time() - t0
             df = to_df(all_rows)
-            label = ", ".join(selected_types[:3]) + (
-                "…" if len(selected_types) > 3 else ""
-            )
+            label = ", ".join(selected_types[:3]) + ("…" if len(selected_types) > 3 else "")
             st.session_state.update({
-                "result_df": df,
-                "result_label": label,
-                "result_total": 0,
-                "result_src": (
-                    f"✅ {len(selected_types)}개 유형 완료 | "
-                    f"{elapsed:.1f}초 | {len(df)}건"
-                ),
-                "result_mode": "multi",
-                "status_msgs": status,
+                "result_df": df, "result_label": label, "result_total": 0,
+                "result_src": f"✅ {len(selected_types)}개 유형 완료 | {elapsed:.1f}초 | {len(df)}건",
+                "result_mode": "multi", "status_msgs": status,
             })
 
-# ── 결과 렌더링 ──
 df     = st.session_state["result_df"]
 r_mode = st.session_state["result_mode"]
 r_lbl  = st.session_state["result_label"]
@@ -712,14 +632,10 @@ smsgs  = st.session_state["status_msgs"]
 
 if df is None:
     st.info("👈 사이드바에서 식품유형을 선택하고 **[조회 실행]**을 누르세요.")
-
 elif df.empty:
     st.warning(f"⚠️ **'{r_lbl}'** 결과 없음 — 식품유형명을 확인하세요.")
-
 else:
     st.success(r_src)
-
-    # 복수 유형 요약
     if smsgs:
         cols = st.columns(min(len(smsgs), 6))
         for i, (ft, info) in enumerate(smsgs.items()):
@@ -727,57 +643,36 @@ else:
                 st.metric(ft, f"{info['fetched']}건", f"전체 {info['total']:,}건")
         st.markdown("---")
 
-    # 상단 메트릭
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("조회 결과", f"{len(df)}건")
     if r_mode == "single":
         m2.metric("전체 DB", f"{r_tot:,}건")
         m3.metric("식품유형", r_lbl)
     else:
-        m2.metric(
-            "유형 수",
-            f"{df['식품유형'].nunique()}개" if "식품유형" in df.columns else "-",
-        )
+        m2.metric("유형 수", f"{df['식품유형'].nunique()}개" if "식품유형" in df.columns else "-")
         m3.metric("카테고리", r_lbl)
     if "제조사" in df.columns:
         m4.metric("제조사 수", f"{df['제조사'].nunique()}개")
 
     st.markdown("---")
-
-    # 탭
     tab1, tab2, tab3 = st.tabs(["📋 제품 목록", "📊 분석 차트", "📥 원시 데이터"])
 
     with tab1:
         ca, cb = st.columns(2)
         with ca:
-            kw = st.text_input(
-                "🔎 검색", placeholder="제품명·제조사·원재료", key="kw_input"
-            )
+            kw = st.text_input("🔎 검색", placeholder="제품명·제조사·원재료", key="kw_input")
         with cb:
-            makers = (
-                ["전체"] + sorted(df["제조사"].dropna().unique().tolist())
-                if "제조사" in df.columns
-                else ["전체"]
-            )
+            makers = (["전체"] + sorted(df["제조사"].dropna().unique().tolist())
+                      if "제조사" in df.columns else ["전체"])
             sel_mk = st.selectbox("제조사 필터", makers, key="maker_sel")
-
         fdf = df.copy()
         if kw:
             fdf = fdf[fdf.apply(lambda r: kw.lower() in str(r).lower(), axis=1)]
         if "제조사" in df.columns and sel_mk != "전체":
             fdf = fdf[fdf["제조사"] == sel_mk]
-
-        sc = [
-            c for c in [
-                "제품명", "식품유형", "제조사", "보고일자",
-                "주요원재료", "유통기한", "생산종료",
-            ]
-            if c in fdf.columns
-        ]
-        st.dataframe(
-            fdf[sc].reset_index(drop=True),
-            use_container_width=True, height=480,
-        )
+        sc = [c for c in ["제품명", "식품유형", "제조사", "보고일자",
+                           "주요원재료", "유통기한", "생산종료"] if c in fdf.columns]
+        st.dataframe(fdf[sc].reset_index(drop=True), use_container_width=True, height=480)
         st.caption(f"총 {len(fdf)}건 표시")
 
     with tab2:
@@ -786,13 +681,8 @@ else:
     with tab3:
         st.dataframe(df, use_container_width=True, height=480)
         csv = df.to_csv(index=False).encode("utf-8-sig")
-        st.download_button(
-            "📥 CSV 다운로드",
-            csv,
-            f"{r_lbl}_{datetime.now().strftime('%Y%m%d')}.csv",
-            "text/csv",
-            use_container_width=True,
-        )
+        st.download_button("📥 CSV 다운로드", csv,
+                           f"{r_lbl}_{datetime.now().strftime('%Y%m%d')}.csv",
+                           "text/csv", use_container_width=True)
 
-    # AI 분석
     render_ai_section(df, r_lbl, gemini_key)
