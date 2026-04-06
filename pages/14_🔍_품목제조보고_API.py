@@ -1,13 +1,12 @@
 """
-품목제조보고 조회 v8
-━━━━━━━━━━━━━━━━━━
+품목제조보고 API 조회 v8
+━━━━━━━━━━━━━━━━━━━━━━
 Cloud(requests) + 로컬(curl fallback) 자동 전환
+pages/ 폴더 호환 — 멀티페이지 앱용
 """
 import streamlit as st
 import pandas as pd
 import json, os, time, subprocess, urllib.parse
-
-st.set_page_config("품목제조보고", "🏭", layout="wide")
 
 SERVICE  = "I1250"
 API_BASE = "http://openapi.foodsafetykorea.go.kr/api"
@@ -48,13 +47,10 @@ COL = {
 }
 
 
-# ══════════════════════════════════════════════════════
-#  API 호출 — requests 우선, curl fallback
-# ══════════════════════════════════════════════════════
+# ── API 호출 ──
 def _try_requests(url):
-    """Streamlit Cloud / Colab 등 클라우드 환경용"""
-    import requests as req
-    s = req.Session()
+    import requests
+    s = requests.Session()
     s.trust_env = False
     r = s.get(url, timeout=(10, 30),
               proxies={"http": None, "https": None},
@@ -64,38 +60,30 @@ def _try_requests(url):
 
 
 def _try_curl(url):
-    """로컬 PC용 — Windows/Mac/Linux curl"""
-    env = {k: v for k, v in os.environ.items()
-           if "proxy" not in k.lower()}
+    env = {k: v for k, v in os.environ.items() if "proxy" not in k.lower()}
     if os.name == "nt":
         env.setdefault("SYSTEMROOT", r"C:\Windows")
     r = subprocess.run(
         ["curl", "-s", "-m", "60", "--connect-timeout", "15",
          "--noproxy", "*", "-4", url],
-        capture_output=True, timeout=65, env=env,
-    )
+        capture_output=True, timeout=65, env=env)
     if r.returncode != 0:
         raise RuntimeError(f"curl code {r.returncode}")
-    raw = r.stdout.decode("utf-8", errors="replace").strip()
-    return json.loads(raw)
+    return json.loads(r.stdout.decode("utf-8", errors="replace"))
 
 
 def api_get(url):
-    """requests → curl 자동 전환"""
-    # 1차: requests
     try:
         return _try_requests(url)
     except Exception:
         pass
-    # 2차: curl
     try:
         return _try_curl(url)
     except Exception as e:
-        raise RuntimeError(f"API 연결 실패 (requests+curl 모두): {e}")
+        raise RuntimeError(f"연결 실패: {e}")
 
 
 def fetch(api_key, food_type, count):
-    """데이터 수집 — 1회 호출"""
     enc = urllib.parse.quote(food_type.strip(), safe=".")
     url = f"{API_BASE}/{api_key}/{SERVICE}/json/1/{count}/PRDLST_DCNM={enc}"
     data = api_get(url)
@@ -107,19 +95,15 @@ def fetch(api_key, food_type, count):
         raise RuntimeError(f"API 오류: {body.get('RESULT', {})}")
     rows  = body.get("row", [])
     total = body.get("total_count", "0")
-    # 식품유형 일치 검증
     norm = food_type.strip().replace("·", ".").lower()
     rows = [r for r in rows
             if r.get("PRDLST_DCNM", "").strip().replace("·", ".").lower() == norm]
     return rows, total
 
 
-# ══════════════════════════════════════════════════════
-#  UI
-# ══════════════════════════════════════════════════════
+# ── UI ──
 st.title("🏭 품목제조보고 조회")
 
-# 사이드바
 with st.sidebar:
     st.markdown("### 설정")
     api_key = st.text_input("🔑 API 키", value="9171f7ffd72f4ffcb62f", type="password")
@@ -149,14 +133,12 @@ if run:
     if "최종수정" in df.columns:
         df = df.sort_values("최종수정", ascending=False).reset_index(drop=True)
 
-    # 요약
-    st.success(f"✅ **{len(df)}건** | {elapsed:.1f}초 | 전체 DB {total}건")
+    st.success(f"✅ **{len(df)}건** | {elapsed:.1f}초 | 전체 DB {int(total):,}건")
     c1, c2, c3 = st.columns(3)
     c1.metric("조회 건수", f"{len(df)}건")
     c2.metric("제조사 수", f"{df['제조사'].nunique()}개" if "제조사" in df.columns else "-")
     c3.metric("전체 DB", f"{int(total):,}건")
 
-    # 테이블
     st.markdown("---")
     kw = st.text_input("🔎 검색", placeholder="제품명·제조사·원재료")
     show_cols = [c for c in ["제품명","제조사","보고일자","유통기한","원재료","생산종료"]
@@ -168,7 +150,6 @@ if run:
                  use_container_width=True, height=500)
     st.caption(f"총 {len(fdf)}건")
 
-    # 차트
     if "제조사" in df.columns:
         import plotly.express as px
         st.markdown("### 📊 제조사별 제품 수")
@@ -181,12 +162,7 @@ if run:
         fig.update_coloraxes(showscale=False)
         st.plotly_chart(fig, use_container_width=True)
 
-    # CSV
     csv = df.to_csv(index=False).encode("utf-8-sig")
     st.download_button("📥 CSV 다운로드", csv,
                        f"{food_type}_{time.strftime('%Y%m%d')}.csv",
                        "text/csv", use_container_width=True)
-
-    # 세션 저장 (다른 탭에서 활용 가능)
-    st.session_state["last_df"] = df
-    st.session_state["last_type"] = food_type
