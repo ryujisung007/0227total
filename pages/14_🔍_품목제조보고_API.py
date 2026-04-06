@@ -3,7 +3,7 @@
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 v6: 조회 간소화 — PRDLST_DCNM 서버필터 1회 방식
 v6.1: HTTP/HTTPS 자동 전환 + 응답 디버깅 강화
-v6.2: 마침표 인코딩 + API키 입력 + 프록시 자동우회 + 연결 진단
+v6.2: IPv4 강제 + curl fallback + 마침표 인코딩 + API키 입력 + 연결 진단
 """
 
 import streamlit as st
@@ -193,12 +193,26 @@ COL_MAP = {
 # ══════════════════════════════════════════════════════
 #  API 호출 헬퍼
 # ══════════════════════════════════════════════════════
+import subprocess
+import socket
+
 def _norm(s: str) -> str:
     return s.strip().replace("·", ".").replace(" ", "").lower()
 
 
+# ── IPv4 강제 (Python requests가 IPv6로 시도하다 타임아웃 방지) ──
+_orig_getaddrinfo = socket.getaddrinfo
+
+def _ipv4_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+    """IPv4(AF_INET)만 사용하도록 강제"""
+    return _orig_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
+
+# 패치 적용
+socket.getaddrinfo = _ipv4_getaddrinfo
+
+
 def _make_session():
-    """프록시 자동 감지 + 브라우저 헤더 포함 세션 생성"""
+    """브라우저 헤더 포함 세션 생성"""
     s = requests.Session()
     s.headers.update({
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -209,55 +223,64 @@ def _make_session():
     return s
 
 
+def _api_get_requests(url: str):
+    """requests 라이브러리로 시도 (IPv4 강제 적용됨)"""
+    try:
+        session = _make_session()
+        r = session.get(url, timeout=(10, 30))
+        if r.status_code != 200:
+            return None, f"HTTP {r.status_code}: {r.text[:200]}"
+        raw = r.text.strip()
+        if not raw:
+            return None, "빈 응답"
+        if raw.startswith("<") or raw.startswith("<!"):
+            return None, f"HTML 응답: {raw[:150]}"
+        return r.json(), None
+    except requests.exceptions.Timeout:
+        return None, "requests 타임아웃"
+    except Exception as e:
+        return None, f"requests 오류: {e}"
+
+
+def _api_get_curl(url: str):
+    """curl 명령어로 fallback (시스템 curl 사용)"""
+    try:
+        result = subprocess.run(
+            ["curl", "-s", "-m", "30", "--connect-timeout", "10",
+             "-H", "Accept: application/json", url],
+            capture_output=True, text=True, timeout=35,
+        )
+        if result.returncode != 0:
+            return None, f"curl 실패 (code={result.returncode}): {result.stderr[:200]}"
+        raw = result.stdout.strip()
+        if not raw:
+            return None, "curl 빈 응답"
+        return json.loads(raw), None
+    except subprocess.TimeoutExpired:
+        return None, "curl 타임아웃"
+    except json.JSONDecodeError:
+        return None, f"curl JSON 파싱 실패: {result.stdout[:200]}"
+    except FileNotFoundError:
+        return None, "curl 미설치"
+    except Exception as e:
+        return None, f"curl 오류: {e}"
+
+
 def _api_get(url: str):
     """API GET → (json_dict, error_msg)
-    전략: ① 시스템 프록시 사용 → ② 프록시 우회 → ③ HTTPS 전환
+    전략: ① requests(IPv4 강제) → ② curl fallback
     """
-    strategies = [
-        ("기본 연결", {}),
-        ("프록시 우회", {"proxies": {"http": None, "https": None}}),
-        ("HTTPS 전환", {"_https": True}),
-    ]
+    # 1차: requests (IPv4 강제)
+    data, err1 = _api_get_requests(url)
+    if data:
+        return data, None
 
-    last_err = ""
-    for name, opts in strategies:
-        try:
-            target = url
-            if opts.pop("_https", False):
-                target = url.replace("http://", "https://", 1)
+    # 2차: curl fallback
+    data, err2 = _api_get_curl(url)
+    if data:
+        return data, None
 
-            session = _make_session()
-            r = session.get(target, timeout=(10, 30), **opts)
-
-            if r.status_code != 200:
-                last_err = f"[{name}] HTTP {r.status_code}: {r.text[:200]}"
-                continue
-
-            raw = r.text.strip()
-            if not raw:
-                last_err = f"[{name}] 빈 응답"
-                continue
-            if raw.startswith("<") or raw.startswith("<!"):
-                last_err = f"[{name}] HTML 응답: {raw[:150]}"
-                continue
-
-            try:
-                return r.json(), None
-            except Exception:
-                last_err = f"[{name}] JSON 파싱 실패: {raw[:200]}"
-                continue
-
-        except requests.exceptions.Timeout:
-            last_err = f"[{name}] 시간 초과"
-            continue
-        except requests.exceptions.ConnectionError as e:
-            last_err = f"[{name}] 연결 실패: {e}"
-            continue
-        except Exception as e:
-            last_err = f"[{name}] 오류: {e}"
-            continue
-
-    return None, last_err
+    return None, f"모든 방법 실패 — requests: {err1} | curl: {err2}"
 
 
 # ══════════════════════════════════════════════════════
@@ -666,31 +689,22 @@ with st.sidebar:
         if "working_base_url" in st.session_state:
             del st.session_state["working_base_url"]
         _tk = get_food_api_key()
+        _turl = f"http://openapi.foodsafetykorea.go.kr/api/{_tk}/{SERVICE_ID}/json/1/1"
         st.markdown("**연결 진단 중…**")
-        _strategies = [
-            ("HTTP 기본",
-             f"http://openapi.foodsafetykorea.go.kr/api/{_tk}/{SERVICE_ID}/json/1/1",
-             {}),
-            ("HTTP 프록시우회",
-             f"http://openapi.foodsafetykorea.go.kr/api/{_tk}/{SERVICE_ID}/json/1/1",
-             {"proxies": {"http": None, "https": None}}),
-            ("HTTPS",
-             f"https://openapi.foodsafetykorea.go.kr/api/{_tk}/{SERVICE_ID}/json/1/1",
-             {}),
-        ]
-        for _sname, _surl, _sopts in _strategies:
-            try:
-                _sr = _make_session().get(_surl, timeout=(10, 20), **_sopts)
-                if _sr.status_code == 200 and _sr.text.strip().startswith("{"):
-                    _sj = _sr.json()
-                    _stot = _sj.get(SERVICE_ID, {}).get("total_count", "?")
-                    st.success(f"✅ **{_sname}**: 성공! (total={_stot})")
-                else:
-                    st.warning(f"⚠️ **{_sname}**: HTTP {_sr.status_code}")
-            except requests.exceptions.Timeout:
-                st.error(f"❌ **{_sname}**: 타임아웃")
-            except Exception as _se:
-                st.error(f"❌ **{_sname}**: {str(_se)[:100]}")
+
+        # 1) requests (IPv4 강제)
+        d, e = _api_get_requests(_turl)
+        if d:
+            st.success(f"✅ **requests (IPv4)**: 성공! (total={d.get(SERVICE_ID,{}).get('total_count','?')})")
+        else:
+            st.error(f"❌ **requests (IPv4)**: {e}")
+
+        # 2) curl
+        d2, e2 = _api_get_curl(_turl)
+        if d2:
+            st.success(f"✅ **curl**: 성공! (total={d2.get(SERVICE_ID,{}).get('total_count','?')})")
+        else:
+            st.error(f"❌ **curl**: {e2}")
 
     st.caption("📡 식품안전나라 I1250")
     st.caption("⚠️ 일일 2,000회 호출 제한")
