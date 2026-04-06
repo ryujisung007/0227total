@@ -34,7 +34,7 @@ def _secret(*keys, default=""):
     return default
 
 def get_food_api_key():
-    return _secret("FOOD_SAFETY_API_KEY", default="7270692908c74bccaebc")
+    return _secret("FOOD_SAFETY_API_KEY", default="9171f7ffd72f4ffcb62f")
 
 def get_gemini_key():
     return _secret("GOOGLE_API_KEY", "GEMINI_API_KEY", "google_api_key",
@@ -229,6 +229,7 @@ def fetch_food_data(food_type: str, top_n: int = 100,
     collected  = []
 
     # ⚠️ 식품공전 구분자 마침표(.)는 인코딩하지 않음 (과.채주스, 인삼.홍삼음료 등)
+    #    단, 일부 환경에서 인코딩 필요 시 fallback
     encoded_type = urllib.parse.quote(food_type.strip(), safe=".")
     params_str   = f"PRDLST_DCNM={encoded_type}"
     if prdlst_nm.strip():
@@ -238,7 +239,7 @@ def fetch_food_data(food_type: str, top_n: int = 100,
     # 1) total_count
     probe_url = f"{base_url}/1/1/{params_str}"
     if status_text:
-        status_text.markdown(f"📡 API 연결 확인 중…")
+        status_text.markdown(f"📡 API 연결 확인 중…\n\n`{probe_url}`")
 
     data, err = _api_get(probe_url)
     if err:
@@ -249,8 +250,29 @@ def fetch_food_data(food_type: str, top_n: int = 100,
         return [], f"API 응답 오류: {detail}", 0, 0
 
     total = int(data[SERVICE_ID].get("total_count", 0))
+    result_info = data[SERVICE_ID].get("RESULT", {})
+
+    # fallback: 마침표 인코딩 방식 전환 재시도
+    if total == 0 and "." in food_type:
+        encoded_type_alt = urllib.parse.quote(food_type.strip(), safe="")
+        params_str_alt   = f"PRDLST_DCNM={encoded_type_alt}"
+        if prdlst_nm.strip():
+            params_str_alt += f"&PRDLST_NM={encoded_nm}"
+        probe_url_alt = f"{base_url}/1/1/{params_str_alt}"
+        if status_text:
+            status_text.markdown(f"📡 마침표 인코딩 방식 전환 재시도…\n\n`{probe_url_alt}`")
+        data2, err2 = _api_get(probe_url_alt)
+        if not err2 and SERVICE_ID in data2:
+            total2 = int(data2[SERVICE_ID].get("total_count", 0))
+            if total2 > 0:
+                total      = total2
+                data       = data2
+                params_str = params_str_alt
+
     if total == 0:
-        return [], f"'{food_type}' 조회 결과 0건", 0, 0
+        return [], (f"'{food_type}' 조회 결과 0건\n"
+                    f"응답코드: {result_info}\n"
+                    f"URL: {probe_url}"), 0, 0
 
     if status_text:
         status_text.markdown(
