@@ -1,167 +1,170 @@
 """
-품목제조보고 API 조회 v8
-━━━━━━━━━━━━━━━━━━━━━━
-Cloud(requests) + 로컬(curl fallback) 자동 전환
-pages/ 폴더 호환 — 멀티페이지 앱용
+품목제조보고 조회 — Colab 로직 그대로 Streamlit 전환
 """
 import streamlit as st
+import requests
 import pandas as pd
-import json, os, time, subprocess, urllib.parse
+import time
+import urllib.parse
 
-SERVICE  = "I1250"
-API_BASE = "http://openapi.foodsafetykorea.go.kr/api"
+# ============================================================
+# 📦 상수 (Colab 버전과 동일)
+# ============================================================
+BASE_URL   = "http://openapi.foodsafetykorea.go.kr/api"
+SERVICE_ID = "I1250"
+PAGE_SIZE  = 1000
 
-FOOD_TYPES = {
-    "음료 및 다류": [
-        "과.채주스", "과.채음료", "농축과.채즙",
-        "탄산음료", "탄산수",
-        "두유", "가공두유", "원액두유",
-        "인삼.홍삼음료", "혼합음료", "유산균음료",
-        "음료베이스", "효모음료",
-        "커피", "침출차", "고형차", "액상차",
-    ],
-    "유제품 및 빙과류": [
-        "아이스크림", "아이스크림믹스", "저지방아이스크림",
-        "아이스밀크", "빙과", "샤베트",
-        "우유", "발효유", "농후발효유", "치즈", "버터",
-    ],
-    "과자.빵.초콜릿류": [
-        "과자", "캔디류", "빵류", "떡류", "만두",
-        "초콜릿", "초콜릿가공품",
-    ],
-    "조미식품 및 장류": [
-        "소스", "토마토케첩", "마요네즈", "고추장", "된장",
-        "한식간장", "양조간장", "복합조미식품",
-    ],
-    "기타 가공식품": [
-        "즉석조리식품", "즉석섭취식품", "신선편의식품",
-        "간편조리세트", "김치", "생면", "유탕면",
-    ],
-}
+DRINK_TYPES = [
+    "과.채주스", "과.채음료", "농축과.채즙",
+    "탄산음료", "탄산수",
+    "두유", "가공두유", "원액두유",
+    "인삼.홍삼음료", "혼합음료", "유산균음료",
+    "음료베이스", "효모음료",
+    "커피", "침출차", "고형차", "액상차",
+]
 
-COL = {
-    "PRDLST_NM": "제품명", "BSSH_NM": "제조사", "PRDLST_DCNM": "식품유형",
-    "PRMS_DT": "보고일자", "RAWMTRL_NM": "원재료", "POG_DAYCNT": "유통기한",
-    "PRODUCTION": "생산종료", "LAST_UPDT_DTM": "최종수정",
+COL_MAP = {
+    "PRDLST_NM": "제품명",
+    "PRDLST_DCNM": "식품유형",
+    "BSSH_NM": "제조사",
+    "PRMS_DT": "보고일자",
+    "RAWMTRL_NM": "주요원재료",
+    "POG_DAYCNT": "유통기한",
+    "PRODUCTION": "생산종료",
+    "LAST_UPDT_DTM": "최종수정일",
     "PRDLST_REPORT_NO": "품목제조번호",
 }
 
 
-# ── API 호출 ──
-def _try_requests(url):
-    import requests
-    s = requests.Session()
-    s.trust_env = False
-    r = s.get(url, timeout=(10, 30),
-              proxies={"http": None, "https": None},
-              headers={"User-Agent": "Mozilla/5.0"})
-    r.raise_for_status()
-    return r.json()
+# ============================================================
+# 🌐 API 호출 — Colab 코드 그대로
+# ============================================================
+def fetch_data(api_key, food_type, max_rows, log):
+    encoded_type = urllib.parse.quote(food_type, safe=".")
+    all_rows = []
+    start = 1
+
+    while start <= max_rows:
+        end = min(start + PAGE_SIZE - 1, max_rows)
+        url = f"{BASE_URL}/{api_key}/{SERVICE_ID}/json/{start}/{end}/PRDLST_DCNM={encoded_type}"
+
+        log.write(f"📡 요청 중… {start}~{end}건 ")
+
+        try:
+            resp = requests.get(url, timeout=30)
+            resp.raise_for_status()
+            data = resp.json()
+        except requests.exceptions.Timeout:
+            log.write("⏰ 타임아웃! 재시도…\n")
+            time.sleep(1)
+            continue
+        except (requests.exceptions.RequestException, ValueError) as e:
+            log.write(f"❌ 요청 실패: {e}\n")
+            break
+
+        body   = data.get(SERVICE_ID, {})
+        result = body.get("RESULT", {})
+        code   = result.get("CODE", "")
+        msg    = result.get("MSG", "")
+
+        if code == "INFO-300":
+            log.write(f"❌ 인증키 오류: {msg}\n")
+            break
+        if code == "INFO-200":
+            log.write(f"→ 데이터 없음 ({msg})\n")
+            break
+        if code != "INFO-000":
+            log.write(f"→ 알 수 없는 응답: {code} {msg}\n")
+            break
+
+        rows = body.get("row", [])
+        if not rows:
+            log.write("→ 빈 응답\n")
+            break
+
+        rows = [r for r in rows if r.get("PRDLST_DCNM") == food_type]
+        all_rows.extend(rows)
+        total = int(body.get("total_count", "0"))
+        log.write(f"✅ {len(rows)}건 (전체 {total}건)\n")
+
+        if end >= total or end >= max_rows:
+            break
+        start = end + 1
+        time.sleep(0.2)
+
+    return all_rows
 
 
-def _try_curl(url):
-    env = {k: v for k, v in os.environ.items() if "proxy" not in k.lower()}
-    if os.name == "nt":
-        env.setdefault("SYSTEMROOT", r"C:\Windows")
-    r = subprocess.run(
-        ["curl", "-s", "-m", "60", "--connect-timeout", "15",
-         "--noproxy", "*", "-4", url],
-        capture_output=True, timeout=65, env=env)
-    if r.returncode != 0:
-        raise RuntimeError(f"curl code {r.returncode}")
-    return json.loads(r.stdout.decode("utf-8", errors="replace"))
-
-
-def api_get(url):
-    try:
-        return _try_requests(url)
-    except Exception:
-        pass
-    try:
-        return _try_curl(url)
-    except Exception as e:
-        raise RuntimeError(f"연결 실패: {e}")
-
-
-def fetch(api_key, food_type, count):
-    enc = urllib.parse.quote(food_type.strip(), safe=".")
-    url = f"{API_BASE}/{api_key}/{SERVICE}/json/1/{count}/PRDLST_DCNM={enc}"
-    data = api_get(url)
-    body = data.get(SERVICE, {})
-    code = body.get("RESULT", {}).get("CODE", "")
-    if code == "INFO-300":
-        raise RuntimeError("인증키 오류 — API 키를 확인하세요")
-    if code != "INFO-000":
-        raise RuntimeError(f"API 오류: {body.get('RESULT', {})}")
-    rows  = body.get("row", [])
-    total = body.get("total_count", "0")
-    norm = food_type.strip().replace("·", ".").lower()
-    rows = [r for r in rows
-            if r.get("PRDLST_DCNM", "").strip().replace("·", ".").lower() == norm]
-    return rows, total
-
-
-# ── UI ──
+# ============================================================
+# 🖥️ Streamlit UI
+# ============================================================
 st.title("🏭 품목제조보고 조회")
 
 with st.sidebar:
     st.markdown("### 설정")
-    api_key = st.text_input("🔑 API 키", value="9171f7ffd72f4ffcb62f", type="password")
-    category = st.selectbox("카테고리", list(FOOD_TYPES.keys()))
-    food_type = st.selectbox("식품유형", FOOD_TYPES[category])
-    count = st.slider("조회 건수", 10, 500, 100, step=10)
+    api_key   = st.text_input("🔑 API 키", type="password",
+                              help="식품안전나라에서 발급")
+    food_type = st.selectbox("🍹 식품유형", DRINK_TYPES)
+    max_rows  = st.slider("조회 건수", 10, 500, 200, step=10)
     st.markdown("---")
-    run = st.button("🚀 조회", type="primary", use_container_width=True)
-    st.caption("📡 식품안전나라 I1250 · v8")
+    run = st.button("🚀 조회 실행", type="primary", use_container_width=True)
+
+if not api_key:
+    st.info("👈 사이드바에서 API 키를 입력하고 조회하세요.\n\n"
+            "🔗 [키 발급 바로가기](https://www.foodsafetykorea.go.kr/api/openApiInfo.do)"
+            " → 서비스: 품목제조보고(심사) **I1250** 신청")
+    st.stop()
 
 if run:
+    log = st.empty()
+    log_area = st.container()
+
     with st.spinner(f"📡 {food_type} 조회 중…"):
+        log_box = log_area.empty()
+
+        class StreamlitLog:
+            def __init__(self):
+                self.lines = []
+            def write(self, msg):
+                self.lines.append(msg)
+                log_box.code("".join(self.lines))
+
+        slog = StreamlitLog()
         t0 = time.time()
-        try:
-            rows, total = fetch(api_key, food_type, count)
-        except Exception as e:
-            st.error(f"❌ {e}")
-            st.stop()
+        rows = fetch_data(api_key, food_type, max_rows, slog)
         elapsed = time.time() - t0
 
     if not rows:
-        st.warning("조회 결과 없음")
+        st.error("😢 조회 결과가 없습니다. 유형명이나 API 키를 확인하세요.")
         st.stop()
 
+    # DataFrame 변환 — Colab과 동일
     df = pd.DataFrame(rows)
-    df = df.rename(columns={k: v for k, v in COL.items() if k in df.columns})
-    if "최종수정" in df.columns:
-        df = df.sort_values("최종수정", ascending=False).reset_index(drop=True)
+    use_cols = [c for c in COL_MAP if c in df.columns]
+    df = df[use_cols].rename(columns=COL_MAP)
+    if "최종수정일" in df.columns:
+        df = df.sort_values("최종수정일", ascending=False).reset_index(drop=True)
 
-    st.success(f"✅ **{len(df)}건** | {elapsed:.1f}초 | 전체 DB {int(total):,}건")
+    # 결과
+    st.success(f"✅ **{len(df)}건** 수집 완료 ({elapsed:.1f}초)")
+
     c1, c2, c3 = st.columns(3)
     c1.metric("조회 건수", f"{len(df)}건")
-    c2.metric("제조사 수", f"{df['제조사'].nunique()}개" if "제조사" in df.columns else "-")
-    c3.metric("전체 DB", f"{int(total):,}건")
+    if "제조사" in df.columns:
+        c2.metric("제조사 수", f"{df['제조사'].nunique()}곳")
+    if "보고일자" in df.columns:
+        dates = df["보고일자"].dropna().astype(str)
+        if len(dates):
+            c3.metric("최신 보고일", dates.max())
 
     st.markdown("---")
-    kw = st.text_input("🔎 검색", placeholder="제품명·제조사·원재료")
-    show_cols = [c for c in ["제품명","제조사","보고일자","유통기한","원재료","생산종료"]
-                 if c in df.columns]
-    fdf = df.copy()
-    if kw:
-        fdf = fdf[fdf.apply(lambda r: kw.lower() in str(r).lower(), axis=1)]
-    st.dataframe(fdf[show_cols].reset_index(drop=True),
-                 use_container_width=True, height=500)
-    st.caption(f"총 {len(fdf)}건")
 
-    if "제조사" in df.columns:
-        import plotly.express as px
-        st.markdown("### 📊 제조사별 제품 수")
-        mc = df["제조사"].value_counts().head(15)
-        fig = px.bar(x=mc.values, y=mc.index, orientation="h",
-                     color=mc.values, color_continuous_scale="Blues",
-                     labels={"x": "제품 수", "y": "제조사"})
-        fig.update_layout(height=400, showlegend=False,
-                          yaxis=dict(autorange="reversed"))
-        fig.update_coloraxes(showscale=False)
-        st.plotly_chart(fig, use_container_width=True)
+    # 테이블
+    show = [c for c in ["제품명","제조사","보고일자","주요원재료","유통기한","생산종료"]
+            if c in df.columns]
+    st.dataframe(df[show], use_container_width=True, height=500)
 
+    # CSV
     csv = df.to_csv(index=False).encode("utf-8-sig")
     st.download_button("📥 CSV 다운로드", csv,
                        f"{food_type}_{time.strftime('%Y%m%d')}.csv",
