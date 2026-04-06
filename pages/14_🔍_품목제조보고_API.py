@@ -3,7 +3,7 @@
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 v6: 조회 간소화 — PRDLST_DCNM 서버필터 1회 방식
 v6.1: HTTP/HTTPS 자동 전환 + 응답 디버깅 강화
-v6.2: 마침표(.) 인코딩 수정 (과.채주스 등 식품공전 구분자 보존)
+v6.2: 마침표(.) 인코딩 수정 + API키 입력 UI + 디버그 강화
 """
 
 import streamlit as st
@@ -34,7 +34,16 @@ def _secret(*keys, default=""):
     return default
 
 def get_food_api_key():
-    return _secret("FOOD_SAFETY_API_KEY", default="9171f7ffd72f4ffcb62f")
+    # 1) 사이드바에서 직접 입력한 키
+    override = st.session_state.get("_override_food_key", "")
+    if override:
+        return override
+    # 2) secrets.toml
+    key = _secret("FOOD_SAFETY_API_KEY", default="")
+    if key:
+        return key
+    # 3) fallback (만료 가능)
+    return "9171f7ffd72f4ffcb62f"
 
 def get_gemini_key():
     return _secret("GOOGLE_API_KEY", "GEMINI_API_KEY", "google_api_key",
@@ -582,6 +591,24 @@ with st.sidebar:
         per_type = st.slider("유형별 조회 건수", 10, 50, 20, step=5)
 
     st.markdown("---")
+    st.markdown("### 🔑 식품안전나라 API")
+    _fk = get_food_api_key()
+    _has_custom = bool(_secret("FOOD_SAFETY_API_KEY", default=""))
+    if _has_custom:
+        st.success(f"API 키 연결됨: `{_fk[:6]}…`", icon="✅")
+    else:
+        st.warning("기본 키 사용 중 (만료 가능)", icon="⚠️")
+        st.caption("[식품안전나라](https://www.foodsafetykorea.go.kr/api/openApiInfo.do)에서 발급")
+        _input_key = st.text_input("API 키 직접 입력", type="password",
+                                   key="food_api_input",
+                                   placeholder="발급받은 키 붙여넣기")
+        if _input_key.strip():
+            st.session_state["_override_food_key"] = _input_key.strip()
+            if "working_base_url" in st.session_state:
+                del st.session_state["working_base_url"]
+            st.success("키 적용됨!")
+
+    st.markdown("---")
     run = st.button("🚀 조회 실행", use_container_width=True, type="primary")
 
     st.markdown("---")
@@ -663,6 +690,18 @@ if df is None:
     st.info("👈 사이드바에서 식품유형을 선택하고 **[조회 실행]**을 누르세요.")
 elif df.empty:
     st.warning(f"⚠️ **'{r_lbl}'** 결과 없음 — 식품유형명을 확인하세요.")
+    # 디버그: 각 유형별 실패 원인 표시
+    if smsgs:
+        st.markdown("**📋 유형별 조회 상세:**")
+        for ft, info in smsgs.items():
+            st.code(f"{ft}: {info.get('msg', '알 수 없음')} (fetched={info['fetched']}, total={info['total']})")
+    # API 키 확인
+    _k = get_food_api_key()
+    st.info(f"🔑 현재 API 키: `{_k[:6]}...{_k[-4:]}` ({len(_k)}자)\n\n"
+            f"키가 만료되었을 수 있습니다. "
+            f"[식품안전나라](https://www.foodsafetykorea.go.kr/api/openApiInfo.do)에서 "
+            f"본인 키를 발급받아 `.streamlit/secrets.toml`에 설정하세요.\n\n"
+            f"```toml\nFOOD_SAFETY_API_KEY = \"발급받은키\"\n```")
 else:
     st.success(r_src)
     if smsgs:
