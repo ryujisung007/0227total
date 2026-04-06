@@ -34,7 +34,7 @@ def _secret(*keys, default=""):
     return default
 
 def get_food_api_key():
-    return _secret("FOOD_SAFETY_API_KEY", default="9171f7ffd72f4ffcb62f")
+    return _secret("FOOD_SAFETY_API_KEY", default="7270692908c74bccaebc")
 
 def get_gemini_key():
     return _secret("GOOGLE_API_KEY", "GEMINI_API_KEY", "google_api_key",
