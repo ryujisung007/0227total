@@ -249,6 +249,7 @@ def _api_get_curl(url: str):
             ["curl", "-s", "-m", "30", "--connect-timeout", "10",
              "-H", "Accept: application/json", url],
             capture_output=True, text=True, timeout=35,
+            encoding="utf-8", errors="replace",
         )
         if result.returncode != 0:
             return None, f"curl 실패 (code={result.returncode}): {result.stderr[:200]}"
