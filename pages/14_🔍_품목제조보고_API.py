@@ -1,8 +1,9 @@
 """
-식품안전나라 품목제조보고 조회 v6.1
+식품안전나라 품목제조보고 조회 v6.2
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 v6: 조회 간소화 — PRDLST_DCNM 서버필터 1회 방식
 v6.1: HTTP/HTTPS 자동 전환 + 응답 디버깅 강화
+v6.2: 마침표(.) 인코딩 수정 (과.채주스 등 식품공전 구분자 보존)
 """
 
 import streamlit as st
@@ -227,7 +228,8 @@ def fetch_food_data(food_type: str, top_n: int = 100,
     page_size  = 1000
     collected  = []
 
-    encoded_type = urllib.parse.quote(food_type.strip(), safe="")
+    # ⚠️ 식품공전 구분자 마침표(.)는 인코딩하지 않음 (과.채주스, 인삼.홍삼음료 등)
+    encoded_type = urllib.parse.quote(food_type.strip(), safe=".")
     params_str   = f"PRDLST_DCNM={encoded_type}"
     if prdlst_nm.strip():
         encoded_nm  = urllib.parse.quote(prdlst_nm.strip(), safe="")
@@ -292,6 +294,11 @@ def fetch_food_data(food_type: str, top_n: int = 100,
 
         res  = data[SERVICE_ID]
         code = res.get("RESULT", {}).get("CODE", "")
+        msg  = res.get("RESULT", {}).get("MSG", "")
+        if code == "INFO-300":
+            return [], f"인증키 오류: {msg}", total, page
+        if code == "INFO-200":
+            break  # 해당 데이터 없음
         if code != "INFO-000":
             break
 
