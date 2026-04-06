@@ -1,9 +1,12 @@
 """
-식품안전나라 품목제조보고 조회 v6.2
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-v6: 조회 간소화 — PRDLST_DCNM 서버필터 1회 방식
-v6.1: HTTP/HTTPS 자동 전환 + 응답 디버깅 강화
-v6.2: IPv4 강제 + curl fallback + 마침표 인코딩 + API키 입력 + 연결 진단
+식품안전나라 품목제조보고 조회 v7.0
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• trust_env=False (Windows 시스템 프록시 우회)
+• IPv4 강제 (IPv6 타임아웃 방지)
+• curl fallback (UTF-8 인코딩)
+• 마침표(.) 보존 인코딩 + fallback
+• API 키 사이드바 직접 입력
+• 연결 진단 기능
 """
 
 import streamlit as st
@@ -12,71 +15,25 @@ import pandas as pd
 import plotly.express as px
 from datetime import datetime
 from collections import Counter
-import re
-import time
-import urllib.parse
-import json
-import os
-
-GENAI_AVAILABLE = True
+import re, time, json, os, socket, subprocess, urllib.parse
 
 
 # ══════════════════════════════════════════════════════
-#  설정
+#  IPv4 강제 — requests가 IPv6 시도 → 타임아웃 방지
 # ══════════════════════════════════════════════════════
-def _secret(*keys, default=""):
-    try:
-        for k in keys:
-            v = st.secrets.get(k, "")
-            if v:
-                return v
-    except Exception:
-        pass
-    return default
+_orig_getaddrinfo = socket.getaddrinfo
 
-def get_food_api_key():
-    # 1) 사이드바에서 직접 입력한 키
-    override = st.session_state.get("_override_food_key", "")
-    if override:
-        return override
-    # 2) secrets.toml
-    key = _secret("FOOD_SAFETY_API_KEY", default="")
-    if key:
-        return key
-    # 3) fallback (만료 가능)
-    return "9171f7ffd72f4ffcb62f"
+def _ipv4_only(host, port, family=0, type=0, proto=0, flags=0):
+    return _orig_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
 
-def get_gemini_key():
-    return _secret("GOOGLE_API_KEY", "GEMINI_API_KEY", "google_api_key",
-                   "GEMINI_KEY", "gemini_api_key")
+socket.getaddrinfo = _ipv4_only
 
+
+# ══════════════════════════════════════════════════════
+#  상수 & 설정
+# ══════════════════════════════════════════════════════
 SERVICE_ID = "I1250"
-
-API_BASE_URLS = [
-    "http://openapi.foodsafetykorea.go.kr/api",
-    "https://openapi.foodsafetykorea.go.kr/api",
-]
-
-def get_base_url():
-    """작동하는 프로토콜(HTTP/HTTPS) + 프록시 자동 감지"""
-    key = get_food_api_key()
-    if "working_base_url" in st.session_state:
-        return st.session_state["working_base_url"]
-
-    # _api_get가 내부적으로 프록시 우회 + HTTPS 전환을 시도함
-    test_url = f"{API_BASE_URLS[0]}/{key}/{SERVICE_ID}/json/1/1"
-    data, err = _api_get(test_url)
-    if data and SERVICE_ID in data:
-        # 성공한 프로토콜 확인 (HTTPS로 전환됐을 수 있음)
-        for base in API_BASE_URLS:
-            url = f"{base}/{key}/{SERVICE_ID}/json"
-            st.session_state["working_base_url"] = url
-            return url
-
-    url = f"{API_BASE_URLS[0]}/{key}/{SERVICE_ID}/json"
-    st.session_state["working_base_url"] = url
-    return url
-
+API_BASE   = "http://openapi.foodsafetykorea.go.kr/api"
 
 FOOD_TYPES = {
     "당류 및 잼류": [
@@ -178,7 +135,6 @@ FOOD_TYPES = {
         "일반증류주", "주정", "기타 주류",
     ],
 }
-TYPE_TO_CAT = {t: c for c, ts in FOOD_TYPES.items() for t in ts}
 
 COL_MAP = {
     "PRDLST_NM": "제품명", "PRDLST_DCNM": "식품유형", "BSSH_NM": "제조사",
@@ -192,273 +148,225 @@ COL_MAP = {
 
 
 # ══════════════════════════════════════════════════════
-#  API 호출 헬퍼
+#  API 키 관리
 # ══════════════════════════════════════════════════════
-import subprocess
-import socket
-
-def _norm(s: str) -> str:
-    return s.strip().replace("·", ".").replace(" ", "").lower()
-
-
-# ── IPv4 강제 (Python requests가 IPv6로 시도하다 타임아웃 방지) ──
-_orig_getaddrinfo = socket.getaddrinfo
-
-def _ipv4_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
-    """IPv4(AF_INET)만 사용하도록 강제"""
-    return _orig_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
-
-# 패치 적용
-socket.getaddrinfo = _ipv4_getaddrinfo
+def _secret(*keys, default=""):
+    try:
+        for k in keys:
+            v = st.secrets.get(k, "")
+            if v:
+                return v
+    except Exception:
+        pass
+    return default
 
 
-def _make_session():
-    """브라우저 헤더 포함 세션 생성"""
+def get_food_api_key():
+    return (st.session_state.get("_override_food_key", "")
+            or _secret("FOOD_SAFETY_API_KEY")
+            or "9171f7ffd72f4ffcb62f")
+
+
+def get_gemini_key():
+    return _secret("GOOGLE_API_KEY", "GEMINI_API_KEY",
+                   "google_api_key", "GEMINI_KEY", "gemini_api_key")
+
+
+# ══════════════════════════════════════════════════════
+#  HTTP 클라이언트 (trust_env=False 핵심!)
+# ══════════════════════════════════════════════════════
+def _http(url: str, method="GET", **kwargs):
+    """프록시 완전 우회 + 브라우저 헤더 세션"""
     s = requests.Session()
+    s.trust_env = False
     s.headers.update({
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                      "AppleWebKit/537.36 (KHTML, like Gecko) "
-                      "Chrome/125.0.0.0 Safari/537.36",
+                      "AppleWebKit/537.36 Chrome/125.0 Safari/537.36",
         "Accept": "application/json, text/plain, */*",
     })
-    return s
+    return s.request(method, url, timeout=(10, 30),
+                     proxies={"http": None, "https": None}, **kwargs)
 
 
-def _api_get_requests(url: str):
-    """requests 라이브러리로 시도 (IPv4 강제 + 프록시 우회)"""
+def _api_get(url: str):
+    """API GET → (dict, None) 또는 (None, error_msg)
+    ① requests(IPv4+trust_env=False) → ② curl fallback
+    """
+    # ── 1차: requests ──
     try:
-        session = _make_session()
-        session.trust_env = False  # 환경변수 프록시 무시
-        r = session.get(url, timeout=(10, 30),
-                        proxies={"http": None, "https": None})
-        if r.status_code != 200:
-            return None, f"HTTP {r.status_code}: {r.text[:200]}"
-        raw = r.text.strip()
-        if not raw:
-            return None, "빈 응답"
-        if raw.startswith("<") or raw.startswith("<!"):
-            return None, f"HTML 응답: {raw[:150]}"
-        return r.json(), None
+        r = _http(url)
+        if r.status_code == 200:
+            raw = r.text.strip()
+            if raw and raw.startswith("{"):
+                return r.json(), None
+            return None, f"비정상 응답: {raw[:150]}"
+        return None, f"HTTP {r.status_code}"
     except requests.exceptions.Timeout:
-        return None, "requests 타임아웃"
+        pass  # curl로 넘어감
     except Exception as e:
-        return None, f"requests 오류: {e}"
+        pass  # curl로 넘어감
 
-
-def _api_get_curl(url: str):
-    """curl 명령어로 fallback (프록시 환경변수 무시)"""
+    # ── 2차: curl fallback ──
     try:
-        # 프록시 환경변수 제거한 깨끗한 환경
         clean_env = {k: v for k, v in os.environ.items()
                      if "proxy" not in k.lower()}
         result = subprocess.run(
             ["curl", "-s", "-m", "30", "--connect-timeout", "10",
-             "--noproxy", "*",
+             "--noproxy", "*", "-4",
              "-H", "Accept: application/json", url],
             capture_output=True, text=True, timeout=35,
-            encoding="utf-8", errors="replace",
-            env=clean_env,
+            encoding="utf-8", errors="replace", env=clean_env,
         )
-        if result.returncode != 0:
-            return None, f"curl 실패 (code={result.returncode}): {result.stderr[:200]}"
-        raw = result.stdout.strip()
-        if not raw:
-            return None, "curl 빈 응답"
-        return json.loads(raw), None
-    except subprocess.TimeoutExpired:
-        return None, "curl 타임아웃"
-    except json.JSONDecodeError:
-        return None, f"curl JSON 파싱 실패: {result.stdout[:200]}"
+        if result.returncode == 0 and result.stdout.strip():
+            return json.loads(result.stdout), None
+        return None, f"curl code={result.returncode}"
     except FileNotFoundError:
-        return None, "curl 미설치"
+        return None, "curl 미설치 + requests 타임아웃"
     except Exception as e:
-        return None, f"curl 오류: {e}"
-
-
-def _api_get(url: str):
-    """API GET → (json_dict, error_msg)
-    전략: ① requests(IPv4 강제) → ② curl fallback
-    """
-    # 1차: requests (IPv4 강제)
-    data, err1 = _api_get_requests(url)
-    if data:
-        return data, None
-
-    # 2차: curl fallback
-    data, err2 = _api_get_curl(url)
-    if data:
-        return data, None
-
-    return None, f"모든 방법 실패 — requests: {err1} | curl: {err2}"
+        return None, f"모든 방법 실패: {e}"
 
 
 # ══════════════════════════════════════════════════════
-#  조회 — 간소화 (PRDLST_DCNM 서버필터 1회)
+#  URL 빌더
 # ══════════════════════════════════════════════════════
-def fetch_food_data(food_type: str, top_n: int = 100,
-                    prdlst_nm: str = "",
+def _norm(s: str) -> str:
+    return s.strip().replace("·", ".").replace(" ", "").lower()
+
+
+def _build_base():
+    """API 기본 URL (키 포함)"""
+    return f"{API_BASE}/{get_food_api_key()}/{SERVICE_ID}/json"
+
+
+def _encode_type(food_type: str, safe="."):
+    """식품유형명 인코딩 (마침표 보존이 기본)"""
+    return urllib.parse.quote(food_type.strip(), safe=safe)
+
+
+# ══════════════════════════════════════════════════════
+#  데이터 수집
+# ══════════════════════════════════════════════════════
+def fetch_food_data(food_type, top_n=100, prdlst_nm="",
                     prog_bar=None, status_text=None):
-    base_url   = get_base_url()
-    t_start    = time.time()
-    norm_type  = _norm(food_type)
-    page_size  = 1000
-    collected  = []
+    base      = _build_base()
+    t0        = time.time()
+    norm_type = _norm(food_type)
+    collected = []
+    PAGE      = 1000
 
-    # ⚠️ 식품공전 구분자 마침표(.)는 인코딩하지 않음 (과.채주스, 인삼.홍삼음료 등)
-    #    단, 일부 환경에서 인코딩 필요 시 fallback
-    encoded_type = urllib.parse.quote(food_type.strip(), safe=".")
-    params_str   = f"PRDLST_DCNM={encoded_type}"
+    enc_type   = _encode_type(food_type)
+    params_str = f"PRDLST_DCNM={enc_type}"
     if prdlst_nm.strip():
-        encoded_nm  = urllib.parse.quote(prdlst_nm.strip(), safe="")
-        params_str += f"&PRDLST_NM={encoded_nm}"
+        params_str += f"&PRDLST_NM={urllib.parse.quote(prdlst_nm.strip())}"
 
-    # 1) total_count
-    probe_url = f"{base_url}/1/1/{params_str}"
+    # ── total_count 확인 ──
+    probe = f"{base}/1/1/{params_str}"
     if status_text:
-        status_text.markdown(f"📡 API 연결 확인 중…\n\n`{probe_url}`")
+        status_text.markdown(f"📡 연결 확인 중…")
 
-    data, err = _api_get(probe_url)
+    data, err = _api_get(probe)
     if err:
         return [], f"API 연결 실패: {err}", 0, 0
-
     if SERVICE_ID not in data:
-        detail = json.dumps(data, ensure_ascii=False)[:300]
-        return [], f"API 응답 오류: {detail}", 0, 0
+        return [], f"API 응답 오류: {json.dumps(data, ensure_ascii=False)[:300]}", 0, 0
 
     total = int(data[SERVICE_ID].get("total_count", 0))
-    result_info = data[SERVICE_ID].get("RESULT", {})
 
-    # fallback: 마침표 인코딩 방식 전환 재시도
+    # 마침표 유형인데 0건이면 인코딩 전환 재시도
     if total == 0 and "." in food_type:
-        encoded_type_alt = urllib.parse.quote(food_type.strip(), safe="")
-        params_str_alt   = f"PRDLST_DCNM={encoded_type_alt}"
+        alt_enc    = _encode_type(food_type, safe="")
+        alt_params = f"PRDLST_DCNM={alt_enc}"
         if prdlst_nm.strip():
-            params_str_alt += f"&PRDLST_NM={encoded_nm}"
-        probe_url_alt = f"{base_url}/1/1/{params_str_alt}"
-        if status_text:
-            status_text.markdown(f"📡 마침표 인코딩 방식 전환 재시도…\n\n`{probe_url_alt}`")
-        data2, err2 = _api_get(probe_url_alt)
-        if not err2 and SERVICE_ID in data2:
-            total2 = int(data2[SERVICE_ID].get("total_count", 0))
-            if total2 > 0:
-                total      = total2
-                data       = data2
-                params_str = params_str_alt
+            alt_params += f"&PRDLST_NM={urllib.parse.quote(prdlst_nm.strip())}"
+        d2, e2 = _api_get(f"{base}/1/1/{alt_params}")
+        if d2 and SERVICE_ID in d2:
+            t2 = int(d2[SERVICE_ID].get("total_count", 0))
+            if t2 > 0:
+                total, params_str = t2, alt_params
 
     if total == 0:
-        return [], (f"'{food_type}' 조회 결과 0건\n"
-                    f"응답코드: {result_info}\n"
-                    f"URL: {probe_url}"), 0, 0
+        code_info = data[SERVICE_ID].get("RESULT", {})
+        return [], f"'{food_type}' 0건 (응답: {code_info})", 0, 0
 
     if status_text:
         status_text.markdown(
-            f"📡 **{food_type}** 전체 {total:,}건 → "
-            f"최신 {min(top_n, total)}건 수집"
-        )
+            f"📡 **{food_type}** 전체 {total:,}건 → 최신 {min(top_n, total)}건 수집")
 
-    # 2) 페이지네이션
-    cursor = 1
-    page   = 0
-
+    # ── 페이지네이션 ──
+    cursor, page = 1, 0
     while cursor <= total and len(collected) < top_n:
-        p_s = cursor
-        p_e = min(cursor + page_size - 1, total)
-        url = f"{base_url}/{p_s}/{p_e}/{params_str}"
+        p_s, p_e = cursor, min(cursor + PAGE - 1, total)
+        url = f"{base}/{p_s}/{p_e}/{params_str}"
 
-        elapsed = time.time() - t_start
-        pct     = min(len(collected) / max(top_n, 1), 0.99)
+        pct = min(len(collected) / max(top_n, 1), 0.99)
         if prog_bar:
             prog_bar.progress(pct)
         if status_text:
-            pct_disp  = min(int(pct * 100), 99)
-            bar_fill  = "█" * (pct_disp // 5)
-            bar_empty = "░" * (20 - len(bar_fill))
+            el = time.time() - t0
+            bar = "█" * (int(pct * 100) // 5)
             status_text.markdown(
-                f"`{bar_fill}{bar_empty}` **{pct_disp}%**&nbsp;&nbsp;"
-                f"📄 {page+1}페이지 &nbsp;"
-                f"✅ {len(collected)}건 &nbsp;"
-                f"⏱ {elapsed:.0f}초"
-            )
+                f"`{bar}{'░' * (20 - len(bar))}` **{int(pct*100)}%** "
+                f"📄 {page+1}p ✅ {len(collected)}건 ⏱ {el:.0f}초")
 
-        data, err = _api_get(url)
-        if err:
-            cursor += page_size
-            page += 1
-            time.sleep(0.3)
-            continue
-
-        if SERVICE_ID not in data:
+        d, e = _api_get(url)
+        if e:
+            cursor += PAGE; page += 1; time.sleep(0.3); continue
+        if SERVICE_ID not in d:
             break
 
-        res  = data[SERVICE_ID]
+        res  = d[SERVICE_ID]
         code = res.get("RESULT", {}).get("CODE", "")
-        msg  = res.get("RESULT", {}).get("MSG", "")
         if code == "INFO-300":
-            return [], f"인증키 오류: {msg}", total, page
-        if code == "INFO-200":
-            break  # 해당 데이터 없음
+            return [], f"인증키 오류: {res['RESULT']['MSG']}", total, page
         if code != "INFO-000":
             break
 
-        rows = res.get("row", [])
-        for row in rows:
+        for row in res.get("row", []):
             if _norm(row.get("PRDLST_DCNM", "")) == norm_type:
                 collected.append(row)
 
         page += 1
         if len(collected) >= top_n:
             break
-
-        cursor += page_size
+        cursor += PAGE
         time.sleep(0.2)
 
     if not collected:
         return [], "수집된 데이터 없음", total, page
 
-    # 3) 최신순 정렬
     collected.sort(
-        key=lambda r: (r.get("LAST_UPDT_DTM", "") or
-                       r.get("PRMS_DT", "") or "0"),
-        reverse=True
-    )
+        key=lambda r: r.get("LAST_UPDT_DTM") or r.get("PRMS_DT") or "0",
+        reverse=True)
 
-    elapsed = time.time() - t_start
-    src_msg = f"{page}페이지 | {elapsed:.1f}초 | 전체 {total:,}건"
-    return collected[:top_n], src_msg, total, page
+    elapsed = time.time() - t0
+    return collected[:top_n], f"{page}p | {elapsed:.1f}초 | 전체 {total:,}건", total, page
 
 
-def fetch_multiple(types_list: list, per_type: int):
+def fetch_multiple(types_list, per_type):
     all_rows, status = [], {}
-    prog        = st.progress(0.0)
-    status_text = st.empty()
+    prog = st.progress(0.0)
+    stxt = st.empty()
     for i, ft in enumerate(types_list):
-        pct = (i + 1) / len(types_list)
-        prog.progress(pct)
-        status_text.markdown(f"📡 **{ft}** 조회 중… ({i+1}/{len(types_list)})")
+        prog.progress((i + 1) / len(types_list))
+        stxt.markdown(f"📡 **{ft}** 조회 중… ({i+1}/{len(types_list)})")
         rows, msg, total, _ = fetch_food_data(ft, top_n=per_type)
-        status[ft] = {
-            "msg": msg or "", "total": total,
-            "fetched": len(rows) if rows else 0,
-        }
+        status[ft] = {"msg": msg, "total": total,
+                      "fetched": len(rows) if rows else 0}
         if rows:
             all_rows.extend(rows)
         time.sleep(0.2)
-    prog.empty()
-    status_text.empty()
+    prog.empty(); stxt.empty()
     return all_rows, status
 
 
-def to_df(rows: list) -> pd.DataFrame:
+def to_df(rows):
     if not rows:
         return pd.DataFrame()
     df = pd.DataFrame(rows)
-    rename = {k: v for k, v in COL_MAP.items() if k in df.columns}
-    df = df.rename(columns=rename)
+    df = df.rename(columns={k: v for k, v in COL_MAP.items() if k in df.columns})
     if "보고일자" in df.columns:
         df["보고일자"] = df["보고일자"].astype(str)
-        df["보고일자_dt"] = pd.to_datetime(
-            df["보고일자"], format="%Y%m%d", errors="coerce"
-        )
+        df["보고일자_dt"] = pd.to_datetime(df["보고일자"], format="%Y%m%d", errors="coerce")
         df = df.sort_values("보고일자_dt", ascending=False).reset_index(drop=True)
     return df
 
@@ -466,7 +374,7 @@ def to_df(rows: list) -> pd.DataFrame:
 # ══════════════════════════════════════════════════════
 #  차트
 # ══════════════════════════════════════════════════════
-def render_charts(df: pd.DataFrame, food_type: str):
+def render_charts(df, food_type):
     st.markdown("### 📊 데이터 분석")
     c1, c2 = st.columns(2)
     if "제조사" in df.columns:
@@ -496,8 +404,7 @@ def render_charts(df: pd.DataFrame, food_type: str):
     if "생산종료" in df.columns:
         with c3:
             pc = df["생산종료"].value_counts()
-            fig3 = px.pie(values=pc.values, names=pc.index,
-                          title="생산종료 현황",
+            fig3 = px.pie(values=pc.values, names=pc.index, title="생산종료 현황",
                           color_discrete_sequence=px.colors.qualitative.Set2)
             fig3.update_layout(height=320)
             st.plotly_chart(fig3, use_container_width=True)
@@ -505,50 +412,42 @@ def render_charts(df: pd.DataFrame, food_type: str):
         with c4:
             top10  = df["제조사"].value_counts().head(10)
             others = max(0, len(df) - top10.sum())
-            labels = list(top10.index) + (["기타"] if others > 0 else [])
-            values = list(top10.values) + ([others] if others > 0 else [])
-            fig4 = px.pie(values=values, names=labels,
-                          title="제조사 점유율 (상위 10)",
+            labels = list(top10.index) + (["기타"] if others else [])
+            values = list(top10.values) + ([others] if others else [])
+            fig4 = px.pie(values=values, names=labels, title="제조사 점유율 (상위 10)",
                           color_discrete_sequence=px.colors.qualitative.Pastel)
             fig4.update_layout(height=320)
             st.plotly_chart(fig4, use_container_width=True)
 
 
 # ══════════════════════════════════════════════════════
-#  AI 분석
+#  AI 분석 (Gemini)
 # ══════════════════════════════════════════════════════
-GEMINI_CANDIDATES = [
-    "gemini-2.5-pro", "gemini-2.5-flash",
-    "gemini-1.5-pro", "gemini-1.5-flash",
-]
+GEMINI_MODELS = ["gemini-2.5-pro", "gemini-2.5-flash",
+                 "gemini-1.5-pro", "gemini-1.5-flash"]
 
-def _gemini(prompt: str, api_key: str) -> str:
+
+def _gemini(prompt, api_key):
     BASE = "https://generativelanguage.googleapis.com/v1/models"
+    s = requests.Session()
+    s.trust_env = False
     last_err = ""
-    for model in GEMINI_CANDIDATES:
+    for model in GEMINI_MODELS:
         try:
-            r = requests.post(
-                f"{BASE}/{model}:generateContent?key={api_key}",
-                headers={"Content-Type": "application/json"},
-                json={"contents": [{"parts": [{"text": prompt}]}]},
-                timeout=60,
-            )
+            r = s.post(f"{BASE}/{model}:generateContent?key={api_key}",
+                       headers={"Content-Type": "application/json"},
+                       json={"contents": [{"parts": [{"text": prompt}]}]},
+                       timeout=60)
             if r.status_code == 400:
-                msg = r.json().get("error", {}).get("message", "Bad Request")
-                raise RuntimeError(f"프롬프트 오류 (400): {msg}")
-            if r.status_code == 429:
-                last_err = f"{model}: 429 spending cap"
-                continue
-            if r.status_code == 404 or "no longer available" in r.text:
-                last_err = f"{model}: deprecated"
-                continue
+                raise RuntimeError(f"프롬프트 오류: {r.json().get('error',{}).get('message','')}")
+            if r.status_code in (429, 404) or "no longer available" in r.text:
+                last_err = f"{model}: {r.status_code}"; continue
             r.raise_for_status()
             return r.json()["candidates"][0]["content"]["parts"][0]["text"]
         except RuntimeError:
             raise
         except Exception as e:
-            last_err = f"{model}: {e}"
-            continue
+            last_err = f"{model}: {e}"; continue
     raise RuntimeError(f"모든 모델 실패: {last_err}")
 
 
@@ -560,16 +459,10 @@ def _ctx(df, food_type):
             tmp["연월"] = tmp["보고일자_dt"].dt.to_period("M").astype(str)
             monthly = tmp["연월"].value_counts().sort_index().tail(12).to_dict()
     maker_top = df["제조사"].value_counts().head(5).to_dict() if "제조사" in df.columns else {}
-    maker_n = df["제조사"].nunique() if "제조사" in df.columns else "N/A"
-    recent = []
-    if "제품명" in df.columns:
-        cols = [c for c in ["제품명", "보고일자"] if c in df.columns]
-        recent = df[cols].head(10).to_dict(orient="records")
-    kw_freq = {}
-    if "제품명" in df.columns:
-        words = re.findall(r"[가-힣a-zA-Z]{2,}",
-                           " ".join(df["제품명"].dropna().astype(str)))
-        kw_freq = dict(Counter(words).most_common(15))
+    maker_n   = df["제조사"].nunique() if "제조사" in df.columns else "N/A"
+    recent    = df[[c for c in ["제품명","보고일자"] if c in df.columns]].head(10).to_dict("records") if "제품명" in df.columns else []
+    kw_freq   = dict(Counter(re.findall(r"[가-힣a-zA-Z]{2,}",
+                     " ".join(df["제품명"].dropna().astype(str)))).most_common(15)) if "제품명" in df.columns else {}
     return dict(food_type=food_type, total=len(df), monthly=monthly,
                 maker_top=maker_top, maker_n=maker_n, recent=recent, kw_freq=kw_freq)
 
@@ -580,59 +473,46 @@ def render_ai_section(df, food_type, api_key):
     if not api_key:
         st.warning("**Gemini API 키 없음**\n\n`.streamlit/secrets.toml`:\n```toml\nGOOGLE_API_KEY = \"AIza...\"\n```")
         return
-    st.info(f"모델: **gemini-2.5-pro 우선** | 대상: **{food_type}** {len(df)}건")
+    st.info(f"모델: **gemini-2.5-pro** 우선 | 대상: **{food_type}** {len(df)}건")
     if not st.button("🔬 AI 분석 시작", key="btn_ai", type="primary", use_container_width=True):
         return
     ctx = _ctx(df, food_type)
-    prefix = (
-        f"식품 R&D 전문가로서 아래 데이터를 분석하세요.\n"
-        f"카테고리: {food_type} | 조회건수: {ctx['total']}건 | 제조사: {ctx['maker_n']}개\n"
-        f"월별추이(최근12개월): {ctx['monthly']}\n"
-        f"주요제조사(상위5): {ctx['maker_top']}\n"
-        f"최신제품(10건): {ctx['recent']}\n"
-        f"키워드빈도(상위15): {ctx['kw_freq']}\n\n"
-    )
+    prefix = (f"식품 R&D 전문가로서 아래 데이터를 분석하세요.\n"
+              f"카테고리: {food_type} | 조회건수: {ctx['total']}건 | 제조사: {ctx['maker_n']}개\n"
+              f"월별추이(최근12개월): {ctx['monthly']}\n주요제조사(상위5): {ctx['maker_top']}\n"
+              f"최신제품(10건): {ctx['recent']}\n키워드빈도(상위15): {ctx['kw_freq']}\n\n")
     analyses = [
-        {"title": "📈 시장 트렌드 분석",
-         "prompt": prefix + "위 데이터를 바탕으로 한국어로 분석하세요 (각 항목 3문장):\n1. 시장 성장성\n2. 경쟁 구도\n3. 출시 패턴\n4. R&D 시사점"},
-        {"title": "🍋 플레이버 & 원료 트렌드",
-         "prompt": prefix + "위 제품명 키워드를 바탕으로 한국어로 분석하세요 (각 항목 3문장):\n1. 주요 플레이버 트렌드\n2. 기능성 원료 트렌드\n3. 신흥 플레이버\n4. 포뮬레이션 방향 제언"},
-        {"title": "🧪 추천 레시피 3종",
-         "prompt": prefix + f"위 트렌드를 반영한 {food_type} 신제품 레시피 3종을 제안하세요.\n각 레시피:\n- 제품명 / 컨셉 / 타겟\n- 주요 원료 및 배합비(%) — 합계 100%\n- 예상 규격(pH/Brix/칼로리)\n- 차별화 포인트"},
-        {"title": "💡 종합 R&D 인사이트",
-         "prompt": prefix + "위 데이터를 바탕으로 한국어로 작성하세요 (각 항목 3문장):\n1. 시장 기회(틈새)\n2. 리스크 요인\n3. 즉시 출시 추천 컨셉(6개월 내)\n4. 중장기 R&D 방향(1~3년)"},
+        ("📈 시장 트렌드 분석",    prefix + "한국어로 분석 (각 3문장):\n1. 시장 성장성\n2. 경쟁 구도\n3. 출시 패턴\n4. R&D 시사점"),
+        ("🍋 플레이버 & 원료 트렌드", prefix + "한국어로 분석 (각 3문장):\n1. 주요 플레이버\n2. 기능성 원료\n3. 신흥 플레이버\n4. 포뮬레이션 방향"),
+        ("🧪 추천 레시피 3종",     prefix + f"{food_type} 신제품 레시피 3종:\n- 제품명/컨셉/타겟\n- 원료 배합비(%)\n- 예상 규격(pH/Brix/칼로리)\n- 차별화 포인트"),
+        ("💡 종합 R&D 인사이트",   prefix + "한국어 (각 3문장):\n1. 시장 기회\n2. 리스크\n3. 즉시 출시 컨셉(6개월)\n4. 중장기 R&D(1~3년)"),
     ]
     all_results = {}
-    for item in analyses:
-        st.markdown(f"#### {item['title']}")
-        box = st.empty()
-        box.info("분석 중…")
+    for title, prompt in analyses:
+        st.markdown(f"#### {title}")
+        box = st.empty(); box.info("분석 중…")
         try:
-            text = _gemini(item["prompt"], api_key)
-            all_results[item["title"]] = text
-            box.markdown(text)
+            text = _gemini(prompt, api_key)
+            all_results[title] = text; box.markdown(text)
         except Exception as e:
-            msg = f"❌ {e}"
-            all_results[item["title"]] = msg
-            box.error(msg)
-        st.markdown("")
+            all_results[title] = f"❌ {e}"; box.error(f"❌ {e}")
     if all_results:
         full = "\n\n---\n\n".join(f"{t}\n\n{c}" for t, c in all_results.items())
-        st.download_button("📥 AI 분석 전체 다운로드 (TXT)", full.encode("utf-8"),
-                           f"{food_type}_AI분석_{datetime.now().strftime('%Y%m%d_%H%M')}.txt",
+        st.download_button("📥 AI 분석 다운로드 (TXT)", full.encode("utf-8"),
+                           f"{food_type}_AI분석_{datetime.now():%Y%m%d_%H%M}.txt",
                            "text/plain", use_container_width=True)
 
 
 # ══════════════════════════════════════════════════════
-#  스타일 + 사이드바 + 메인
+#  UI
 # ══════════════════════════════════════════════════════
-st.markdown("""
-<style>
-[data-testid="stSidebar"] { background: #f8f9fb; }
-div[data-testid="stMetric"] { background: #f0f2f5; border-radius: 10px; padding: 12px; }
-</style>
-""", unsafe_allow_html=True)
+st.set_page_config(page_title="품목제조보고 조회", page_icon="🏭", layout="wide")
+st.markdown("""<style>
+[data-testid="stSidebar"]{background:#f8f9fb}
+div[data-testid="stMetric"]{background:#f0f2f5;border-radius:10px;padding:12px}
+</style>""", unsafe_allow_html=True)
 
+# ── 사이드바 ──
 with st.sidebar:
     st.markdown("## 🔍 조회 설정")
     st.markdown("---")
@@ -643,8 +523,7 @@ with st.sidebar:
         category  = st.selectbox("카테고리", list(FOOD_TYPES.keys()))
         food_type = st.selectbox("식품유형", FOOD_TYPES[category])
         prdlst_nm = st.text_input("🔍 제품명 검색 (선택)",
-                                  placeholder="예: 제로, 비타민, 콜라겐…",
-                                  help="PRDLST_NM 파라미터로 서버 필터링")
+                                  placeholder="예: 제로, 비타민, 콜라겐…")
         count = st.slider("조회 건수", 10, 300, 100, step=10)
     else:
         st.markdown("**비교할 유형 선택:**")
@@ -660,19 +539,16 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### 🔑 식품안전나라 API")
     _fk = get_food_api_key()
-    _has_custom = bool(_secret("FOOD_SAFETY_API_KEY", default=""))
-    if _has_custom:
+    if _secret("FOOD_SAFETY_API_KEY"):
         st.success(f"API 키 연결됨: `{_fk[:6]}…`", icon="✅")
     else:
         st.warning("기본 키 사용 중 (만료 가능)", icon="⚠️")
         st.caption("[식품안전나라](https://www.foodsafetykorea.go.kr/api/openApiInfo.do)에서 발급")
-        _input_key = st.text_input("API 키 직접 입력", type="password",
-                                   key="food_api_input",
-                                   placeholder="발급받은 키 붙여넣기")
-        if _input_key.strip():
-            st.session_state["_override_food_key"] = _input_key.strip()
-            if "working_base_url" in st.session_state:
-                del st.session_state["working_base_url"]
+        _ik = st.text_input("API 키 직접 입력", type="password",
+                            key="food_api_input", placeholder="발급받은 키 붙여넣기")
+        if _ik.strip():
+            st.session_state["_override_food_key"] = _ik.strip()
+            st.session_state.pop("working_base_url", None)
             st.success("키 적용됨!")
 
     st.markdown("---")
@@ -688,78 +564,58 @@ with st.sidebar:
     gemini_key = get_gemini_key()
 
     st.markdown("---")
-    if st.button("🔄 캐시 초기화", use_container_width=True):
-        st.cache_data.clear()
-        if "working_base_url" in st.session_state:
-            del st.session_state["working_base_url"]
-        st.success("완료")
+    _c1, _c2 = st.columns(2)
+    with _c1:
+        if st.button("🔄 캐시 초기화", use_container_width=True):
+            st.cache_data.clear()
+            st.session_state.pop("working_base_url", None)
+            st.success("완료")
+    with _c2:
+        if st.button("🩺 연결 테스트", use_container_width=True):
+            st.session_state.pop("working_base_url", None)
+            test_url = f"{API_BASE}/{get_food_api_key()}/{SERVICE_ID}/json/1/1"
+            d, e = _api_get(test_url)
+            if d and SERVICE_ID in d:
+                st.success(f"✅ 성공 (total={d[SERVICE_ID].get('total_count','?')})")
+            else:
+                st.error(f"❌ {e}")
+            prx = {k: v for k, v in os.environ.items() if "proxy" in k.lower()}
+            if prx:
+                st.warning(f"프록시 감지: {prx}")
 
-    if st.button("🩺 연결 테스트", use_container_width=True):
-        if "working_base_url" in st.session_state:
-            del st.session_state["working_base_url"]
-        _tk = get_food_api_key()
-        _turl = f"http://openapi.foodsafetykorea.go.kr/api/{_tk}/{SERVICE_ID}/json/1/1"
-        st.markdown("**연결 진단 중…**")
-
-        # 프록시 환경변수 확인
-        _proxies = {k: v for k, v in os.environ.items() if "proxy" in k.lower()}
-        if _proxies:
-            st.warning(f"⚠️ 프록시 환경변수 감지: {_proxies}")
-        else:
-            st.caption("프록시 환경변수: 없음")
-
-        # 1) requests (IPv4 강제 + 프록시 우회)
-        d, e = _api_get_requests(_turl)
-        if d:
-            st.success(f"✅ **requests (IPv4)**: 성공! (total={d.get(SERVICE_ID,{}).get('total_count','?')})")
-        else:
-            st.error(f"❌ **requests (IPv4)**: {e}")
-
-        # 2) curl (프록시 제거)
-        d2, e2 = _api_get_curl(_turl)
-        if d2:
-            st.success(f"✅ **curl (noproxy)**: 성공! (total={d2.get(SERVICE_ID,{}).get('total_count','?')})")
-        else:
-            st.error(f"❌ **curl (noproxy)**: {e2}")
-
-    st.caption("📡 식품안전나라 I1250")
-    st.caption("⚠️ 일일 2,000회 호출 제한")
+    st.caption("📡 식품안전나라 I1250 · v7.0")
 
 
+# ── 세션 초기화 ──
 for _k, _v in {"result_df": None, "result_label": "", "result_total": 0,
                "result_src": "", "result_mode": "", "status_msgs": {}}.items():
-    if _k not in st.session_state:
-        st.session_state[_k] = _v
+    st.session_state.setdefault(_k, _v)
 
 
+# ── 메인 ──
 st.markdown("# 🏭 식품안전나라 품목제조보고 조회")
 st.markdown("---")
 
 if run:
     if mode == "📋 단일 유형 조회":
         t0 = time.time()
-        search_label = f"**{food_type}**" + (f" / 제품명: **{prdlst_nm}**" if prdlst_nm.strip() else "")
-        st.info(f"📡 {search_label} 조회 중…")
-        prog_bar    = st.progress(0.0)
-        status_text = st.empty()
+        label = f"**{food_type}**" + (f" / 제품명: **{prdlst_nm}**" if prdlst_nm.strip() else "")
+        st.info(f"📡 {label} 조회 중…")
+        prog = st.progress(0.0); stxt = st.empty()
         rows, src, total, _ = fetch_food_data(
             food_type, top_n=count, prdlst_nm=prdlst_nm,
-            prog_bar=prog_bar, status_text=status_text,
-        )
+            prog_bar=prog, status_text=stxt)
         elapsed = time.time() - t0
-        prog_bar.empty()
-        status_text.empty()
+        prog.empty(); stxt.empty()
         if not rows:
             st.error(f"❌ 조회 실패: {src}")
         else:
             df = to_df(rows)
-            result_label = food_type + (f" [{prdlst_nm}]" if prdlst_nm.strip() else "")
-            st.session_state.update({
-                "result_df": df, "result_label": result_label,
-                "result_total": total,
-                "result_src": f"✅ **{len(df)}건** | {elapsed:.1f}초 | {src}",
-                "result_mode": "single", "status_msgs": {},
-            })
+            rl = food_type + (f" [{prdlst_nm}]" if prdlst_nm.strip() else "")
+            st.session_state.update(
+                result_df=df, result_label=rl, result_total=total,
+                result_src=f"✅ **{len(df)}건** | {elapsed:.1f}초 | {src}",
+                result_mode="single", status_msgs={})
     else:
         if not selected_types:
             st.warning("⚠️ 유형을 1개 이상 선택하세요.")
@@ -769,11 +625,10 @@ if run:
             elapsed = time.time() - t0
             df = to_df(all_rows)
             label = ", ".join(selected_types[:3]) + ("…" if len(selected_types) > 3 else "")
-            st.session_state.update({
-                "result_df": df, "result_label": label, "result_total": 0,
-                "result_src": f"✅ {len(selected_types)}개 유형 완료 | {elapsed:.1f}초 | {len(df)}건",
-                "result_mode": "multi", "status_msgs": status,
-            })
+            st.session_state.update(
+                result_df=df, result_label=label, result_total=0,
+                result_src=f"✅ {len(selected_types)}개 유형 | {elapsed:.1f}초 | {len(df)}건",
+                result_mode="multi", status_msgs=status)
 
 df     = st.session_state["result_df"]
 r_mode = st.session_state["result_mode"]
@@ -785,19 +640,14 @@ smsgs  = st.session_state["status_msgs"]
 if df is None:
     st.info("👈 사이드바에서 식품유형을 선택하고 **[조회 실행]**을 누르세요.")
 elif df.empty:
-    st.warning(f"⚠️ **'{r_lbl}'** 결과 없음 — 식품유형명을 확인하세요.")
-    # 디버그: 각 유형별 실패 원인 표시
+    st.warning(f"⚠️ **'{r_lbl}'** 결과 없음")
     if smsgs:
-        st.markdown("**📋 유형별 조회 상세:**")
+        st.markdown("**📋 유형별 상세:**")
         for ft, info in smsgs.items():
-            st.code(f"{ft}: {info.get('msg', '알 수 없음')} (fetched={info['fetched']}, total={info['total']})")
-    # API 키 확인
+            st.code(f"{ft}: {info.get('msg','')} (수집={info['fetched']}, 전체={info['total']})")
     _k = get_food_api_key()
-    st.info(f"🔑 현재 API 키: `{_k[:6]}...{_k[-4:]}` ({len(_k)}자)\n\n"
-            f"키가 만료되었을 수 있습니다. "
-            f"[식품안전나라](https://www.foodsafetykorea.go.kr/api/openApiInfo.do)에서 "
-            f"본인 키를 발급받아 `.streamlit/secrets.toml`에 설정하세요.\n\n"
-            f"```toml\nFOOD_SAFETY_API_KEY = \"발급받은키\"\n```")
+    st.info(f"🔑 현재 키: `{_k[:6]}…{_k[-4:]}` — "
+            f"만료 시 [식품안전나라](https://www.foodsafetykorea.go.kr/api/openApiInfo.do)에서 재발급")
 else:
     st.success(r_src)
     if smsgs:
@@ -824,20 +674,21 @@ else:
     with tab1:
         ca, cb = st.columns(2)
         with ca:
-            kw = st.text_input("🔎 검색", placeholder="제품명·제조사·원재료", key="kw_input")
+            kw = st.text_input("🔎 검색", placeholder="제품명·제조사·원재료", key="kw")
         with cb:
             makers = (["전체"] + sorted(df["제조사"].dropna().unique().tolist())
                       if "제조사" in df.columns else ["전체"])
-            sel_mk = st.selectbox("제조사 필터", makers, key="maker_sel")
+            sel_mk = st.selectbox("제조사 필터", makers, key="mk")
         fdf = df.copy()
         if kw:
             fdf = fdf[fdf.apply(lambda r: kw.lower() in str(r).lower(), axis=1)]
         if "제조사" in df.columns and sel_mk != "전체":
             fdf = fdf[fdf["제조사"] == sel_mk]
-        sc = [c for c in ["제품명", "식품유형", "제조사", "보고일자",
-                           "주요원재료", "유통기한", "생산종료"] if c in fdf.columns]
-        st.dataframe(fdf[sc].reset_index(drop=True), use_container_width=True, height=480)
-        st.caption(f"총 {len(fdf)}건 표시")
+        show = [c for c in ["제품명","식품유형","제조사","보고일자",
+                             "주요원재료","유통기한","생산종료"] if c in fdf.columns]
+        st.dataframe(fdf[show].reset_index(drop=True),
+                     use_container_width=True, height=480)
+        st.caption(f"총 {len(fdf)}건")
 
     with tab2:
         render_charts(df, r_lbl)
@@ -846,7 +697,7 @@ else:
         st.dataframe(df, use_container_width=True, height=480)
         csv = df.to_csv(index=False).encode("utf-8-sig")
         st.download_button("📥 CSV 다운로드", csv,
-                           f"{r_lbl}_{datetime.now().strftime('%Y%m%d')}.csv",
+                           f"{r_lbl}_{datetime.now():%Y%m%d}.csv",
                            "text/csv", use_container_width=True)
 
     render_ai_section(df, r_lbl, gemini_key)
