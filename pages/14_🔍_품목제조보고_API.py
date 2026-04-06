@@ -16,6 +16,7 @@ import re
 import time
 import urllib.parse
 import json
+import os
 
 GENAI_AVAILABLE = True
 
@@ -224,10 +225,12 @@ def _make_session():
 
 
 def _api_get_requests(url: str):
-    """requests 라이브러리로 시도 (IPv4 강제 적용됨)"""
+    """requests 라이브러리로 시도 (IPv4 강제 + 프록시 우회)"""
     try:
         session = _make_session()
-        r = session.get(url, timeout=(10, 30))
+        session.trust_env = False  # 환경변수 프록시 무시
+        r = session.get(url, timeout=(10, 30),
+                        proxies={"http": None, "https": None})
         if r.status_code != 200:
             return None, f"HTTP {r.status_code}: {r.text[:200]}"
         raw = r.text.strip()
@@ -243,13 +246,18 @@ def _api_get_requests(url: str):
 
 
 def _api_get_curl(url: str):
-    """curl 명령어로 fallback (시스템 curl 사용)"""
+    """curl 명령어로 fallback (프록시 환경변수 무시)"""
     try:
+        # 프록시 환경변수 제거한 깨끗한 환경
+        clean_env = {k: v for k, v in os.environ.items()
+                     if "proxy" not in k.lower()}
         result = subprocess.run(
             ["curl", "-s", "-m", "30", "--connect-timeout", "10",
+             "--noproxy", "*",
              "-H", "Accept: application/json", url],
             capture_output=True, text=True, timeout=35,
             encoding="utf-8", errors="replace",
+            env=clean_env,
         )
         if result.returncode != 0:
             return None, f"curl 실패 (code={result.returncode}): {result.stderr[:200]}"
@@ -693,19 +701,26 @@ with st.sidebar:
         _turl = f"http://openapi.foodsafetykorea.go.kr/api/{_tk}/{SERVICE_ID}/json/1/1"
         st.markdown("**연결 진단 중…**")
 
-        # 1) requests (IPv4 강제)
+        # 프록시 환경변수 확인
+        _proxies = {k: v for k, v in os.environ.items() if "proxy" in k.lower()}
+        if _proxies:
+            st.warning(f"⚠️ 프록시 환경변수 감지: {_proxies}")
+        else:
+            st.caption("프록시 환경변수: 없음")
+
+        # 1) requests (IPv4 강제 + 프록시 우회)
         d, e = _api_get_requests(_turl)
         if d:
             st.success(f"✅ **requests (IPv4)**: 성공! (total={d.get(SERVICE_ID,{}).get('total_count','?')})")
         else:
             st.error(f"❌ **requests (IPv4)**: {e}")
 
-        # 2) curl
+        # 2) curl (프록시 제거)
         d2, e2 = _api_get_curl(_turl)
         if d2:
-            st.success(f"✅ **curl**: 성공! (total={d2.get(SERVICE_ID,{}).get('total_count','?')})")
+            st.success(f"✅ **curl (noproxy)**: 성공! (total={d2.get(SERVICE_ID,{}).get('total_count','?')})")
         else:
-            st.error(f"❌ **curl**: {e2}")
+            st.error(f"❌ **curl (noproxy)**: {e2}")
 
     st.caption("📡 식품안전나라 I1250")
     st.caption("⚠️ 일일 2,000회 호출 제한")
