@@ -3,7 +3,7 @@
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 v6: 조회 간소화 — PRDLST_DCNM 서버필터 1회 방식
 v6.1: HTTP/HTTPS 자동 전환 + 응답 디버깅 강화
-v6.2: 마침표(.) 인코딩 수정 + API키 입력 UI + 디버그 강화
+v6.2: 마침표 인코딩 + API키 입력 + 프록시 자동우회 + 연결 진단
 """
 
 import streamlit as st
@@ -57,21 +57,20 @@ API_BASE_URLS = [
 ]
 
 def get_base_url():
-    """작동하는 프로토콜(HTTP/HTTPS) 자동 감지"""
+    """작동하는 프로토콜(HTTP/HTTPS) + 프록시 자동 감지"""
     key = get_food_api_key()
     if "working_base_url" in st.session_state:
         return st.session_state["working_base_url"]
 
-    for base in API_BASE_URLS:
-        test_url = f"{base}/{key}/{SERVICE_ID}/json/1/1"
-        try:
-            r = requests.get(test_url, timeout=10)
-            if r.status_code == 200 and r.text.strip().startswith("{"):
-                url = f"{base}/{key}/{SERVICE_ID}/json"
-                st.session_state["working_base_url"] = url
-                return url
-        except Exception:
-            continue
+    # _api_get가 내부적으로 프록시 우회 + HTTPS 전환을 시도함
+    test_url = f"{API_BASE_URLS[0]}/{key}/{SERVICE_ID}/json/1/1"
+    data, err = _api_get(test_url)
+    if data and SERVICE_ID in data:
+        # 성공한 프로토콜 확인 (HTTPS로 전환됐을 수 있음)
+        for base in API_BASE_URLS:
+            url = f"{base}/{key}/{SERVICE_ID}/json"
+            st.session_state["working_base_url"] = url
+            return url
 
     url = f"{API_BASE_URLS[0]}/{key}/{SERVICE_ID}/json"
     st.session_state["working_base_url"] = url
@@ -198,31 +197,67 @@ def _norm(s: str) -> str:
     return s.strip().replace("·", ".").replace(" ", "").lower()
 
 
+def _make_session():
+    """프록시 자동 감지 + 브라우저 헤더 포함 세션 생성"""
+    s = requests.Session()
+    s.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                      "AppleWebKit/537.36 (KHTML, like Gecko) "
+                      "Chrome/125.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+    })
+    return s
+
+
 def _api_get(url: str):
-    """API GET → (json_dict, error_msg)"""
-    try:
-        r = requests.get(url, timeout=30)
-    except requests.exceptions.Timeout:
-        return None, "응답 시간 초과 (30초)"
-    except requests.exceptions.ConnectionError as e:
-        return None, f"서버 연결 실패: {e}"
-    except Exception as e:
-        return None, f"요청 오류: {e}"
+    """API GET → (json_dict, error_msg)
+    전략: ① 시스템 프록시 사용 → ② 프록시 우회 → ③ HTTPS 전환
+    """
+    strategies = [
+        ("기본 연결", {}),
+        ("프록시 우회", {"proxies": {"http": None, "https": None}}),
+        ("HTTPS 전환", {"_https": True}),
+    ]
 
-    if r.status_code != 200:
-        return None, f"HTTP {r.status_code}: {r.text[:200]}"
+    last_err = ""
+    for name, opts in strategies:
+        try:
+            target = url
+            if opts.pop("_https", False):
+                target = url.replace("http://", "https://", 1)
 
-    raw = r.text.strip()
-    if not raw:
-        return None, f"빈 응답 (HTTP {r.status_code})"
+            session = _make_session()
+            r = session.get(target, timeout=(10, 30), **opts)
 
-    if raw.startswith("<") or raw.startswith("<!"):
-        return None, f"HTML 응답 (API 서버 오류): {raw[:150]}"
+            if r.status_code != 200:
+                last_err = f"[{name}] HTTP {r.status_code}: {r.text[:200]}"
+                continue
 
-    try:
-        return r.json(), None
-    except Exception:
-        return None, f"JSON 파싱 실패: {raw[:200]}"
+            raw = r.text.strip()
+            if not raw:
+                last_err = f"[{name}] 빈 응답"
+                continue
+            if raw.startswith("<") or raw.startswith("<!"):
+                last_err = f"[{name}] HTML 응답: {raw[:150]}"
+                continue
+
+            try:
+                return r.json(), None
+            except Exception:
+                last_err = f"[{name}] JSON 파싱 실패: {raw[:200]}"
+                continue
+
+        except requests.exceptions.Timeout:
+            last_err = f"[{name}] 시간 초과"
+            continue
+        except requests.exceptions.ConnectionError as e:
+            last_err = f"[{name}] 연결 실패: {e}"
+            continue
+        except Exception as e:
+            last_err = f"[{name}] 오류: {e}"
+            continue
+
+    return None, last_err
 
 
 # ══════════════════════════════════════════════════════
@@ -626,6 +661,37 @@ with st.sidebar:
         if "working_base_url" in st.session_state:
             del st.session_state["working_base_url"]
         st.success("완료")
+
+    if st.button("🩺 연결 테스트", use_container_width=True):
+        if "working_base_url" in st.session_state:
+            del st.session_state["working_base_url"]
+        _tk = get_food_api_key()
+        st.markdown("**연결 진단 중…**")
+        _strategies = [
+            ("HTTP 기본",
+             f"http://openapi.foodsafetykorea.go.kr/api/{_tk}/{SERVICE_ID}/json/1/1",
+             {}),
+            ("HTTP 프록시우회",
+             f"http://openapi.foodsafetykorea.go.kr/api/{_tk}/{SERVICE_ID}/json/1/1",
+             {"proxies": {"http": None, "https": None}}),
+            ("HTTPS",
+             f"https://openapi.foodsafetykorea.go.kr/api/{_tk}/{SERVICE_ID}/json/1/1",
+             {}),
+        ]
+        for _sname, _surl, _sopts in _strategies:
+            try:
+                _sr = _make_session().get(_surl, timeout=(10, 20), **_sopts)
+                if _sr.status_code == 200 and _sr.text.strip().startswith("{"):
+                    _sj = _sr.json()
+                    _stot = _sj.get(SERVICE_ID, {}).get("total_count", "?")
+                    st.success(f"✅ **{_sname}**: 성공! (total={_stot})")
+                else:
+                    st.warning(f"⚠️ **{_sname}**: HTTP {_sr.status_code}")
+            except requests.exceptions.Timeout:
+                st.error(f"❌ **{_sname}**: 타임아웃")
+            except Exception as _se:
+                st.error(f"❌ **{_sname}**: {str(_se)[:100]}")
+
     st.caption("📡 식품안전나라 I1250")
     st.caption("⚠️ 일일 2,000회 호출 제한")
 
