@@ -1,9 +1,7 @@
 """
 🥤 식품안전나라 음료 품목제조보고 조회
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Colab 스크립트 → Streamlit 전환 (API 로직 동일)
-HTTPS 우선 → HTTP fallback 자동 감지
-PRDLST_DCNM 일치 검증으로 과.채주스 ≠ 과자 문제 해결
+HTTPS 우선 + PRDLST_DCNM 유연 매칭
 """
 import streamlit as st
 import requests
@@ -12,7 +10,6 @@ import time
 import urllib.parse
 from datetime import datetime
 
-# ── 상수 (Colab 원본과 동일) ──
 DRINK_TYPES = [
     "과.채주스", "과.채음료", "농축과.채즙", "탄산음료", "탄산수",
     "두유", "가공두유", "원액두유", "인삼.홍삼음료", "혼합음료",
@@ -20,32 +17,30 @@ DRINK_TYPES = [
 ]
 
 COL_MAP = {
-    "PRDLST_NM": "제품명",
-    "PRDLST_DCNM": "식품유형",
-    "BSSH_NM": "제조사",
-    "PRMS_DT": "보고일자",
-    "RAWMTRL_NM": "주요원재료",
-    "POG_DAYCNT": "유통기한",
-    "PRODUCTION": "생산종료",
-    "LAST_UPDT_DTM": "최종수정일",
+    "PRDLST_NM": "제품명", "PRDLST_DCNM": "식품유형",
+    "BSSH_NM": "제조사", "PRMS_DT": "보고일자",
+    "RAWMTRL_NM": "주요원재료", "POG_DAYCNT": "유통기한",
+    "PRODUCTION": "생산종료", "LAST_UPDT_DTM": "최종수정일",
     "PRDLST_REPORT_NO": "품목제조번호",
 }
 
-# HTTPS 우선 (Streamlit Cloud), HTTP fallback (Colab/로컬)
 BASE_URLS = [
     "https://openapi.foodsafetykorea.go.kr/api",
     "http://openapi.foodsafetykorea.go.kr/api",
 ]
 
 
-# ── 작동하는 프로토콜 자동 감지 (최초 1회) ──
+def _normalize(s):
+    """식품유형명 정규화 — 공백, 가운뎃점, 마침표 통일"""
+    return s.strip().replace("·", ".").replace("‧", ".").replace(" ", "")
+
+
 def find_working_base(api_key):
     if "working_base" in st.session_state:
         return st.session_state["working_base"]
     for base in BASE_URLS:
-        test_url = f"{base}/{api_key}/I1250/json/1/1"
         try:
-            r = requests.get(test_url, timeout=10)
+            r = requests.get(f"{base}/{api_key}/I1250/json/1/1", timeout=10)
             if r.status_code == 200 and r.text.strip().startswith("{"):
                 st.session_state["working_base"] = base
                 return base
@@ -55,22 +50,20 @@ def find_working_base(api_key):
     return BASE_URLS[0]
 
 
-# ── 데이터 수집 (Colab 원본 로직 + PRDLST_DCNM 필터) ──
 def fetch_food_safety_data(api_key, food_type, max_rows, log):
     base_url = find_working_base(api_key)
     all_data = []
     start_idx = 1
-    page_size = 500  # 원본과 동일: 500건씩 분할 요청
-
-    # 한글 유형명 인코딩 (마침표는 안전하게 처리)
+    page_size = 500
     encoded_type = urllib.parse.quote(food_type, safe=".")
+    norm_target = _normalize(food_type)
 
     proto = base_url.split("://")[0]
     log(f"🚀 {food_type} 수집 시작 (프로토콜: {proto})")
+    log(f"🔍 매칭 대상: '{norm_target}'")
 
     while start_idx <= max_rows:
         end_idx = min(start_idx + page_size - 1, max_rows)
-
         url = f"{base_url}/{api_key}/I1250/json/{start_idx}/{end_idx}/PRDLST_DCNM={encoded_type}"
 
         try:
@@ -82,30 +75,34 @@ def fetch_food_safety_data(api_key, food_type, max_rows, log):
             if not service_data:
                 res_code = data.get("RESULT", {}).get("CODE")
                 if res_code == "INFO-200":
-                    log("ℹ️ 해당 조건의 데이터가 더 이상 없습니다.")
+                    log("ℹ️ 데이터 없음")
                 else:
                     log(f"❌ API 오류: {data.get('RESULT', {}).get('MSG')}")
                 break
 
-            rows = service_data.get("row", [])
-
-            # ⚠️ 핵심: 식품유형 정확 일치 필터
-            # API가 "과.채주스" 검색 시 "과자"도 반환하므로 클라이언트에서 검증
-            rows = [r for r in rows if r.get("PRDLST_DCNM") == food_type]
-
-            all_data.extend(rows)
-
+            raw_rows = service_data.get("row", [])
             total_count = service_data.get("total_count", "0")
-            log(f"📦 {start_idx}~{end_idx} → {len(rows)}건 일치 (누적: {len(all_data)} / DB전체: {total_count})")
 
-            if len(service_data.get("row", [])) < (end_idx - start_idx + 1):
-                break  # 마지막 페이지
+            # 디버그: 실제 반환된 PRDLST_DCNM 값 확인
+            if raw_rows and start_idx == 1:
+                dcnm_values = set(r.get("PRDLST_DCNM", "???") for r in raw_rows[:20])
+                log(f"🔎 API 반환 식품유형 샘플: {dcnm_values}")
+
+            # 정규화 매칭 (공백/가운뎃점/마침표 차이 무시)
+            matched = [r for r in raw_rows
+                       if _normalize(r.get("PRDLST_DCNM", "")) == norm_target]
+            all_data.extend(matched)
+
+            log(f"📦 {start_idx}~{end_idx} → API {len(raw_rows)}건 중 {len(matched)}건 일치 (누적: {len(all_data)} / DB: {total_count})")
+
+            if len(raw_rows) < (end_idx - start_idx + 1):
+                break
 
             start_idx += page_size
             time.sleep(0.2)
 
         except requests.exceptions.Timeout:
-            log(f"⏰ {start_idx}~{end_idx} 타임아웃 — 재시도…")
+            log(f"⏰ 타임아웃 — 재시도…")
             time.sleep(1)
             continue
         except Exception as e:
@@ -115,42 +112,29 @@ def fetch_food_safety_data(api_key, food_type, max_rows, log):
     return all_data
 
 
-# ══════════════════════════════════════════════════════
-#  Streamlit UI
-# ══════════════════════════════════════════════════════
+# ── UI ──
 st.title("🥤 음료 품목제조보고 조회")
 
 with st.sidebar:
     st.markdown("### 🔑 API 키")
-    api_key = st.text_input(
-        "식품안전나라 API 키", type="password",
-        help="https://www.foodsafetykorea.go.kr/api/openApiInfo.do → I1250 신청")
-
+    api_key = st.text_input("식품안전나라 API 키", type="password")
     st.markdown("### 🍹 조회 설정")
     food_type = st.selectbox("식품유형", DRINK_TYPES)
     max_rows  = st.slider("최대 수집 건수", 10, 1000, 200, step=10)
-
     st.markdown("---")
     run = st.button("🚀 조회 시작", type="primary", use_container_width=True)
-
     if st.button("🔄 연결 초기화"):
         st.session_state.pop("working_base", None)
-        st.success("프로토콜 캐시 초기화 완료")
+        st.success("완료")
 
 if not api_key:
-    st.info(
-        "👈 사이드바에서 **API 키**를 입력하세요.\n\n"
-        "**발급 방법:**\n"
-        "1. [식품안전나라](https://www.foodsafetykorea.go.kr/api/openApiInfo.do) 접속\n"
-        "2. 서비스: **품목제조보고(심사) [I1250]** 신청\n"
-        "3. 발급받은 키를 왼쪽에 입력"
-    )
+    st.info("👈 사이드바에서 API 키를 입력하세요.\n\n"
+            "[키 발급](https://www.foodsafetykorea.go.kr/api/openApiInfo.do) → I1250 신청")
     st.stop()
 
 if run:
     log_box = st.empty()
     log_lines = []
-
     def log(msg):
         log_lines.append(msg)
         log_box.code("\n".join(log_lines))
@@ -160,43 +144,31 @@ if run:
     elapsed = time.time() - t0
 
     if not raw_rows:
-        st.error("❌ 수집된 데이터가 없습니다. API 키와 식품유형을 확인하세요.")
+        st.error("❌ 수집된 데이터가 없습니다.")
+        st.info("위 로그의 **'API 반환 식품유형 샘플'**을 확인하세요.\n\n"
+                "API가 다른 유형을 반환하고 있다면 필터 매칭 문제입니다.")
         st.stop()
 
-    # ── DataFrame 처리 ──
     df = pd.DataFrame(raw_rows)
     avail = [c for c in COL_MAP if c in df.columns]
     df = df[avail].rename(columns=COL_MAP)
-
     if "보고일자" in df.columns:
-        df = df.sort_values(by="보고일자", ascending=False).reset_index(drop=True)
+        df = df.sort_values("보고일자", ascending=False).reset_index(drop=True)
 
-    # ── 결과 ──
-    st.success(f"✅ 수집 완료! ({elapsed:.1f}초)")
-
+    st.success(f"✅ {len(df)}건 수집 ({elapsed:.1f}초)")
     c1, c2, c3 = st.columns(3)
-    c1.metric("📊 수집 건수", f"{len(df)}건")
+    c1.metric("수집 건수", f"{len(df)}건")
     if "제조사" in df.columns:
-        c2.metric("🏢 제조사 수", f"{df['제조사'].nunique()}개소")
+        c2.metric("제조사 수", f"{df['제조사'].nunique()}개소")
     if "보고일자" in df.columns:
-        c3.metric("📅 최근 보고일", df["보고일자"].max())
+        c3.metric("최근 보고일", df["보고일자"].max())
 
     st.markdown("---")
-
-    # 미리보기
-    st.markdown("### 📋 상위 10건")
-    preview = [c for c in ["제품명", "제조사", "보고일자", "주요원재료"] if c in df.columns]
-    st.dataframe(df[preview].head(10), use_container_width=True)
-
-    # 전체 데이터
-    st.markdown("### 📊 전체 데이터")
     show = [c for c in ["식품유형","제품명","보고일자","제조사","주요원재료","유통기한","생산종료"]
             if c in df.columns]
     st.dataframe(df[show], use_container_width=True, height=500)
-    st.caption(f"총 {len(df)}건")
 
-    # CSV
-    file_name = f"{food_type.replace('.', '_')}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv"
     csv = df.to_csv(index=False).encode("utf-8-sig")
-    st.download_button("📥 CSV 다운로드", csv, file_name,
+    st.download_button("📥 CSV", csv,
+                       f"{food_type.replace('.','_')}_{datetime.now():%Y%m%d_%H%M}.csv",
                        "text/csv", use_container_width=True)
