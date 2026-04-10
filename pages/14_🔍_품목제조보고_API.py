@@ -1,7 +1,8 @@
 """
 🥤 식품안전나라 음료 품목제조보고 조회
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-HTTPS 우선 + PRDLST_DCNM 유연 매칭
+프로토콜 자동 감지: 필터 작동 여부까지 검증
+HTTP 우선 (Colab과 동일) → HTTPS fallback
 """
 import streamlit as st
 import requests
@@ -24,28 +25,44 @@ COL_MAP = {
     "PRDLST_REPORT_NO": "품목제조번호",
 }
 
+# HTTP 먼저 (Colab과 동일하게 작동), HTTPS fallback
 BASE_URLS = [
-    "https://openapi.foodsafetykorea.go.kr/api",
     "http://openapi.foodsafetykorea.go.kr/api",
+    "https://openapi.foodsafetykorea.go.kr/api",
 ]
 
 
 def _normalize(s):
-    """식품유형명 정규화 — 공백, 가운뎃점, 마침표 통일"""
     return s.strip().replace("·", ".").replace("‧", ".").replace(" ", "")
 
 
 def find_working_base(api_key):
+    """필터가 실제로 작동하는 프로토콜 찾기"""
     if "working_base" in st.session_state:
         return st.session_state["working_base"]
+
+    # "탄산음료"로 테스트 (마침표 없는 확실한 유형)
+    test_type = urllib.parse.quote("탄산음료")
+
     for base in BASE_URLS:
+        url = f"{base}/{api_key}/I1250/json/1/3/PRDLST_DCNM={test_type}"
         try:
-            r = requests.get(f"{base}/{api_key}/I1250/json/1/1", timeout=10)
-            if r.status_code == 200 and r.text.strip().startswith("{"):
+            r = requests.get(url, timeout=15)
+            if r.status_code != 200:
+                continue
+            data = r.json()
+            svc = data.get("I1250", {})
+            if svc.get("RESULT", {}).get("CODE") != "INFO-000":
+                continue
+            # 핵심: 반환된 데이터가 실제로 "탄산음료"인지 확인
+            rows = svc.get("row", [])
+            if rows and rows[0].get("PRDLST_DCNM") == "탄산음료":
                 st.session_state["working_base"] = base
                 return base
         except Exception:
             continue
+
+    # 둘 다 안 되면 HTTP (Colab 기본)
     st.session_state["working_base"] = BASE_URLS[0]
     return BASE_URLS[0]
 
@@ -60,7 +77,6 @@ def fetch_food_safety_data(api_key, food_type, max_rows, log):
 
     proto = base_url.split("://")[0]
     log(f"🚀 {food_type} 수집 시작 (프로토콜: {proto})")
-    log(f"🔍 매칭 대상: '{norm_target}'")
 
     while start_idx <= max_rows:
         end_idx = min(start_idx + page_size - 1, max_rows)
@@ -83,17 +99,13 @@ def fetch_food_safety_data(api_key, food_type, max_rows, log):
             raw_rows = service_data.get("row", [])
             total_count = service_data.get("total_count", "0")
 
-            # 디버그: 실제 반환된 PRDLST_DCNM 값 확인
-            if raw_rows and start_idx == 1:
-                dcnm_values = set(r.get("PRDLST_DCNM", "???") for r in raw_rows[:20])
-                log(f"🔎 API 반환 식품유형 샘플: {dcnm_values}")
-
-            # 정규화 매칭 (공백/가운뎃점/마침표 차이 무시)
+            # 식품유형 정규화 매칭
             matched = [r for r in raw_rows
                        if _normalize(r.get("PRDLST_DCNM", "")) == norm_target]
             all_data.extend(matched)
 
-            log(f"📦 {start_idx}~{end_idx} → API {len(raw_rows)}건 중 {len(matched)}건 일치 (누적: {len(all_data)} / DB: {total_count})")
+            log(f"📦 {start_idx}~{end_idx} → {len(matched)}/{len(raw_rows)}건 일치 "
+                f"(누적: {len(all_data)} / DB: {total_count})")
 
             if len(raw_rows) < (end_idx - start_idx + 1):
                 break
@@ -125,7 +137,7 @@ with st.sidebar:
     run = st.button("🚀 조회 시작", type="primary", use_container_width=True)
     if st.button("🔄 연결 초기화"):
         st.session_state.pop("working_base", None)
-        st.success("완료")
+        st.success("완료 — 다시 조회하면 프로토콜 재감지합니다")
 
 if not api_key:
     st.info("👈 사이드바에서 API 키를 입력하세요.\n\n"
@@ -144,9 +156,7 @@ if run:
     elapsed = time.time() - t0
 
     if not raw_rows:
-        st.error("❌ 수집된 데이터가 없습니다.")
-        st.info("위 로그의 **'API 반환 식품유형 샘플'**을 확인하세요.\n\n"
-                "API가 다른 유형을 반환하고 있다면 필터 매칭 문제입니다.")
+        st.error("❌ 수집된 데이터가 없습니다. API 키와 식품유형을 확인하세요.")
         st.stop()
 
     df = pd.DataFrame(raw_rows)
@@ -167,6 +177,7 @@ if run:
     show = [c for c in ["식품유형","제품명","보고일자","제조사","주요원재료","유통기한","생산종료"]
             if c in df.columns]
     st.dataframe(df[show], use_container_width=True, height=500)
+    st.caption(f"총 {len(df)}건")
 
     csv = df.to_csv(index=False).encode("utf-8-sig")
     st.download_button("📥 CSV", csv,
