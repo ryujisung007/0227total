@@ -1,14 +1,9 @@
 """
 🥤 식품안전나라 음료 품목제조보고 조회
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-3단계 연결 시도:
- ① requests HTTP (trust_env=False)
- ② urllib HTTP
- ③ urllib HTTPS
-필터 검증 + 마침표 인코딩 자동 전환
+HTTP 전용 (HTTPS는 이 API에서 필터 미지원)
 """
 import streamlit as st
-import requests as req_lib
 import pandas as pd
 import json
 import time
@@ -30,193 +25,155 @@ COL_MAP = {
     "PRDLST_REPORT_NO": "품목제조번호",
 }
 
+BASE_URL = "http://openapi.foodsafetykorea.go.kr/api"
+
 
 def _normalize(s):
     return s.strip().replace("·", ".").replace("‧", ".").replace(" ", "")
 
 
-# ══════════════════════════════════════════════════════
-#  3가지 HTTP 호출 방법
-# ══════════════════════════════════════════════════════
-def _call_requests_http(url):
-    """① requests + HTTP + trust_env=False"""
-    s = req_lib.Session()
-    s.trust_env = False
-    r = s.get(url, timeout=(10, 20),
-              proxies={"http": None, "https": None},
-              headers={"User-Agent": "Mozilla/5.0"})
-    r.raise_for_status()
-    return r.json()
-
-
-def _call_urllib(url):
-    """② ③ urllib (HTTP 또는 HTTPS)"""
-    r = urllib.request.Request(url, headers={
-        "User-Agent": "Mozilla/5.0", "Accept": "application/json"})
-    with urllib.request.urlopen(r, timeout=20) as resp:
+def api_get(url, timeout=30):
+    """urllib로 HTTP API 호출"""
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "Mozilla/5.0 (compatible; FoodSafetyBot/1.0)",
+        "Accept": "application/json",
+    })
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
-# 사용할 메서드 목록
-METHODS = [
-    ("requests-http",  "http://openapi.foodsafetykorea.go.kr/api",  _call_requests_http),
-    ("urllib-http",    "http://openapi.foodsafetykorea.go.kr/api",  _call_urllib),
-    ("urllib-https",   "https://openapi.foodsafetykorea.go.kr/api", _call_urllib),
-]
-
-
-def find_working_method(api_key):
-    """필터가 작동하는 방법 찾기 (최초 1회, 캐시)"""
-    if "working_method" in st.session_state:
-        return st.session_state["working_method"]
-
-    test_enc = urllib.parse.quote("탄산음료")
-    diag = []
-
-    for name, base, fn in METHODS:
-        url = f"{base}/{api_key}/I1250/json/1/3/PRDLST_DCNM={test_enc}"
-        try:
-            data = fn(url)
-            svc = data.get("I1250", {})
-            rows = svc.get("row", [])
-            code = svc.get("RESULT", {}).get("CODE", "")
-            if code == "INFO-000" and rows:
-                dcnm = rows[0].get("PRDLST_DCNM", "")
-                if dcnm == "탄산음료":
-                    diag.append(f"✅ {name}: 필터 정상!")
-                    st.session_state["working_method"] = (name, base, fn)
-                    st.session_state["_diag"] = diag
-                    return (name, base, fn)
-                else:
-                    diag.append(f"⚠️ {name}: 필터 무시 (반환: {dcnm})")
-            else:
-                diag.append(f"⚠️ {name}: {code or '데이터없음'}")
-        except Exception as e:
-            ename = type(e).__name__
-            diag.append(f"❌ {name}: {ename}")
-
-    # 아무것도 안 되면 첫 번째 (HTTP) 사용
-    st.session_state["_diag"] = diag
-    st.session_state["working_method"] = METHODS[0]
-    return METHODS[0]
-
-
 def fetch_data(api_key, food_type, max_rows, log):
-    method_name, base_url, call_fn = find_working_method(api_key)
     norm_target = _normalize(food_type)
+    page_size = 500
 
-    log(f"🚀 {food_type} 수집 시작")
-    log(f"📡 연결 방식: {method_name}")
-
-    # 진단 결과 표시
-    for d in st.session_state.get("_diag", []):
-        log(f"   {d}")
-
-    # 마침표가 있으면 2가지 인코딩 시도
-    encodings = []
+    # 마침표 인코딩: safe="." 먼저, 실패 시 safe="" (%2E)
     if "." in food_type:
-        encodings = [
-            ("safe='.'", urllib.parse.quote(food_type, safe=".")),
-            ("safe=''",  urllib.parse.quote(food_type, safe="")),
+        enc_list = [
+            (".", urllib.parse.quote(food_type, safe=".")),
+            ("%2E", urllib.parse.quote(food_type, safe="")),
         ]
     else:
-        encodings = [("기본", urllib.parse.quote(food_type))]
+        enc_list = [("기본", urllib.parse.quote(food_type))]
 
-    for enc_name, encoded_type in encodings:
-        log(f"🔤 인코딩: {enc_name}")
+    for enc_label, encoded_type in enc_list:
         all_data = []
         start = 1
         retries = 0
+        log(f"🔤 인코딩: {enc_label} → {encoded_type}")
 
         while start <= max_rows:
-            end = min(start + 499, max_rows)
-            url = f"{base_url}/{api_key}/I1250/json/{start}/{end}/PRDLST_DCNM={encoded_type}"
+            end = min(start + page_size - 1, max_rows)
+            url = f"{BASE_URL}/{api_key}/I1250/json/{start}/{end}/PRDLST_DCNM={encoded_type}"
 
             try:
-                data = call_fn(url)
+                data = api_get(url, timeout=30)
                 svc = data.get("I1250")
+
                 if not svc:
                     code = data.get("RESULT", {}).get("CODE", "")
-                    log(f"   ⚠️ {code or '응답없음'}")
+                    log(f"   API 응답: {code} {data.get('RESULT',{}).get('MSG','')}")
+                    break
+
+                code = svc.get("RESULT", {}).get("CODE", "")
+                if code == "INFO-300":
+                    log("❌ 인증키 오류 — 키를 확인하세요")
+                    return []
+                if code != "INFO-000":
                     break
 
                 raw = svc.get("row", [])
                 total = svc.get("total_count", "0")
-                code = svc.get("RESULT", {}).get("CODE", "")
-
-                if code == "INFO-300":
-                    log("❌ 인증키 오류"); return []
-                if code != "INFO-000" or not raw:
-                    break
 
                 matched = [r for r in raw
                            if _normalize(r.get("PRDLST_DCNM", "")) == norm_target]
                 all_data.extend(matched)
-                log(f"📦 {start}~{end} → {len(matched)}/{len(raw)}건 "
-                    f"(누적:{len(all_data)} DB:{total})")
+
+                log(f"   📦 {start}~{end} → {len(matched)}/{len(raw)}건 "
+                    f"(누적 {len(all_data)} / DB {total})")
 
                 if len(raw) < (end - start + 1):
                     break
-                start += 500
+                start += page_size
+                retries = 0
                 time.sleep(0.2)
 
-            except (TimeoutError, req_lib.exceptions.Timeout):
+            except (TimeoutError, urllib.error.URLError) as e:
                 retries += 1
-                if retries > 2:
-                    log("⏰ 타임아웃 3회 초과"); break
-                log(f"⏰ 재시도 ({retries}/3)…")
-                time.sleep(1)
+                if retries > 3:
+                    log(f"   ❌ 연결 실패 (3회 재시도 후 중단): {e}")
+                    break
+                log(f"   ⏰ 타임아웃 — 재시도 {retries}/3")
+                time.sleep(2)
                 continue
             except Exception as e:
-                log(f"⚠️ {type(e).__name__}: {e}")
+                log(f"   ⚠️ {type(e).__name__}: {e}")
                 break
 
         if all_data:
-            log(f"✅ {len(all_data)}건 수집 완료!")
+            log(f"✅ {len(all_data)}건 수집 성공!")
             return all_data
-        log(f"⚠️ '{enc_name}' 0건 — 다음 시도")
 
     return []
 
 
-# ══════════════════════════════════════════════════════
-#  UI
-# ══════════════════════════════════════════════════════
+# ── UI ──
 st.title("🥤 음료 품목제조보고 조회")
 
 with st.sidebar:
     st.markdown("### 🔑 API 키")
     api_key = st.text_input("식품안전나라 API 키", type="password")
+
     st.markdown("### 🍹 조회 설정")
     food_type = st.selectbox("식품유형", DRINK_TYPES)
     max_rows  = st.slider("최대 수집 건수", 10, 1000, 200, step=10)
+
     st.markdown("---")
     run = st.button("🚀 조회 시작", type="primary", use_container_width=True)
-    if st.button("🔄 연결 초기화"):
-        for k in ["working_method", "_diag"]:
-            st.session_state.pop(k, None)
-        st.success("완료 — 다음 조회 시 재감지")
+
+    # 연결 진단
+    st.markdown("---")
+    if st.button("🩺 연결 테스트"):
+        if api_key:
+            st.markdown("**HTTP 연결 테스트 중…**")
+            test_url = f"{BASE_URL}/{api_key}/I1250/json/1/3/PRDLST_DCNM=%ED%83%84%EC%82%B0%EC%9D%8C%EB%A3%8C"
+            try:
+                t0 = time.time()
+                d = api_get(test_url, timeout=30)
+                ms = int((time.time() - t0) * 1000)
+                svc = d.get("I1250", {})
+                rows = svc.get("row", [])
+                if rows and rows[0].get("PRDLST_DCNM") == "탄산음료":
+                    st.success(f"✅ HTTP 정상 ({ms}ms)\n\n필터 작동 확인!")
+                else:
+                    dcnm = rows[0].get("PRDLST_DCNM", "?") if rows else "없음"
+                    st.warning(f"⚠️ 연결됨 ({ms}ms) but 필터 이상\n\n반환된 유형: {dcnm}")
+            except Exception as e:
+                st.error(f"❌ HTTP 연결 실패\n\n{type(e).__name__}: {e}\n\n"
+                         "Streamlit Cloud에서 이 API 서버(HTTP)에 접근할 수 없습니다.\n"
+                         "**대안:** Colab에서 데이터를 수집하세요.")
+        else:
+            st.warning("API 키를 먼저 입력하세요")
 
 if not api_key:
-    st.info("👈 API 키를 입력하세요 → "
-            "[발급](https://www.foodsafetykorea.go.kr/api/openApiInfo.do) (I1250)")
+    st.info("👈 사이드바에서 API 키를 입력하세요.\n\n"
+            "[키 발급](https://www.foodsafetykorea.go.kr/api/openApiInfo.do) → I1250 신청")
     st.stop()
 
 if run:
     log_box = st.empty()
-    lines = []
+    log_lines = []
     def log(msg):
-        lines.append(msg)
-        log_box.code("\n".join(lines))
+        log_lines.append(msg)
+        log_box.code("\n".join(log_lines))
 
+    log("🚀 조회 시작…")
     t0 = time.time()
     raw_rows = fetch_data(api_key, food_type, max_rows, log)
     elapsed = time.time() - t0
 
     if not raw_rows:
-        st.error("❌ 데이터 없음")
-        st.info("Streamlit Cloud에서 이 API 접근이 불안정할 수 있습니다.\n"
-                "**대안:** [Google Colab](https://colab.research.google.com)에서 동일 스크립트로 수집 → CSV 업로드")
+        st.error("❌ 수집된 데이터가 없습니다.")
+        st.info("사이드바의 **🩺 연결 테스트**를 눌러 HTTP 접속 가능 여부를 확인하세요.")
         st.stop()
 
     df = pd.DataFrame(raw_rows)
@@ -225,11 +182,11 @@ if run:
     if "보고일자" in df.columns:
         df = df.sort_values("보고일자", ascending=False).reset_index(drop=True)
 
-    st.success(f"✅ {len(df)}건 ({elapsed:.1f}초)")
+    st.success(f"✅ {len(df)}건 수집 ({elapsed:.1f}초)")
     c1, c2, c3 = st.columns(3)
-    c1.metric("수집", f"{len(df)}건")
+    c1.metric("수집 건수", f"{len(df)}건")
     if "제조사" in df.columns:
-        c2.metric("제조사", f"{df['제조사'].nunique()}개소")
+        c2.metric("제조사 수", f"{df['제조사'].nunique()}개소")
     if "보고일자" in df.columns:
         c3.metric("최근 보고일", df["보고일자"].max())
 
