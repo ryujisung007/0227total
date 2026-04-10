@@ -1,7 +1,8 @@
 """
 🥤 식품안전나라 음료 품목제조보고 조회
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-HTTP 우선 (필터 정상) → HTTPS fallback (대량수집+클라이언트필터)
+마침표 포함 유형은 뒷부분으로 검색 → 클라이언트 정확 매칭
+예: 과.채주스 → "채주스"로 API 호출 → PRDLST_DCNM=="과.채주스" 필터
 """
 import streamlit as st
 import pandas as pd
@@ -25,9 +26,23 @@ COL_MAP = {
     "PRDLST_REPORT_NO": "품목제조번호",
 }
 
+BASE_URLS = [
+    "https://openapi.foodsafetykorea.go.kr/api",
+    "http://openapi.foodsafetykorea.go.kr/api",
+]
+
 
 def _normalize(s):
     return s.strip().replace("·", ".").replace("‧", ".").replace(" ", "")
+
+
+def _search_term(food_type):
+    """API 검색어 생성 — 마침표 포함 시 뒷부분만 사용
+    과.채주스 → 채주스 / 인삼.홍삼음료 → 홍삼음료 / 탄산음료 → 탄산음료
+    """
+    if "." in food_type:
+        return food_type.split(".")[-1]   # 마지막 마침표 뒤
+    return food_type
 
 
 def api_get(url, timeout=20):
@@ -37,101 +52,72 @@ def api_get(url, timeout=20):
         return json.loads(resp.read().decode("utf-8"))
 
 
-def detect_mode(api_key):
-    """HTTP(필터정상) vs HTTPS(필터무시) 감지"""
-    if "api_mode" in st.session_state:
-        return st.session_state["api_mode"]
-
-    test_enc = urllib.parse.quote("탄산음료")
-
-    # 1차: HTTP (Colab과 동일, 필터 정상 작동)
-    try:
-        url = f"http://openapi.foodsafetykorea.go.kr/api/{api_key}/I1250/json/1/3/PRDLST_DCNM={test_enc}"
-        data = api_get(url, timeout=15)
-        rows = data.get("I1250", {}).get("row", [])
-        if rows and rows[0].get("PRDLST_DCNM") == "탄산음료":
-            st.session_state["api_mode"] = "http_filtered"
-            return "http_filtered"
-    except Exception:
-        pass
-
-    # 2차: HTTPS (필터 안 먹히지만 연결은 됨)
-    try:
-        url = f"https://openapi.foodsafetykorea.go.kr/api/{api_key}/I1250/json/1/3/PRDLST_DCNM={test_enc}"
-        data = api_get(url, timeout=15)
-        if data.get("I1250", {}).get("row"):
-            st.session_state["api_mode"] = "https_unfiltered"
-            return "https_unfiltered"
-    except Exception:
-        pass
-
-    st.session_state["api_mode"] = "failed"
-    return "failed"
+def find_working_base(api_key):
+    if "working_base" in st.session_state:
+        return st.session_state["working_base"]
+    for base in BASE_URLS:
+        try:
+            url = f"{base}/{api_key}/I1250/json/1/1"
+            data = api_get(url, timeout=15)
+            if data.get("I1250", {}).get("RESULT", {}).get("CODE") == "INFO-000":
+                st.session_state["working_base"] = base
+                return base
+        except Exception:
+            continue
+    st.session_state["working_base"] = BASE_URLS[0]
+    return BASE_URLS[0]
 
 
-def fetch_http_filtered(api_key, food_type, max_rows, log):
-    """HTTP 모드: 서버 필터 작동 → 효율적"""
-    base = "http://openapi.foodsafetykorea.go.kr/api"
-    encoded_type = urllib.parse.quote(food_type, safe=".")
-    norm = _normalize(food_type)
+def fetch_data(api_key, food_type, max_rows, log):
+    base_url = find_working_base(api_key)
+    proto = base_url.split("://")[0]
+
+    # 검색어: 마침표 있으면 뒷부분만
+    search = _search_term(food_type)
+    encoded = urllib.parse.quote(search)
+    norm_target = _normalize(food_type)
+
+    if search != food_type:
+        log(f"🚀 {food_type} → '{search}'로 검색 후 필터링 ({proto})")
+    else:
+        log(f"🚀 {food_type} 수집 시작 ({proto})")
+
     all_data = []
     start = 1
+    page_size = 500
 
-    while start <= max_rows:
-        end = min(start + 499, max_rows)
-        url = f"{base}/{api_key}/I1250/json/{start}/{end}/PRDLST_DCNM={encoded_type}"
+    while start <= max_rows and len(all_data) < max_rows:
+        end = min(start + page_size - 1, max_rows)
+        url = f"{base_url}/{api_key}/I1250/json/{start}/{end}/PRDLST_DCNM={encoded}"
+
         try:
             data = api_get(url, timeout=20)
             svc = data.get("I1250", {})
-            if svc.get("RESULT", {}).get("CODE") != "INFO-000":
-                break
-            rows = svc.get("row", [])
-            matched = [r for r in rows if _normalize(r.get("PRDLST_DCNM", "")) == norm]
-            all_data.extend(matched)
-            total = svc.get("total_count", "0")
-            log(f"📦 {start}~{end} → {len(matched)}건 (누적: {len(all_data)} / DB: {total})")
-            if len(rows) < (end - start + 1):
-                break
-            start += 500
-            time.sleep(0.2)
-        except Exception as e:
-            log(f"⚠️ {e}")
-            break
-    return all_data
+            code = svc.get("RESULT", {}).get("CODE", "")
 
+            if code == "INFO-300":
+                log("❌ 인증키 오류"); break
+            if code == "INFO-200" or code != "INFO-000":
+                log(f"ℹ️ 응답: {code}"); break
 
-def fetch_https_unfiltered(api_key, food_type, max_rows, log):
-    """HTTPS 모드: 서버 필터 무시 → 대량수집 + 클라이언트 필터"""
-    base = "https://openapi.foodsafetykorea.go.kr/api"
-    encoded_type = urllib.parse.quote(food_type, safe=".")
-    norm = _normalize(food_type)
-    all_data = []
-    start = 1
-    page_size = 1000  # 대량으로 가져와서 필터
-    max_fetch = max_rows * 20  # 최대 탐색 범위 (20배)
-    scanned = 0
-
-    while len(all_data) < max_rows and start <= max_fetch:
-        end = min(start + page_size - 1, max_fetch)
-        url = f"{base}/{api_key}/I1250/json/{start}/{end}/PRDLST_DCNM={encoded_type}"
-        try:
-            data = api_get(url, timeout=20)
-            svc = data.get("I1250", {})
-            if svc.get("RESULT", {}).get("CODE") != "INFO-000":
-                break
             rows = svc.get("row", [])
             if not rows:
                 break
-            matched = [r for r in rows if _normalize(r.get("PRDLST_DCNM", "")) == norm]
-            all_data.extend(matched)
-            scanned += len(rows)
             total = svc.get("total_count", "0")
-            log(f"📦 {start}~{end} → {len(matched)}건 일치 / {len(rows)}건 스캔 "
-                f"(누적: {len(all_data)} / 스캔: {scanned})")
+
+            # 정확 매칭 필터
+            matched = [r for r in rows
+                       if _normalize(r.get("PRDLST_DCNM", "")) == norm_target]
+            all_data.extend(matched)
+
+            log(f"📦 {start}~{end} → {len(matched)}/{len(rows)}건 일치 "
+                f"(누적: {len(all_data)} / DB: {total})")
+
             if len(rows) < page_size:
                 break
             start += page_size
-            time.sleep(0.3)
+            time.sleep(0.2)
+
         except TimeoutError:
             log("⏰ 타임아웃 — 재시도")
             time.sleep(1)
@@ -151,11 +137,11 @@ with st.sidebar:
     api_key = st.text_input("식품안전나라 API 키", type="password")
     st.markdown("### 🍹 조회 설정")
     food_type = st.selectbox("식품유형", DRINK_TYPES)
-    max_rows  = st.slider("최대 수집 건수", 10, 500, 200, step=10)
+    max_rows  = st.slider("최대 수집 건수", 10, 1000, 200, step=10)
     st.markdown("---")
     run = st.button("🚀 조회 시작", type="primary", use_container_width=True)
     if st.button("🔄 연결 초기화"):
-        st.session_state.pop("api_mode", None)
+        st.session_state.pop("working_base", None)
         st.success("완료")
 
 if not api_key:
@@ -170,21 +156,8 @@ if run:
         log_lines.append(msg)
         log_box.code("\n".join(log_lines))
 
-    mode = detect_mode(api_key)
-
-    if mode == "http_filtered":
-        log("🌐 HTTP 모드 (서버 필터 정상)")
-        t0 = time.time()
-        raw_rows = fetch_http_filtered(api_key, food_type, max_rows, log)
-    elif mode == "https_unfiltered":
-        log("🔒 HTTPS 모드 (클라이언트 필터링 — 시간이 더 걸릴 수 있습니다)")
-        t0 = time.time()
-        raw_rows = fetch_https_unfiltered(api_key, food_type, max_rows, log)
-    else:
-        st.error("❌ API 서버에 연결할 수 없습니다.\n\n"
-                 "Google Colab에서 데이터를 수집한 뒤 CSV로 업로드하세요.")
-        st.stop()
-
+    t0 = time.time()
+    raw_rows = fetch_data(api_key, food_type, max_rows, log)
     elapsed = time.time() - t0
 
     if not raw_rows:
