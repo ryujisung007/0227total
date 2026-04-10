@@ -1,14 +1,15 @@
 """
 🥤 식품안전나라 음료 품목제조보고 조회
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-프로토콜 자동 감지: 필터 작동 여부까지 검증
-HTTP 우선 (Colab과 동일) → HTTPS fallback
+마침표 인코딩 자동 전환 (safe="." → safe="" fallback)
+HTTPS 필터 미작동 시 대량 수집 + 클라이언트 필터
 """
 import streamlit as st
-import requests
 import pandas as pd
+import json
 import time
 import urllib.parse
+import urllib.request
 from datetime import datetime
 
 DRINK_TYPES = [
@@ -25,7 +26,6 @@ COL_MAP = {
     "PRDLST_REPORT_NO": "품목제조번호",
 }
 
-# HTTP 먼저 (Colab과 동일하게 작동), HTTPS fallback
 BASE_URLS = [
     "http://openapi.foodsafetykorea.go.kr/api",
     "https://openapi.foodsafetykorea.go.kr/api",
@@ -36,25 +36,25 @@ def _normalize(s):
     return s.strip().replace("·", ".").replace("‧", ".").replace(" ", "")
 
 
+def api_get(url, timeout=20):
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json",
+    })
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
 def find_working_base(api_key):
-    """필터가 실제로 작동하는 프로토콜 찾기"""
     if "working_base" in st.session_state:
         return st.session_state["working_base"]
 
-    # "탄산음료"로 테스트 (마침표 없는 확실한 유형)
-    test_type = urllib.parse.quote("탄산음료")
-
+    test_enc = urllib.parse.quote("탄산음료")
     for base in BASE_URLS:
-        url = f"{base}/{api_key}/I1250/json/1/3/PRDLST_DCNM={test_type}"
+        url = f"{base}/{api_key}/I1250/json/1/3/PRDLST_DCNM={test_enc}"
         try:
-            r = requests.get(url, timeout=15)
-            if r.status_code != 200:
-                continue
-            data = r.json()
+            data = api_get(url, timeout=15)
             svc = data.get("I1250", {})
-            if svc.get("RESULT", {}).get("CODE") != "INFO-000":
-                continue
-            # 핵심: 반환된 데이터가 실제로 "탄산음료"인지 확인
             rows = svc.get("row", [])
             if rows and rows[0].get("PRDLST_DCNM") == "탄산음료":
                 st.session_state["working_base"] = base
@@ -62,66 +62,94 @@ def find_working_base(api_key):
         except Exception:
             continue
 
-    # 둘 다 안 되면 HTTP (Colab 기본)
     st.session_state["working_base"] = BASE_URLS[0]
     return BASE_URLS[0]
 
 
-def fetch_food_safety_data(api_key, food_type, max_rows, log):
-    base_url = find_working_base(api_key)
-    all_data = []
-    start_idx = 1
-    page_size = 500
-    encoded_type = urllib.parse.quote(food_type, safe=".")
-    norm_target = _normalize(food_type)
+def _fetch_page(base_url, api_key, encoded_type, start, end):
+    """한 페이지 호출"""
+    url = f"{base_url}/{api_key}/I1250/json/{start}/{end}/PRDLST_DCNM={encoded_type}"
+    data = api_get(url, timeout=20)
+    svc = data.get("I1250")
+    if not svc:
+        return [], "0", data.get("RESULT", {}).get("CODE", "?")
+    return svc.get("row", []), svc.get("total_count", "0"), svc.get("RESULT", {}).get("CODE", "")
 
+
+def fetch_data(api_key, food_type, max_rows, log):
+    base_url = find_working_base(api_key)
+    norm_target = _normalize(food_type)
     proto = base_url.split("://")[0]
     log(f"🚀 {food_type} 수집 시작 (프로토콜: {proto})")
 
-    while start_idx <= max_rows:
-        end_idx = min(start_idx + page_size - 1, max_rows)
-        url = f"{base_url}/{api_key}/I1250/json/{start_idx}/{end_idx}/PRDLST_DCNM={encoded_type}"
+    # 마침표 인코딩 2가지 시도
+    encodings = []
+    if "." in food_type:
+        encodings = [
+            ("마침표 유지", urllib.parse.quote(food_type, safe=".")),
+            ("마침표 인코딩", urllib.parse.quote(food_type, safe="")),
+        ]
+    else:
+        encodings = [
+            ("기본", urllib.parse.quote(food_type, safe=".")),
+        ]
 
-        try:
-            response = requests.get(url, timeout=15)
-            response.raise_for_status()
-            data = response.json()
+    for enc_name, encoded_type in encodings:
+        log(f"🔤 인코딩 방식: {enc_name}")
 
-            service_data = data.get("I1250")
-            if not service_data:
-                res_code = data.get("RESULT", {}).get("CODE")
-                if res_code == "INFO-200":
+        all_data = []
+        start_idx = 1
+        page_size = 500
+        retry_count = 0
+
+        while start_idx <= max_rows:
+            end_idx = min(start_idx + page_size - 1, max_rows)
+
+            try:
+                raw_rows, total_count, code = _fetch_page(
+                    base_url, api_key, encoded_type, start_idx, end_idx)
+
+                if code == "INFO-300":
+                    log("❌ 인증키 오류")
+                    return []
+                if code == "INFO-200" or not raw_rows:
                     log("ℹ️ 데이터 없음")
-                else:
-                    log(f"❌ API 오류: {data.get('RESULT', {}).get('MSG')}")
+                    break
+                if code != "INFO-000":
+                    log(f"❌ API 오류: {code}")
+                    break
+
+                matched = [r for r in raw_rows
+                           if _normalize(r.get("PRDLST_DCNM", "")) == norm_target]
+                all_data.extend(matched)
+
+                log(f"📦 {start_idx}~{end_idx} → {len(matched)}/{len(raw_rows)}건 "
+                    f"(누적: {len(all_data)} / DB: {total_count})")
+
+                if len(raw_rows) < (end_idx - start_idx + 1):
+                    break
+                start_idx += page_size
+                time.sleep(0.2)
+
+            except TimeoutError:
+                retry_count += 1
+                if retry_count > 2:
+                    log("⏰ 타임아웃 3회 — 중단")
+                    break
+                log(f"⏰ 타임아웃 — 재시도 ({retry_count}/3)…")
+                time.sleep(1)
+                continue
+            except Exception as e:
+                log(f"⚠️ {type(e).__name__}: {e}")
                 break
 
-            raw_rows = service_data.get("row", [])
-            total_count = service_data.get("total_count", "0")
+        if all_data:
+            log(f"✅ '{enc_name}' 방식으로 {len(all_data)}건 수집 성공!")
+            return all_data
+        else:
+            log(f"⚠️ '{enc_name}' 방식 0건 — 다음 방식 시도")
 
-            # 식품유형 정규화 매칭
-            matched = [r for r in raw_rows
-                       if _normalize(r.get("PRDLST_DCNM", "")) == norm_target]
-            all_data.extend(matched)
-
-            log(f"📦 {start_idx}~{end_idx} → {len(matched)}/{len(raw_rows)}건 일치 "
-                f"(누적: {len(all_data)} / DB: {total_count})")
-
-            if len(raw_rows) < (end_idx - start_idx + 1):
-                break
-
-            start_idx += page_size
-            time.sleep(0.2)
-
-        except requests.exceptions.Timeout:
-            log(f"⏰ 타임아웃 — 재시도…")
-            time.sleep(1)
-            continue
-        except Exception as e:
-            log(f"⚠️ 오류: {e}")
-            break
-
-    return all_data
+    return []
 
 
 # ── UI ──
@@ -137,7 +165,7 @@ with st.sidebar:
     run = st.button("🚀 조회 시작", type="primary", use_container_width=True)
     if st.button("🔄 연결 초기화"):
         st.session_state.pop("working_base", None)
-        st.success("완료 — 다시 조회하면 프로토콜 재감지합니다")
+        st.success("완료")
 
 if not api_key:
     st.info("👈 사이드바에서 API 키를 입력하세요.\n\n"
@@ -152,11 +180,15 @@ if run:
         log_box.code("\n".join(log_lines))
 
     t0 = time.time()
-    raw_rows = fetch_food_safety_data(api_key, food_type, max_rows, log)
+    raw_rows = fetch_data(api_key, food_type, max_rows, log)
     elapsed = time.time() - t0
 
     if not raw_rows:
-        st.error("❌ 수집된 데이터가 없습니다. API 키와 식품유형을 확인하세요.")
+        st.error("❌ 수집된 데이터가 없습니다.")
+        st.info("**원인 가능성:**\n"
+                "1. API 키 만료 → [재발급](https://www.foodsafetykorea.go.kr/api/openApiInfo.do)\n"
+                "2. 해당 유형 데이터 없음\n"
+                "3. Streamlit Cloud ↔ API 서버 통신 문제")
         st.stop()
 
     df = pd.DataFrame(raw_rows)
@@ -177,7 +209,6 @@ if run:
     show = [c for c in ["식품유형","제품명","보고일자","제조사","주요원재료","유통기한","생산종료"]
             if c in df.columns]
     st.dataframe(df[show], use_container_width=True, height=500)
-    st.caption(f"총 {len(df)}건")
 
     csv = df.to_csv(index=False).encode("utf-8-sig")
     st.download_button("📥 CSV", csv,
