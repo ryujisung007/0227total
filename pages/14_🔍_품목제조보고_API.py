@@ -1,8 +1,7 @@
 """
 🥤 식품안전나라 음료 품목제조보고 조회
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-마침표 포함 유형은 뒷부분으로 검색 → 클라이언트 정확 매칭
-예: 과.채주스 → "채주스"로 API 호출 → PRDLST_DCNM=="과.채주스" 필터
+마침표 유형별 검색어 직접 매핑 + 클라이언트 정확 매칭
 """
 import streamlit as st
 import pandas as pd
@@ -17,6 +16,14 @@ DRINK_TYPES = [
     "두유", "가공두유", "원액두유", "인삼.홍삼음료", "혼합음료",
     "유산균음료", "음료베이스", "효모음료", "커피", "침출차", "고형차", "액상차",
 ]
+
+# 마침표 포함 유형 → API 검색에 쓸 키워드 (여러 개 = 순차 시도)
+SEARCH_TERMS = {
+    "과.채주스":     ["채주스"],
+    "과.채음료":     ["채음료"],
+    "농축과.채즙":   ["농축", "채즙"],
+    "인삼.홍삼음료": ["홍삼음료", "홍삼"],
+}
 
 COL_MAP = {
     "PRDLST_NM": "제품명", "PRDLST_DCNM": "식품유형",
@@ -36,15 +43,6 @@ def _normalize(s):
     return s.strip().replace("·", ".").replace("‧", ".").replace(" ", "")
 
 
-def _search_term(food_type):
-    """API 검색어 생성 — 마침표 포함 시 뒷부분만 사용
-    과.채주스 → 채주스 / 인삼.홍삼음료 → 홍삼음료 / 탄산음료 → 탄산음료
-    """
-    if "." in food_type:
-        return food_type.split(".")[-1]   # 마지막 마침표 뒤
-    return food_type
-
-
 def api_get(url, timeout=20):
     req = urllib.request.Request(url, headers={
         "User-Agent": "Mozilla/5.0", "Accept": "application/json"})
@@ -57,8 +55,7 @@ def find_working_base(api_key):
         return st.session_state["working_base"]
     for base in BASE_URLS:
         try:
-            url = f"{base}/{api_key}/I1250/json/1/1"
-            data = api_get(url, timeout=15)
+            data = api_get(f"{base}/{api_key}/I1250/json/1/1", timeout=15)
             if data.get("I1250", {}).get("RESULT", {}).get("CODE") == "INFO-000":
                 st.session_state["working_base"] = base
                 return base
@@ -68,23 +65,23 @@ def find_working_base(api_key):
     return BASE_URLS[0]
 
 
-def fetch_data(api_key, food_type, max_rows, log):
-    base_url = find_working_base(api_key)
-    proto = base_url.split("://")[0]
+def _get_search_terms(food_type):
+    """검색어 후보 리스트 반환"""
+    if food_type in SEARCH_TERMS:
+        return SEARCH_TERMS[food_type]
+    if "." in food_type:
+        return [food_type.split(".")[-1], food_type.replace(".", "")]
+    return [food_type]
 
-    # 검색어: 마침표 있으면 뒷부분만
-    search = _search_term(food_type)
-    encoded = urllib.parse.quote(search)
+
+def _fetch_with_term(base_url, api_key, search_term, food_type, max_rows, log):
+    """하나의 검색어로 수집 시도"""
+    encoded = urllib.parse.quote(search_term)
     norm_target = _normalize(food_type)
-
-    if search != food_type:
-        log(f"🚀 {food_type} → '{search}'로 검색 후 필터링 ({proto})")
-    else:
-        log(f"🚀 {food_type} 수집 시작 ({proto})")
-
     all_data = []
     start = 1
     page_size = 500
+    retries = 0
 
     while start <= max_rows and len(all_data) < max_rows:
         end = min(start + page_size - 1, max_rows)
@@ -96,30 +93,31 @@ def fetch_data(api_key, food_type, max_rows, log):
             code = svc.get("RESULT", {}).get("CODE", "")
 
             if code == "INFO-300":
-                log("❌ 인증키 오류"); break
-            if code == "INFO-200" or code != "INFO-000":
-                log(f"ℹ️ 응답: {code}"); break
+                log("❌ 인증키 오류"); return []
+            if code != "INFO-000" or not svc.get("row"):
+                break
 
             rows = svc.get("row", [])
-            if not rows:
-                break
             total = svc.get("total_count", "0")
-
-            # 정확 매칭 필터
             matched = [r for r in rows
                        if _normalize(r.get("PRDLST_DCNM", "")) == norm_target]
             all_data.extend(matched)
 
-            log(f"📦 {start}~{end} → {len(matched)}/{len(rows)}건 일치 "
+            log(f"📦 {start}~{end} → {len(matched)}/{len(rows)}건 "
                 f"(누적: {len(all_data)} / DB: {total})")
 
             if len(rows) < page_size:
                 break
             start += page_size
             time.sleep(0.2)
+            retries = 0
 
         except TimeoutError:
-            log("⏰ 타임아웃 — 재시도")
+            retries += 1
+            if retries > 2:
+                log("⏰ 타임아웃 3회 — 중단")
+                break
+            log(f"⏰ 타임아웃 — 재시도 ({retries}/3)")
             time.sleep(1)
             continue
         except Exception as e:
@@ -127,6 +125,28 @@ def fetch_data(api_key, food_type, max_rows, log):
             break
 
     return all_data[:max_rows]
+
+
+def fetch_data(api_key, food_type, max_rows, log):
+    base_url = find_working_base(api_key)
+    proto = base_url.split("://")[0]
+    terms = _get_search_terms(food_type)
+
+    for term in terms:
+        if term != food_type:
+            log(f"🚀 {food_type} → '{term}'로 검색 ({proto})")
+        else:
+            log(f"🚀 {food_type} 수집 시작 ({proto})")
+
+        result = _fetch_with_term(base_url, api_key, term, food_type, max_rows, log)
+
+        if result:
+            log(f"✅ '{term}' 검색으로 {len(result)}건 수집 성공!")
+            return result
+        else:
+            log(f"⚠️ '{term}' 검색 0건 — 다음 검색어 시도")
+
+    return []
 
 
 # ── UI ──
