@@ -11,3 +11,4 @@ google-genai
 xlsxwriter
 selenium
 beautifulsoup4
+ChromeDriverManager
