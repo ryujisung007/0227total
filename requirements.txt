@@ -13,3 +13,4 @@ selenium
 ChromeDriverManager
 webdriver-manager
 beautifulsoup4
+instaloader
