@@ -1,38 +1,81 @@
+import streamlit as st
+import pandas as pd
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
+from bs4 import BeautifulSoup
 import time
 import random
-from selenium import webdriver
-from bs4 import BeautifulSoup
 
-def instagram_crawler(keyword, count=100):
-    # 1. 크롬 드라이버 설정 (Senior Tech: Headless 모드 및 User-Agent 설정으로 차단 회피)
-    options = webdriver.ChromeOptions()
-    options.add_argument('--disable-gpu')
-    driver = webdriver.Chrome(options=options)
-    
-    # 2. 인스타그램 해시태그 페이지 접속
-    url = f"https://www.instagram.com/explore/tags/{keyword}/"
-    driver.get(url)
-    time.sleep(random.uniform(5, 7)) # 탐지 회피를 위한 랜덤 대기
+# 1. 페이지 설정 및 제목
+st.set_page_config(page_title="AI NPD SUITE - Trend Scraper", layout="wide")
+st.title("🍹 저당 과일 음료 인스타그램 트렌드 분석")
+st.sidebar.header("설정")
 
-    results = []
+# 2. 크롤링 함수 (Senior Expert Logic: 에러 점검 및 예외 처리 강화)
+def run_insta_crawler(keyword, count):
+    # 크롬 옵션 설정 (스트림릿 서버 환경 필수 설정)
+    chrome_options = Options()
+    chrome_options.add_argument("--headless")  # 창이 뜨지 않도록 설정
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
+    try:
+        driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
+        url = f"https://www.instagram.com/explore/tags/{keyword}/"
+        driver.get(url)
+        
+        # 스트림릿 상태 메시지
+        with st.spinner(f"'{keyword}' 관련 데이터를 수집 중입니다..."):
+            time.sleep(random.uniform(5, 7))
+            results = []
+            
+            # 실제 스크롤 및 수집 로직 (샘플링)
+            soup = BeautifulSoup(driver.page_source, 'html.parser')
+            articles = soup.select('div._aabd')
+            
+            for i, article in enumerate(articles[:count]):
+                try:
+                    img_tag = article.select_one('img')
+                    if img_tag:
+                        results.append({
+                            "순번": i + 1,
+                            "내용": img_tag.get('alt', '내용 없음'),
+                            "이미지링크": img_tag.get('src', '')
+                        })
+                except Exception as e:
+                    continue
+                    
+        driver.quit()
+        return pd.DataFrame(results)
     
-    # 3. 데이터 스크롤 및 수집
-    for _ in range(count // 10):
-        soup = BeautifulSoup(driver.page_source, 'html.parser')
-        # 이미지 설명(Alt text)과 본문 텍스트 추출
-        articles = soup.select('div._aabd') 
+    except Exception as e:
+        st.error(f"크롤링 중 오류가 발생했습니다: {e}")
+        return None
+
+# 3. 사용자 입력 인터페이스
+target_keyword = st.sidebar.text_input("분석할 해시태그 (예: 티즐제로, 저당음료)", "저당음료")
+collect_count = st.sidebar.slider("수집할 게시물 수", 10, 50, 20)
+
+if st.sidebar.button("데이터 수집 시작"):
+    df = run_insta_crawler(target_keyword, collect_count)
+    
+    if df is not None and not df.empty:
+        st.subheader(f"🔍 '{target_keyword}' 수집 결과")
         
-        for article in articles:
-            try:
-                # 시각적 분석을 위한 이미지 URL과 텍스트 데이터 매칭
-                img_url = article.select_one('img')['src']
-                content = article.select_one('img')['alt']
-                results.append({'url': img_url, 'text': content})
-            except:
-                continue
+        # 데이터프레임 표시
+        st.dataframe(df, use_container_width=True)
         
-        # 스크롤 다운
-        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-        time.sleep(random.uniform(2, 4))
-        
-    return results
+        # CSV 다운로드 기능 추가
+        csv = df.to_csv(index=False).encode('utf-8-sig')
+        st.download_button(
+            label="결과 데이터 CSV 다운로드",
+            data=csv,
+            file_name=f"insta_{target_keyword}.csv",
+            mime="text/csv",
+        )
+    else:
+        st.warning("수집된 데이터가 없습니다. 해시태그를 확인하거나 잠시 후 다시 시도해 주세요.")
