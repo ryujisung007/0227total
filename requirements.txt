@@ -10,5 +10,6 @@ matplotlib
 google-genai
 xlsxwriter
 selenium
-beautifulsoup4
 ChromeDriverManager
+webdriver-manager
+beautifulsoup4
