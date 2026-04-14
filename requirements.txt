@@ -10,3 +10,4 @@ matplotlib
 google-genai
 xlsxwriter
 selenium
+BeautifulSoup
