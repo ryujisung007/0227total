@@ -191,6 +191,62 @@ def naver_search(keyword, api_type, client_id, client_secret, display=20, sort="
 def clean_html(text):
     return re.sub(r"<[^>]+>", "", text)
 
+# ── 블로그 필터/점수 상수 ──────────────────────────
+EXCLUDE_KW = [
+    "여행","관광","호텔","펜션","숙소","항공","리조트","해외","투어",
+    "병원","의원","이비인후과","피부과","치과","한의원","약국","한방",
+    "시술","수술","처방","진료","증상","치료","임신","출산","육아","다이어트한약",
+    "부동산","아파트","분양","전세","월세","인테리어",
+    "전자담배","액상","니코틴","vape","pod","팟",
+    "반려","강아지","고양이","펫","pet",
+    "공연","전시","뮤지컬","콘서트",
+]
+
+INCLUDE_KW = [
+    "음료","카페","라떼","에이드","스무디","주스","티","차",
+    "탄산","제로","저당","콤부차","RTD","이온",
+    "편의점","마트","쿠팡","올리브영","다이소",
+    "구매","리뷰","후기","추천","신제품","출시","한정판",
+    "맛","향","성분","칼로리","당류","단백질","카페인","플레이버",
+    "트렌드","인기","핫","요즘","베스트",
+]
+
+SCORE_RULES = [
+    (["신제품","출시","한정판","리뉴얼","론칭"],          30, "신제품/출시"),
+    (["카페","카페메뉴","시그니처","신메뉴","계절메뉴"],   25, "카페메뉴"),
+    (["트렌드","인기","핫","요즘","베스트","유행"],        20, "소비트렌드"),
+    (["구매","리뷰","후기","먹어봤","마셔봤","마심"],      20, "구매후기"),
+    (["성분","칼로리","당류","카페인","단백질","영양"],    15, "성분분석"),
+    (["편의점","마트","쿠팡","올리브영","네이버쇼핑"],     15, "구매채널"),
+    (["가격","원","할인","세일","행사","특가"],            10, "가격정보"),
+    (["음료","에이드","라떼","스무디","주스","탄산"],      10, "음료직접"),
+]
+
+def score_blog_item(title, summary):
+    """관련성 점수 계산. 제외 조건 해당 시 -999 반환"""
+    text = (title + " " + summary).lower()
+
+    # 제외 키워드 체크
+    for kw in EXCLUDE_KW:
+        if kw in text:
+            return -999, "제외"
+
+    # 포함 키워드 체크 (하나도 없으면 낮은 점수)
+    has_include = any(kw in text for kw in INCLUDE_KW)
+    if not has_include:
+        return 0, "기타"
+
+    # 점수 계산
+    score = 0
+    tags = []
+    for kw_list, pts, tag in SCORE_RULES:
+        if any(kw in text for kw in kw_list):
+            score += pts
+            tags.append(tag)
+
+    return score, "/".join(tags) if tags else "일반"
+
+
 def search_blog(keywords, client_id, client_secret, display=100):
     all_rows = []
     for kw in keywords:
@@ -201,16 +257,29 @@ def search_blog(keywords, client_id, client_secret, display=100):
                 dt = datetime.strptime(date_str, "%Y%m%d")
             except:
                 dt = None
+            title   = clean_html(item.get("title", ""))
+            summary = clean_html(item.get("description", ""))[:150]
+            score, tag = score_blog_item(title, summary)
+
+            if score == -999:          # 노이즈 제외
+                continue
+
             all_rows.append({
                 "키워드": kw,
-                "제목": clean_html(item.get("title", "")),
-                "요약": clean_html(item.get("description", ""))[:100],
+                "제목": title,
+                "요약": summary[:100],
+                "관련성점수": score,
+                "콘텐츠유형": tag,
                 "날짜": dt,
                 "날짜_원본": date_str,
                 "URL": item.get("link", ""),
             })
         time.sleep(0.3)
-    return pd.DataFrame(all_rows)
+
+    df = pd.DataFrame(all_rows)
+    if not df.empty:
+        df = df.sort_values("관련성점수", ascending=False).reset_index(drop=True)
+    return df
 
 def search_shop(keywords, client_id, client_secret, display=100):
     all_rows = []
@@ -244,63 +313,106 @@ def render_blog_charts(blog_df):
     if blog_df.empty:
         return
 
-    # 날짜 필터 — 최근 3개월
+    COLORS = px.colors.qualitative.Pastel
+    LB = dict(plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+              margin=dict(l=10, r=10, t=45, b=10))
+
     now = datetime.now()
     three_months_ago = now - timedelta(days=90)
-    df_dated = blog_df.dropna(subset=["날짜"]).copy()
+    df_dated  = blog_df.dropna(subset=["날짜"]).copy()
     df_recent = df_dated[df_dated["날짜"] >= three_months_ago].copy()
 
+    # ━━ Row 1: 점수 분포 + 콘텐츠 유형 파이 ━━
     col1, col2 = st.columns(2)
 
-    # ── 키워드별 게시글 수 (Plotly 가로 바)
     with col1:
-        cnt = blog_df["키워드"].value_counts().reset_index()
-        cnt.columns = ["키워드", "게시글수"]
-        fig = px.bar(cnt, x="게시글수", y="키워드", orientation="h",
-                     color="키워드", color_discrete_sequence=px.colors.qualitative.Pastel,
-                     title="키워드별 게시글 수",
-                     text="게시글수")
-        fig.update_traces(textposition="outside")
-        fig.update_layout(showlegend=False, height=350,
-                          plot_bgcolor="rgba(0,0,0,0)",
-                          paper_bgcolor="rgba(0,0,0,0)",
-                          yaxis_title="", xaxis_title="게시글 수",
-                          margin=dict(l=10, r=30, t=40, b=10))
+        # 키워드별 평균 관련성점수 가로바
+        score_kw = blog_df.groupby("키워드")["관련성점수"].agg(
+            평균점수="mean", 게시글수="count"
+        ).reset_index().sort_values("평균점수", ascending=True)
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            x=score_kw["평균점수"],
+            y=score_kw["키워드"],
+            orientation="h",
+            marker_color=COLORS[:len(score_kw)],
+            text=score_kw["평균점수"].round(1),
+            textposition="outside",
+            customdata=score_kw["게시글수"],
+            hovertemplate="%{y}<br>평균점수: %{x:.1f}<br>게시글수: %{customdata}<extra></extra>"
+        ))
+        fig.update_layout(title="키워드별 평균 관련성 점수", height=350,
+                          xaxis_title="평균 관련성 점수", yaxis_title="",
+                          showlegend=False, **LB)
         st.plotly_chart(fig, use_container_width=True)
 
-    # ── 월별 추이 라인차트 (최근 3개월)
     with col2:
-        if not df_recent.empty:
-            df_recent["월"] = df_recent["날짜"].dt.strftime("%Y-%m")
-            monthly = df_recent.groupby(["월", "키워드"]).size().reset_index(name="게시글수")
-            fig2 = px.line(monthly, x="월", y="게시글수", color="키워드",
-                           markers=True, title="최근 3개월 월별 언급 추이",
-                           color_discrete_sequence=px.colors.qualitative.Pastel)
-            fig2.update_traces(line_width=2.5, marker_size=8)
-            fig2.update_layout(height=350,
-                               plot_bgcolor="rgba(0,0,0,0)",
-                               paper_bgcolor="rgba(0,0,0,0)",
-                               xaxis_title="", yaxis_title="게시글 수",
-                               legend_title="키워드",
-                               margin=dict(l=10, r=10, t=40, b=10))
-            st.plotly_chart(fig2, use_container_width=True)
-        else:
-            st.info("최근 3개월 데이터가 없습니다. 날짜 범위를 확인해주세요.")
+        # 콘텐츠 유형 파이차트
+        type_cnt = blog_df["콘텐츠유형"].value_counts().reset_index()
+        type_cnt.columns = ["유형","수"]
+        fig2 = px.pie(type_cnt, names="유형", values="수",
+                      color_discrete_sequence=COLORS,
+                      title="콘텐츠 유형 분포",
+                      hole=0.4)
+        fig2.update_traces(textposition="outside", textinfo="percent+label")
+        fig2.update_layout(height=350, showlegend=False, **LB)
+        st.plotly_chart(fig2, use_container_width=True)
 
-    # ── 주간 히트맵 (키워드 × 주차)
-    if not df_recent.empty:
-        df_recent["주차"] = df_recent["날짜"].dt.strftime("%Y-W%V")
-        heatmap_data = df_recent.groupby(["키워드", "주차"]).size().unstack(fill_value=0)
-        if not heatmap_data.empty:
-            fig3 = px.imshow(heatmap_data,
-                             color_continuous_scale="Blues",
-                             title="키워드 × 주차별 언급 히트맵",
-                             aspect="auto")
-            fig3.update_layout(height=300,
-                               plot_bgcolor="rgba(0,0,0,0)",
-                               paper_bgcolor="rgba(0,0,0,0)",
-                               margin=dict(l=10, r=10, t=40, b=10))
+    # ━━ Row 2: 월별 추이 + 점수 TOP 게시글 ━━
+    col3, col4 = st.columns([1.4, 1.6])
+
+    with col3:
+        if not df_recent.empty:
+            df_recent = df_recent.copy()
+            df_recent["월"] = df_recent["날짜"].dt.strftime("%Y-%m")
+            monthly = df_recent.groupby(["월","키워드"]).agg(
+                게시글수=("제목","count"),
+                평균점수=("관련성점수","mean")
+            ).reset_index()
+            fig3 = px.line(monthly, x="월", y="게시글수", color="키워드",
+                           markers=True,
+                           title="최근 3개월 월별 언급 추이",
+                           color_discrete_sequence=COLORS,
+                           hover_data={"평균점수":":.1f"})
+            fig3.update_traces(line_width=2.5, marker_size=9)
+            fig3.update_layout(height=380, xaxis_title="",
+                               yaxis_title="게시글 수", legend_title="키워드", **LB)
             st.plotly_chart(fig3, use_container_width=True)
+        else:
+            st.info("최근 3개월 데이터가 없습니다.")
+
+    with col4:
+        # 관련성점수 TOP15 게시글 테이블
+        top_posts = blog_df.nlargest(15, "관련성점수")[
+            ["관련성점수","콘텐츠유형","키워드","제목","날짜_원본","URL"]
+        ].copy()
+        top_posts["날짜_원본"] = pd.to_datetime(
+            top_posts["날짜_원본"], format="%Y%m%d", errors="coerce"
+        ).dt.strftime("%Y-%m-%d")
+        top_posts = top_posts.rename(columns={"날짜_원본":"날짜"})
+        st.markdown("**🏆 관련성 점수 TOP 15 게시글**")
+        st.dataframe(
+            top_posts,
+            use_container_width=True,
+            height=380,
+            column_config={
+                "관련성점수": st.column_config.ProgressColumn(
+                    "점수", min_value=0, max_value=100, format="%d"),
+                "URL": st.column_config.LinkColumn("링크"),
+                "제목": st.column_config.TextColumn("제목", width="large"),
+            }
+        )
+
+    # ━━ Row 3: 키워드 × 콘텐츠유형 히트맵 ━━
+    pivot = blog_df.groupby(["키워드","콘텐츠유형"])["관련성점수"].mean().unstack(fill_value=0)
+    if not pivot.empty and pivot.shape[1] > 1:
+        fig4 = px.imshow(pivot.round(1),
+                         color_continuous_scale="Blues",
+                         title="키워드 × 콘텐츠유형 평균 관련성 점수 히트맵",
+                         text_auto=True, aspect="auto")
+        fig4.update_layout(height=300, xaxis_title="콘텐츠 유형",
+                           yaxis_title="", coloraxis_showscale=False, **LB)
+        st.plotly_chart(fig4, use_container_width=True)
 
 
 # ── 쇼핑 차트 ────────────────────────────────────────
@@ -617,21 +729,29 @@ if btn:
         with st.spinner("블로그 수집 중..."):
             blog_df = search_blog(keywords, client_id, client_secret, display_count)
         if not blog_df.empty:
-            m1, m2, m3 = st.columns(3)
-            m1.metric("총 게시글", f"{len(blog_df)}건")
-            m2.metric("수집 키워드", f"{blog_df['키워드'].nunique()}개")
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("유효 게시글", f"{len(blog_df)}건",
+                      help="노이즈 제거 후 음료 관련 게시글만 집계")
+            m2.metric("평균 관련성 점수", f"{blog_df['관련성점수'].mean():.1f}점")
+            high = len(blog_df[blog_df["관련성점수"] >= 40])
+            m3.metric("고관련 게시글(40점↑)", f"{high}건")
             recent = blog_df.dropna(subset=["날짜"])
-            m3.metric("최신 게시글", recent["날짜"].max().strftime("%Y-%m-%d") if not recent.empty else "-")
+            m4.metric("최신 게시글",
+                      recent["날짜"].max().strftime("%Y-%m-%d") if not recent.empty else "-")
             render_blog_charts(blog_df)
-            with st.expander("📋 블로그 원본 데이터 보기"):
+            with st.expander("📋 블로그 원본 데이터 보기 (점수순 정렬)"):
                 st.dataframe(blog_df.drop(columns=["날짜"]), use_container_width=True,
-                             column_config={"URL": st.column_config.LinkColumn("링크")})
+                             column_config={
+                                 "URL": st.column_config.LinkColumn("링크"),
+                                 "관련성점수": st.column_config.ProgressColumn(
+                                     "점수", min_value=0, max_value=100, format="%d"),
+                             })
             csv = blog_df.drop(columns=["날짜"]).to_csv(index=False, encoding="utf-8-sig")
             st.download_button("⬇️ 블로그 CSV", csv,
                                file_name=f"blog_{datetime.today().strftime('%Y%m%d')}.csv",
                                mime="text/csv")
         else:
-            st.warning("블로그 데이터 없음")
+            st.warning("블로그 데이터 없음 — 키워드를 더 구체적으로 입력해보세요.")
 
     # ── 쇼핑 ──
     if do_shop:
@@ -645,8 +765,7 @@ if btn:
             m2.metric("평균 개당가격", f"{shop_df['개당가격(원)'].mean():,.0f}원")
             df_ml = shop_df[shop_df["100ml당가격(원)"].notna()]
             m3.metric("평균 100ml당", f"{df_ml['100ml당가격(원)'].mean():,.0f}원" if not df_ml.empty else "-")
-            rtd_cnt = len(shop_df[shop_df["상품유형"] == "RTD음료"])
-            m4.metric("RTD음료 수", f"{rtd_cnt}개")
+            m4.metric("총 리뷰수", f"{shop_df['리뷰수'].sum():,}개")
             render_shop_charts(shop_df)
             with st.expander("📋 쇼핑 원본 데이터 보기"):
                 st.dataframe(shop_df, use_container_width=True,
