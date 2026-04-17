@@ -48,7 +48,7 @@ def parse_package(title, price):
     if unit_price > 0 and ml and ml >= 50:
         per_100ml = round(unit_price / ml * 100)
         # 이상값 필터: 100ml당 50원~3,000원 범위만 유효 RTD로 인정
-        if per_100ml < 50 or per_100ml > 3000:
+        if per_100ml < 30 or per_100ml > 600:  # 정상 RTD 범위: 30~600원/100ml
             per_100ml = None
 
     # ── 카테고리 자동 분류
@@ -760,13 +760,19 @@ if btn:
         with st.spinner("쇼핑 데이터 수집 중..."):
             shop_df = search_shop(keywords, client_id, client_secret, display_count)
         if not shop_df.empty:
+            # RTD 음료만 추출해서 지표 계산
+            rtd_df   = shop_df[shop_df["상품유형"] == "RTD음료"]
+            rtd_ml   = rtd_df[rtd_df["100ml당가격(원)"].notna() & (rtd_df["100ml당가격(원)"] > 0)]
             m1, m2, m3, m4 = st.columns(4)
-            m1.metric("총 상품 수", f"{len(shop_df)}개")
-            m2.metric("평균 개당가격", f"{shop_df['개당가격(원)'].mean():,.0f}원")
-            df_ml = shop_df[shop_df["100ml당가격(원)"].notna()]
-            m3.metric("평균 100ml당", f"{df_ml['100ml당가격(원)'].mean():,.0f}원" if not df_ml.empty else "-")
-            rtd_cnt = len(shop_df[shop_df["상품유형"] == "RTD음료"])
-            m4.metric("RTD음료 수", f"{rtd_cnt}개")
+            m1.metric("총 상품 수", f"{len(shop_df)}개",
+                      help="RTD·농축·건강기능·대용량 포함 전체")
+            m2.metric("RTD 평균 개당가격",
+                      f"{rtd_df['개당가격(원)'].mean():,.0f}원" if not rtd_df.empty else "-",
+                      help="RTD음료만 기준 (8,000원 초과 이상값 제외)")
+            m3.metric("RTD 평균 100ml당",
+                      f"{rtd_ml['100ml당가격(원)'].mean():,.0f}원" if not rtd_ml.empty else "-",
+                      help="용량 파악된 RTD음료만 / 30~600원 범위만 유효")
+            m4.metric("RTD음료 수", f"{len(rtd_df)}개")
             render_shop_charts(shop_df)
             with st.expander("📋 쇼핑 원본 데이터 보기"):
                 st.dataframe(shop_df, use_container_width=True,
