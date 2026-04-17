@@ -77,12 +77,12 @@ st.caption("네이버 블로그 + 쇼핑 API 기반 실시간 트렌드 수집")
 
 with st.sidebar:
     st.subheader("🔑 API 키 설정")
-   client_id     = st.text_input("Naver Client ID",
-                        value=st.secrets.get("NAVER_CLIENT_ID", ""),
-                        type="password")
+    client_id     = st.text_input("Naver Client ID",
+                                  value=st.secrets.get("NAVER_CLIENT_ID", ""),
+                                  type="password")
     client_secret = st.text_input("Naver Client Secret",
-                        value=st.secrets.get("NAVER_CLIENT_SECRET", ""),
-                        type="password")
+                                  value=st.secrets.get("NAVER_CLIENT_SECRET", ""),
+                                  type="password")
 
     st.divider()
 
