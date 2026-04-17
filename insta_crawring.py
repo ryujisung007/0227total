@@ -699,6 +699,58 @@ def fetch_datalab_range(keywords_list, time_unit, months,
     return {"results": all_results}
 
 
+def render_datalab_chart(data, time_unit):
+    """DataLab 결과 차트 렌더링 (최상위 함수)"""
+    COLORS = px.colors.qualitative.Pastel
+    if "error" in data:
+        st.error(f"DataLab API 오류: {data['error']}")
+        st.caption("💡 DataLab API는 블로그 검색 API와 동일한 Client ID/Secret을 사용합니다.")
+        return
+    results = data.get("results", [])
+    if not results:
+        st.info("DataLab 데이터가 없습니다.")
+        return
+    fig = go.Figure()
+    for i, r in enumerate(results):
+        kw    = r["title"]
+        color = COLORS[i % len(COLORS)]
+        dates = [d["period"] for d in r["data"]]
+        vals  = [d["ratio"]  for d in r["data"]]
+        fig.add_trace(go.Scatter(
+            x=dates, y=vals,
+            mode="lines+markers",
+            name=kw,
+            line=dict(width=2.5, color=color),
+            marker=dict(size=7, color=color,
+                        line=dict(width=1, color="white")),
+            hovertemplate=(
+                f"<b>{kw}</b><br>기간: %{{x}}<br>"
+                "검색량 지수: %{y:.1f}<extra></extra>"
+            ),
+        ))
+    unit_label = "월별" if time_unit == "month" else "주별"
+    fig.update_layout(
+        title=dict(text=f"네이버 {unit_label} 검색량 트렌드 지수 (0~100)",
+                   font=dict(size=13)),
+        height=420,
+        xaxis=dict(title="", tickfont=dict(size=11), tickangle=-40,
+                   showgrid=True, gridcolor="rgba(200,200,200,0.2)"),
+        yaxis=dict(title="검색량 지수", range=[0, 105],
+                   showgrid=True, gridcolor="rgba(200,200,200,0.2)"),
+        legend=dict(orientation="h", y=-0.25, x=0.5, xanchor="center",
+                    font=dict(size=10), bgcolor="rgba(0,0,0,0)"),
+        hovermode="x unified",
+        margin=dict(l=10, r=10, t=45, b=90),
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+    )
+    st.plotly_chart(fig, use_container_width=True)
+    st.caption(
+        "📌 검색량 지수: 해당 기간 최고값을 100으로 한 상대 지수. "
+        "실제 검색량이 아닌 트렌드 방향을 나타냅니다."
+    )
+
+
 def render_blog_charts(blog_df, client_id="", client_secret=""):
     if blog_df.empty:
         return
@@ -758,130 +810,20 @@ def render_blog_charts(blog_df, client_id="", client_secret=""):
 
         tab_month, tab_week = st.tabs(["📅 월별 (최근 12개월)", "📆 주별 (최근 3개월)"])
 
-        def fetch_datalab(keywords_list, time_unit, client_id, client_secret):
-            """네이버 DataLab 검색어 트렌드 API — 5개씩 배치 호출 후 병합"""
-            end_dt = datetime.now()
-            if time_unit == "month":
-                start_dt = (end_dt.replace(day=1) -
-                            pd.DateOffset(months=11)).to_pydatetime()
-            else:
-                start_dt = end_dt - timedelta(weeks=12)
-
-            url = "https://openapi.naver.com/v1/datalab/search"
-            headers = {
-                "X-Naver-Client-Id":     client_id,
-                "X-Naver-Client-Secret": client_secret,
-                "Content-Type":          "application/json",
-            }
-            start_str = start_dt.strftime("%Y-%m-%d")
-            end_str   = end_dt.strftime("%Y-%m-%d")
-
-            all_results = []
-            # 5개씩 배치로 나눠 호출
-            for batch_start in range(0, len(keywords_list), 5):
-                batch = keywords_list[batch_start:batch_start+5]
-                groups = [{"groupName": kw, "keywords": [kw]} for kw in batch]
-                body = {
-                    "startDate":     start_str,
-                    "endDate":       end_str,
-                    "timeUnit":      time_unit,
-                    "keywordGroups": groups,
-                }
-                try:
-                    res = requests.post(url, headers=headers,
-                                        data=json.dumps(body), timeout=15)
-                    if res.status_code == 200:
-                        all_results.extend(res.json().get("results", []))
-                    else:
-                        return {"error": f"{res.status_code}: {res.text[:200]}"}
-                    time.sleep(0.3)   # 배치간 딜레이
-                except Exception as e:
-                    return {"error": str(e)}
-
-            return {"results": all_results}
-
-        def render_datalab_chart(data, time_unit):
-            if "error" in data:
-                st.error(f"DataLab API 오류: {data['error']}")
-                st.caption("💡 DataLab API는 블로그 검색 API와 동일한 Client ID/Secret을 사용합니다.")
-                return
-            results = data.get("results", [])
-            if not results:
-                st.info("DataLab 데이터가 없습니다.")
-                return
-
-            fig = go.Figure()
-            for i, r in enumerate(results):
-                kw    = r["title"]
-                color = COLORS[i % len(COLORS)]
-                dates = [d["period"] for d in r["data"]]
-                vals  = [d["ratio"]  for d in r["data"]]
-                fig.add_trace(go.Scatter(
-                    x=dates, y=vals,
-                    mode="lines+markers",
-                    name=kw,
-                    line=dict(width=2.5, color=color),
-                    marker=dict(size=7, color=color,
-                                line=dict(width=1, color="white")),
-                    hovertemplate=(
-                        f"<b>{kw}</b><br>"
-                        "기간: %{x}<br>"
-                        "검색량 지수: %{y:.1f}<extra></extra>"
-                    ),
-                ))
-
-            unit_label = "월별" if time_unit=="month" else "주별"
-            fig.update_layout(
-                title=dict(
-                    text=f"네이버 {unit_label} 검색량 트렌드 지수 (0~100)",
-                    font=dict(size=13)
-                ),
-                height=420,
-                xaxis=dict(
-                    title="",
-                    tickfont=dict(size=11),
-                    tickangle=-40,
-                    showgrid=True,
-                    gridcolor="rgba(200,200,200,0.2)",
-                ),
-                yaxis=dict(
-                    title="검색량 지수",
-                    range=[0, 105],
-                    showgrid=True,
-                    gridcolor="rgba(200,200,200,0.2)",
-                ),
-                legend=dict(
-                    orientation="h", y=-0.25, x=0.5,
-                    xanchor="center", font=dict(size=10),
-                    bgcolor="rgba(0,0,0,0)",
-                ),
-                hovermode="x unified",
-                margin=dict(l=10, r=10, t=45, b=90),
-                plot_bgcolor="rgba(0,0,0,0)",
-                paper_bgcolor="rgba(0,0,0,0)",
-            )
-            st.plotly_chart(fig, use_container_width=True)
-            st.caption(
-                "📌 검색량 지수: 해당 기간 최고값을 100으로 한 상대 지수. "
-                "실제 검색량이 아닌 트렌드 방향을 나타냅니다."
-            )
-
         if keywords_for_dl and client_id and client_secret:
+            import hashlib as _hl
+            _kw_hash = _hl.md5("_".join(keywords_for_dl).encode()).hexdigest()[:8]
+
             with tab_month:
                 period_opt = st.radio("기간", ["3개월","6개월"],
                                       horizontal=True, key="dl_month_period")
                 months_m = 3 if period_opt == "3개월" else 6
-                import hashlib
-                kw_hash = hashlib.md5("_".join(keywords_for_dl).encode()).hexdigest()[:8]
-                ck_m = f"dl_month_{months_m}_{kw_hash}"
+                ck_m = f"dl_month_{months_m}_{_kw_hash}"
                 if ck_m not in st.session_state:
-                    if not client_id or not client_secret:
-                        st.warning("API 키가 없어 DataLab 조회를 건너뜁니다.")
-                    else:
-                        with st.spinner(f"DataLab 월별 {months_m}개월 조회 중..."):
-                            st.session_state[ck_m] = fetch_datalab_range(
-                                keywords_for_dl, "month", months_m,
-                                client_id, client_secret)
+                    with st.spinner(f"DataLab 월별 {months_m}개월 조회 중..."):
+                        st.session_state[ck_m] = fetch_datalab_range(
+                            keywords_for_dl, "month", months_m,
+                            client_id, client_secret)
                 if ck_m in st.session_state:
                     render_datalab_chart(st.session_state[ck_m], "month")
 
@@ -889,17 +831,12 @@ def render_blog_charts(blog_df, client_id="", client_secret=""):
                 period_opt_w = st.radio("기간", ["3개월","6개월"],
                                         horizontal=True, key="dl_week_period")
                 months_w = 3 if period_opt_w == "3개월" else 6
-                import hashlib as _hl
-                kw_hash_w = _hl.md5("_".join(keywords_for_dl).encode()).hexdigest()[:8]
-                ck_w = f"dl_week_{months_w}_{kw_hash_w}"
+                ck_w = f"dl_week_{months_w}_{_kw_hash}"
                 if ck_w not in st.session_state:
-                    if not client_id or not client_secret:
-                        st.warning("API 키가 없어 DataLab 조회를 건너뜁니다.")
-                    else:
-                        with st.spinner(f"DataLab 주별 {months_w}개월 조회 중..."):
-                            st.session_state[ck_w] = fetch_datalab_range(
-                                keywords_for_dl, "week", months_w,
-                                client_id, client_secret)
+                    with st.spinner(f"DataLab 주별 {months_w}개월 조회 중..."):
+                        st.session_state[ck_w] = fetch_datalab_range(
+                            keywords_for_dl, "week", months_w,
+                            client_id, client_secret)
                 if ck_w in st.session_state:
                     render_datalab_chart(st.session_state[ck_w], "week")
         else:
@@ -907,6 +844,7 @@ def render_blog_charts(blog_df, client_id="", client_secret=""):
                 st.info("🚀 분석 시작 후 DataLab 트렌드가 표시됩니다.")
             with tab_week:
                 st.info("🚀 분석 시작 후 DataLab 트렌드가 표시됩니다.")
+
 
     with col4:
         # 관련성점수 TOP15 게시글 테이블
