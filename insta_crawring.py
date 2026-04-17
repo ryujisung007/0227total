@@ -4,6 +4,7 @@ import requests
 from datetime import datetime
 from collections import Counter
 import time
+import json
 
 st.set_page_config(page_title="AI NPD SUITE - 트렌드 분석", layout="wide")
 
@@ -25,14 +26,23 @@ def get_gemini_keywords(api_key):
     }
     try:
         res = requests.post(url, json=payload, timeout=20)
-        text = res.json()["candidates"][0]["content"]["parts"][0]["text"]
+        data = res.json()
+
+        # 디버그용 응답 출력
+        st.write("📡 Gemini 응답 원문:", data)
+
+        if "candidates" not in data:
+            st.error(f"응답에 candidates 없음: {data}")
+            return ""
+
+        text = data["candidates"][0]["content"]["parts"][0]["text"]
         text = text.strip().replace("```json", "").replace("```", "").strip()
-        import json
         keywords = json.loads(text)
         return ", ".join(keywords)
     except Exception as e:
         st.error(f"Gemini 오류: {e}")
         return ""
+
 
 # ── 네이버 API ───────────────────────────────────────
 def naver_search(keyword, api_type, client_id, client_secret, display=20, sort="date"):
@@ -102,7 +112,6 @@ with st.sidebar:
 
     st.divider()
 
-    # ── 키워드 선택 방식 ──
     st.subheader("🔍 분석 키워드")
     keyword_mode = st.radio(
         "키워드 입력 방식",
