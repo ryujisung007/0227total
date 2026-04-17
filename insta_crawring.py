@@ -429,11 +429,8 @@ def render_blog_charts(blog_df):
         tab_month, tab_week = st.tabs(["📅 월별 (최근 12개월)", "📆 주별 (최근 3개월)"])
 
         def fetch_datalab(keywords_list, time_unit, client_id, client_secret):
-            """네이버 DataLab 검색어 트렌드 API 호출
-            - 키워드 그룹 최대 5개, 각 그룹 키워드 최대 5개
-            - timeUnit: date(일), week(주), month(월)
-            """
-            end_dt   = datetime.now()
+            """네이버 DataLab 검색어 트렌드 API — 5개씩 배치 호출 후 병합"""
+            end_dt = datetime.now()
             if time_unit == "month":
                 start_dt = (end_dt.replace(day=1) -
                             pd.DateOffset(months=11)).to_pydatetime()
@@ -446,26 +443,32 @@ def render_blog_charts(blog_df):
                 "X-Naver-Client-Secret": client_secret,
                 "Content-Type":          "application/json",
             }
-            # 키워드 최대 5그룹
-            groups = []
-            for kw in keywords_list[:5]:
-                groups.append({"groupName": kw, "keywords": [kw]})
+            start_str = start_dt.strftime("%Y-%m-%d")
+            end_str   = end_dt.strftime("%Y-%m-%d")
 
-            body = {
-                "startDate": start_dt.strftime("%Y-%m-%d"),
-                "endDate":   end_dt.strftime("%Y-%m-%d"),
-                "timeUnit":  time_unit,
-                "keywordGroups": groups,
-            }
-            try:
-                res = requests.post(url, headers=headers,
-                                    data=json.dumps(body), timeout=15)
-                if res.status_code == 200:
-                    return res.json()
-                else:
-                    return {"error": f"{res.status_code}: {res.text[:200]}"}
-            except Exception as e:
-                return {"error": str(e)}
+            all_results = []
+            # 5개씩 배치로 나눠 호출
+            for batch_start in range(0, len(keywords_list), 5):
+                batch = keywords_list[batch_start:batch_start+5]
+                groups = [{"groupName": kw, "keywords": [kw]} for kw in batch]
+                body = {
+                    "startDate":     start_str,
+                    "endDate":       end_str,
+                    "timeUnit":      time_unit,
+                    "keywordGroups": groups,
+                }
+                try:
+                    res = requests.post(url, headers=headers,
+                                        data=json.dumps(body), timeout=15)
+                    if res.status_code == 200:
+                        all_results.extend(res.json().get("results", []))
+                    else:
+                        return {"error": f"{res.status_code}: {res.text[:200]}"}
+                    time.sleep(0.3)   # 배치간 딜레이
+                except Exception as e:
+                    return {"error": str(e)}
+
+            return {"results": all_results}
 
         def render_datalab_chart(data, time_unit):
             if "error" in data:
@@ -577,16 +580,40 @@ def render_blog_charts(blog_df):
             }
         )
 
-    # ━━ Row 3: 키워드 × 콘텐츠유형 히트맵 ━━
-    pivot = blog_df.groupby(["키워드","콘텐츠유형"])["관련성점수"].mean().unstack(fill_value=0)
-    if not pivot.empty and pivot.shape[1] > 1:
-        fig4 = px.imshow(pivot.round(1),
-                         color_continuous_scale="Blues",
-                         title="키워드 × 콘텐츠유형 평균 관련성 점수 히트맵",
-                         text_auto=True, aspect="auto")
-        fig4.update_layout(height=300, xaxis_title="콘텐츠 유형",
-                           yaxis_title="", coloraxis_showscale=False, **LB)
+    # ━━ Row 3: 키워드 × 콘텐츠유형 영향력 지수 ━━
+    # 영향력 지수 = 게시글 수 × 평균 관련성 점수 / 100 (복합 지표)
+    impact = blog_df.groupby(["키워드","콘텐츠유형"]).agg(
+        게시글수=("제목","count"),
+        평균점수=("관련성점수","mean")
+    ).reset_index()
+    impact["영향력지수"] = (impact["게시글수"] * impact["평균점수"] / 100).round(1)
+
+    # 영향력 낮은 콘텐츠 유형 통합 ('기타'로 합침)
+    type_total = impact.groupby("콘텐츠유형")["영향력지수"].sum()
+    major_types = type_total[type_total >= type_total.sum() * 0.05].index.tolist()
+    impact["콘텐츠유형_통합"] = impact["콘텐츠유형"].apply(
+        lambda x: x if x in major_types else "기타"
+    )
+    pivot2 = impact.groupby(["키워드","콘텐츠유형_통합"])["영향력지수"].sum().unstack(fill_value=0)
+
+    if not pivot2.empty and pivot2.shape[1] >= 1:
+        # 영향력 있는 컬럼만 정렬 표시
+        pivot2 = pivot2[pivot2.sum().sort_values(ascending=False).index]
+        fig4 = px.imshow(
+            pivot2.round(1),
+            color_continuous_scale="Blues",
+            title="키워드 × 콘텐츠유형 영향력 지수 (게시글수 × 평균점수)",
+            text_auto=True, aspect="auto"
+        )
+        fig4.update_layout(
+            height=280,
+            xaxis_title="",
+            yaxis_title="",
+            coloraxis_showscale=False,
+            **LB
+        )
         st.plotly_chart(fig4, use_container_width=True)
+        st.caption("영향력 지수 = 게시글 수 × 평균 관련성 점수 ÷ 100  |  전체 5% 미만 유형은 '기타'로 통합")
 
     # ━━ Row 4: 블로그 플레이버 랭킹 ━━
     blog_flavors = blog_df[blog_df["플레이버"] != ""]["플레이버"].str.split("/").explode()
@@ -657,29 +684,57 @@ def render_shop_charts(shop_df):
         st.plotly_chart(fig_pie, use_container_width=True)
 
     with col2:
-        # 키워드 × 100ml당 가격대 히트맵 (RTD만)
-        rtd_ml_valid = rtd[rtd["100ml당가격(원)"].notna() & (rtd["100ml당가격(원)"] > 0)]
-        if not rtd_ml_valid.empty:
-            bins_ml   = [0, 50, 100, 150, 200, 300, 500, 9999]
-            labels_ml = ["~50원","51~100","101~150","151~200","201~300","301~500","500원+"]
-            rtd_ml_valid = rtd_ml_valid.copy()
+        # 키워드 × 100ml당 가격대 히트맵 (RTD만, 이상값 제거)
+        # IQR 기반 이상값 제거: Q1-1.5*IQR ~ Q3+1.5*IQR
+        rtd_ml_raw = rtd[rtd["100ml당가격(원)"].notna() & (rtd["100ml당가격(원)"] > 0)].copy()
+        if not rtd_ml_raw.empty:
+            q1 = rtd_ml_raw["100ml당가격(원)"].quantile(0.25)
+            q3 = rtd_ml_raw["100ml당가격(원)"].quantile(0.75)
+            iqr = q3 - q1
+            lower = max(q1 - 1.5 * iqr, 10)
+            upper = q3 + 1.5 * iqr
+            rtd_ml_valid = rtd_ml_raw[
+                (rtd_ml_raw["100ml당가격(원)"] >= lower) &
+                (rtd_ml_raw["100ml당가격(원)"] <= upper)
+            ].copy()
+            removed_cnt = len(rtd_ml_raw) - len(rtd_ml_valid)
+
+            # 유효 범위 기반 동적 bin 생성
+            max_val = rtd_ml_valid["100ml당가격(원)"].max()
+            if max_val <= 300:
+                bins_ml   = [0, 50, 80, 100, 130, 160, 200, 250, 300]
+                labels_ml = ["~50","51~80","81~100","101~130",
+                             "131~160","161~200","201~250","251~300"]
+            else:
+                bins_ml   = [0, 50, 100, 150, 200, 300, 400, 600]
+                labels_ml = ["~50","51~100","101~150","151~200",
+                             "201~300","301~400","401~600"]
+
             rtd_ml_valid["100ml가격대"] = pd.cut(
-                rtd_ml_valid["100ml당가격(원)"], bins=bins_ml, labels=labels_ml)
+                rtd_ml_valid["100ml당가격(원)"],
+                bins=bins_ml, labels=labels_ml, include_lowest=True)
+
+            # 데이터 있는 구간만 표시
             hmap = rtd_ml_valid.groupby(
                 ["키워드","100ml가격대"], observed=True).size().unstack(fill_value=0)
+            hmap = hmap.loc[:, (hmap > 0).any()]  # 값 없는 컬럼 제거
+
             fig_hmap = px.imshow(
                 hmap,
                 color_continuous_scale="Blues",
-                title="키워드 × 100ml당 가격대 분포 (RTD만)",
+                title=f"키워드 × 100ml당 가격대 (RTD · {lower:.0f}~{upper:.0f}원 유효범위)",
                 aspect="auto",
                 text_auto=True
             )
             fig_hmap.update_layout(height=360,
-                                   xaxis_title="100ml당 가격대",
+                                   xaxis_title="100ml당 가격대(원)",
                                    yaxis_title="",
                                    coloraxis_showscale=False,
                                    **layout_base)
             st.plotly_chart(fig_hmap, use_container_width=True)
+            if removed_cnt > 0:
+                st.caption(f"ℹ️ 이상값 {removed_cnt}개 제외됨 "
+                           f"(IQR 기준 {lower:.0f}원 미만 또는 {upper:.0f}원 초과)")
         elif not rtd.empty:
             st.info("100ml 가격 계산 가능한 RTD 상품이 없습니다. (용량 미표기)")
         else:
@@ -1229,16 +1284,26 @@ with st.sidebar:
                         st.success(f"{len(suggested)}개 키워드 추천 완료!")
 
         if "ai_keyword_list" in st.session_state:
-            st.markdown("**추천 키워드 선택**")
+            st.markdown("**추천 키워드 선택 (체크 또는 직접 수정)**")
             selected_kws = []
-            cols = st.columns(2)
             for i, kw in enumerate(st.session_state["ai_keyword_list"]):
-                with cols[i % 2]:
-                    if st.checkbox(kw, value=True, key=f"kw_{i}"):
-                        selected_kws.append(kw)
-            raw_keywords = ", ".join(selected_kws)
+                c1, c2 = st.columns([0.15, 0.85])
+                with c1:
+                    checked = st.checkbox("", value=True, key=f"kw_chk_{i}")
+                with c2:
+                    edited = st.text_input("", value=kw, key=f"kw_txt_{i}",
+                                           label_visibility="collapsed")
+                if checked and edited.strip():
+                    selected_kws.append(edited.strip())
+            # 추가 직접입력란
+            extra = st.text_input("➕ 키워드 직접 추가 (콤마 구분)",
+                                  value="", placeholder="예: 단백질음료, 저칼로리음료",
+                                  key="kw_extra")
+            if extra.strip():
+                selected_kws += [k.strip() for k in extra.split(",") if k.strip()]
+            raw_keywords = ", ".join(dict.fromkeys(selected_kws))  # 중복 제거
             if raw_keywords:
-                st.caption(f"선택: `{raw_keywords}`")
+                st.caption(f"선택된 키워드 {len(selected_kws)}개: `{raw_keywords}`")
         else:
             raw_keywords = ""
             st.caption("버튼을 눌러 키워드를 추천받으세요.")
