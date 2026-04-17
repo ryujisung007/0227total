@@ -440,28 +440,28 @@ def render_blog_charts(blog_df):
                 two_months_ago = now - timedelta(days=60)
                 df_w = df_recent[df_recent["날짜"] >= two_months_ago].copy()
 
-                # 주차 컬럼 생성
-                df_w["주차키"] = df_w["날짜"].dt.to_period("W").apply(
-                    lambda p: p.start_time
-                )
-                df_w["주차표시"] = df_w["날짜"].apply(
-                    lambda d: f"{d.month}/{d.day}주"
-                    if d.weekday() == 0
-                    else d - timedelta(days=d.weekday())
-                )
-                # 실제 월요일 기준으로 통일
-                df_w["주차표시"] = df_w["주차키"].apply(
-                    lambda d: f"{d.month}/{d.day}"
-                )
+                def get_week_label(d):
+                    """날짜 → 'M월 N주' 변환 (해당 월 기준 1~5주)"""
+                    # 해당 월 1일
+                    first_day = d.replace(day=1)
+                    # 1일이 속한 주의 월요일
+                    first_monday_offset = first_day.weekday()
+                    # 이 날짜가 월의 몇 번째 주인지 계산
+                    week_num = (d.day + first_monday_offset - 1) // 7 + 1
+                    return f"{d.month}월 {week_num}주"
 
-                # 2개월 전체 주 목록 생성
-                all_weeks = pd.date_range(
-                    start=two_months_ago - timedelta(days=two_months_ago.weekday()),
-                    end=now, freq="W-MON"
-                )
-                week_labels = [f"{w.month}/{w.day}" for w in all_weeks]
+                df_w["주차표시"] = df_w["날짜"].apply(get_week_label)
+
+                # 최근 2개월 전체 주 목록 생성 (M월 1주 ~ M월 5주 순서)
+                all_week_labels = []
+                for days_back in range(60, -1, -1):
+                    d = now - timedelta(days=days_back)
+                    lbl = get_week_label(d)
+                    if lbl not in all_week_labels:
+                        all_week_labels.append(lbl)
+
                 full_week_idx = pd.MultiIndex.from_product(
-                    [week_labels, keywords_list], names=["주차표시","키워드"]
+                    [all_week_labels, keywords_list], names=["주차표시","키워드"]
                 )
                 weekly_raw = df_w.groupby(["주차표시","키워드"]).agg(
                     게시글수=("제목","count"),
@@ -481,23 +481,30 @@ def render_blog_charts(blog_df):
                         marker_color=color,
                         opacity=0.85,
                         hovertemplate=(
-                            f"<b>{kw}</b><br>주시작: %{{x}}<br>"
+                            f"<b>{kw}</b><br>%{{x}}<br>"
                             "게시글수: %{y}건<extra></extra>"
                         ),
                     ))
                 fig_w.update_layout(
-                    title=dict(text="주차별 언급량 (최근 2개월)", font=dict(size=13)),
+                    title=dict(text="주차별 언급량 (최근 2개월 · M월 N주 기준)",
+                               font=dict(size=13)),
                     barmode="group",
-                    height=380,
-                    xaxis=dict(title="주 시작일(월/일)", tickfont=dict(size=11),
-                               tickangle=-45, showgrid=False),
+                    height=400,
+                    xaxis=dict(
+                        title="",
+                        categoryorder="array",
+                        categoryarray=all_week_labels,
+                        tickfont=dict(size=11),
+                        tickangle=-40,
+                        showgrid=False,
+                    ),
                     yaxis=dict(title="게시글 수", rangemode="tozero",
                                showgrid=True, gridcolor="rgba(200,200,200,0.25)"),
-                    legend=dict(orientation="h", y=-0.28, x=0.5,
+                    legend=dict(orientation="h", y=-0.30, x=0.5,
                                 xanchor="center", font=dict(size=10),
                                 bgcolor="rgba(0,0,0,0)"),
                     hovermode="x unified",
-                    margin=dict(l=10,r=10,t=45,b=90),
+                    margin=dict(l=10,r=10,t=45,b=100),
                     plot_bgcolor="rgba(0,0,0,0)",
                     paper_bgcolor="rgba(0,0,0,0)",
                 )
@@ -1108,12 +1115,19 @@ if btn:
     keywords = [k.strip() for k in raw_keywords.split(",") if k.strip()]
     blog_df = pd.DataFrame()
     shop_df = pd.DataFrame()
+    # session_state 초기화 (새 분석 시작 시)
+    st.session_state.pop("blog_df_ppt", None)
+    st.session_state.pop("shop_df_ppt", None)
+    st.session_state.pop("ppt_bytes_cache", None)
+    st.session_state.pop("html_cache", None)
 
     # ── 블로그 ──
     if do_blog:
         st.subheader("📝 블로그 트렌드")
         with st.spinner("블로그 수집 중..."):
             blog_df = search_blog(keywords, client_id, client_secret, display_count)
+            if not blog_df.empty:
+                st.session_state["blog_df_ppt"] = blog_df
         if not blog_df.empty:
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("유효 게시글", f"{len(blog_df)}건",
@@ -1145,6 +1159,8 @@ if btn:
         st.subheader("🛒 쇼핑 트렌드")
         with st.spinner("쇼핑 데이터 수집 중..."):
             shop_df = search_shop(keywords, client_id, client_secret, display_count)
+            if not shop_df.empty:
+                st.session_state["shop_df_ppt"] = shop_df
         if not shop_df.empty:
             # RTD 음료만 추출해서 지표 계산
             rtd_df   = shop_df[shop_df["상품유형"] == "RTD음료"]
@@ -1192,79 +1208,73 @@ if btn:
                     mime="application/json"
                 )
 
-    # ── 리포트 출력 ──────────────────────────────────
-    if not blog_df.empty or not shop_df.empty:
-        st.session_state["blog_df_ppt"] = blog_df
-        st.session_state["shop_df_ppt"] = shop_df
-
-    st.divider()
-    st.subheader("📤 분석 결과 리포트 다운로드")
-    st.caption("수집된 블로그·쇼핑 데이터를 PPT 또는 HTML 리포트로 생성합니다.")
-
-    _blog = st.session_state.get("blog_df_ppt", pd.DataFrame())
-    _shop = st.session_state.get("shop_df_ppt", pd.DataFrame())
-    claude_res = st.session_state.get("claude_result", None)
-
-    col_r1, col_r2, col_r3 = st.columns([1, 1, 3])
-
-    # ── PPT 버튼
-    with col_r1:
-        ppt_btn = st.button("📥 PPT 생성", use_container_width=True, type="primary")
-    # ── HTML 버튼
-    with col_r2:
-        html_btn = st.button("🌐 HTML 생성", use_container_width=True)
-
-    # ── 기존 캐시 다운로드 버튼 (버튼 누른 후 사라지지 않게)
-    c1, c2 = st.columns(2)
-    with c1:
-        if "ppt_bytes_cache" in st.session_state:
-            st.download_button(
-                "⬇️ PPT 다운로드",
-                data=st.session_state["ppt_bytes_cache"],
-                file_name=st.session_state.get("ppt_fname","report.pptx"),
-                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                use_container_width=True,
-            )
-    with c2:
-        if "html_cache" in st.session_state:
-            st.download_button(
-                "⬇️ HTML 다운로드",
-                data=st.session_state["html_cache"],
-                file_name=st.session_state.get("html_fname","report.html"),
-                mime="text/html",
-                use_container_width=True,
-            )
-
-    if _blog.empty and _shop.empty and (ppt_btn or html_btn):
-        st.warning("⚠️ 먼저 🚀 분석 시작을 눌러 데이터를 수집해주세요.")
-
-    # ── PPT 생성 처리
-    if ppt_btn and (not _blog.empty or not _shop.empty):
-        try:
-            from ppt_gen import build_ppt
-            with st.spinner("PPT 생성 중..."):
-                ppt_bytes = build_ppt(_blog, _shop, claude_res)
-            fname = f"NPD_트렌드분석_{datetime.today().strftime('%Y%m%d')}.pptx"
-            st.session_state["ppt_bytes_cache"] = ppt_bytes
-            st.session_state["ppt_fname"] = fname
-            st.success("✅ PPT 생성 완료! 위 ⬇️ PPT 다운로드 버튼을 클릭하세요.")
-            st.rerun()
-        except ImportError:
-            st.error("requirements.txt에 python-pptx 추가 후 재배포해주세요.")
-        except Exception as e:
-            st.error(f"PPT 오류: {e}")
-
-    # ── HTML 생성 처리
-    if html_btn and (not _blog.empty or not _shop.empty):
-        with st.spinner("HTML 리포트 생성 중..."):
-            html_str = build_html_report(_blog, _shop, claude_res)
-        fname_h = f"NPD_트렌드분석_{datetime.today().strftime('%Y%m%d')}.html"
-        st.session_state["html_cache"] = html_str.encode("utf-8")
-        st.session_state["html_fname"] = fname_h
-        st.success("✅ HTML 생성 완료! 위 ⬇️ HTML 다운로드 버튼을 클릭하세요.")
-        st.rerun()
 
 
+
+# ══════════════════════════════════════════════════════
+# ── 리포트 출력 (if btn 블록 밖 — 항상 렌더링) ────────
+# ══════════════════════════════════════════════════════
+st.divider()
+st.subheader("📤 분석 결과 리포트 다운로드")
+st.caption("수집된 블로그·쇼핑 데이터를 PPT 또는 HTML 리포트로 생성합니다.")
+
+_blog = st.session_state.get("blog_df_ppt", pd.DataFrame())
+_shop = st.session_state.get("shop_df_ppt", pd.DataFrame())
+claude_res = st.session_state.get("claude_result", None)
+
+col_r1, col_r2, col_r3 = st.columns([1, 1, 3])
+with col_r1:
+    ppt_btn = st.button("📥 PPT 생성", use_container_width=True, type="primary")
+with col_r2:
+    html_btn = st.button("🌐 HTML 생성", use_container_width=True)
+
+# 캐시된 파일 다운로드 버튼 (항상 표시)
+c1, c2 = st.columns(2)
+with c1:
+    if "ppt_bytes_cache" in st.session_state:
+        st.download_button(
+            "⬇️ PPT 다운로드",
+            data=st.session_state["ppt_bytes_cache"],
+            file_name=st.session_state.get("ppt_fname","report.pptx"),
+            mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            use_container_width=True,
+        )
+with c2:
+    if "html_cache" in st.session_state:
+        st.download_button(
+            "⬇️ HTML 다운로드",
+            data=st.session_state["html_cache"],
+            file_name=st.session_state.get("html_fname","report.html"),
+            mime="text/html",
+            use_container_width=True,
+        )
+
+if _blog.empty and _shop.empty and (ppt_btn or html_btn):
+    st.warning("⚠️ 먼저 🚀 분석 시작을 눌러 데이터를 수집해주세요.")
+
+# PPT 생성
+if ppt_btn and (not _blog.empty or not _shop.empty):
+    try:
+        from ppt_gen import build_ppt
+        with st.spinner("PPT 생성 중..."):
+            ppt_bytes = build_ppt(_blog, _shop, claude_res)
+        fname = f"NPD_트렌드분석_{datetime.today().strftime('%Y%m%d')}.pptx"
+        st.session_state["ppt_bytes_cache"] = ppt_bytes
+        st.session_state["ppt_fname"] = fname
+        st.success("✅ PPT 생성 완료! 위 ⬇️ PPT 다운로드 버튼을 클릭하세요.")
+    except ImportError:
+        st.error("requirements.txt에 python-pptx 추가 후 재배포해주세요.")
+    except Exception as e:
+        st.error(f"PPT 오류: {e}")
+
+# HTML 생성
+if html_btn and (not _blog.empty or not _shop.empty):
+    with st.spinner("HTML 리포트 생성 중..."):
+        html_str = build_html_report(_blog, _shop, claude_res)
+    fname_h = f"NPD_트렌드분석_{datetime.today().strftime('%Y%m%d')}.html"
+    st.session_state["html_cache"] = html_str.encode("utf-8")
+    st.session_state["html_fname"] = fname_h
+    st.success("✅ HTML 생성 완료! 위 ⬇️ HTML 다운로드 버튼을 클릭하세요.")
 # ══════════════════════════════════════════════════════
 # ── HTML 리포트 생성 ──────────────────────────────────
 # ══════════════════════════════════════════════════════
