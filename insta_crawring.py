@@ -800,6 +800,107 @@ def render_claude_cards(result):
 st.title("🍹 AI NPD SUITE — 네이버 음료 트렌드 분석")
 st.caption("네이버 블로그 + 쇼핑 API · Gemini 키워드 추천 · Claude 심층 분석")
 
+# ── 앱 소개 패널 ──────────────────────────────────────
+if "show_intro" not in st.session_state:
+    st.session_state["show_intro"] = False
+
+col_btn, _ = st.columns([1, 6])
+with col_btn:
+    if st.button("📖 앱 소개 · 개발 과정"):
+        st.session_state["show_intro"] = not st.session_state["show_intro"]
+
+if st.session_state["show_intro"]:
+    st.markdown("""
+<div style="background:linear-gradient(135deg,#f8f9ff 0%,#f0f4ff 100%);
+            border:1px solid #d0d8f0;border-radius:16px;padding:28px 32px;margin-bottom:16px">
+
+<h2 style="margin:0 0 6px;color:#1a237e;font-size:22px">🍹 AI NPD SUITE — 음료 트렌드 분석기</h2>
+<p style="color:#555;font-size:13px;margin:0 0 24px">
+  네이버 블로그 + 쇼핑 데이터 기반 실시간 음료 시장 인텔리전스 플랫폼
+</p>
+
+<hr style="border:none;border-top:1px solid #dde3f5;margin:0 0 24px">
+
+<h3 style="color:#1565c0;font-size:15px;margin:0 0 12px">🛠️ 바이브 코딩으로 만든 개발 과정</h3>
+<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:24px">
+  <div style="background:#fff;border-radius:12px;padding:14px;border:1px solid #e3e8f5">
+    <div style="font-size:22px;margin-bottom:6px">①</div>
+    <div style="font-weight:600;font-size:13px;color:#1a237e;margin-bottom:4px">Instagram 크롤러</div>
+    <div style="font-size:12px;color:#666">Selenium 기반 시도<br>→ Instagram 봇 차단<br>→ instaloader 교체<br>→ 최종 실패 확인</div>
+  </div>
+  <div style="background:#fff;border-radius:12px;padding:14px;border:1px solid #e3e8f5">
+    <div style="font-size:22px;margin-bottom:6px">②</div>
+    <div style="font-weight:600;font-size:13px;color:#1a237e;margin-bottom:4px">네이버 API 전환</div>
+    <div style="font-size:12px;color:#666">블로그 + 쇼핑 API<br>→ Streamlit Cloud 배포<br>→ requirements.txt<br>→ Secrets 관리</div>
+  </div>
+  <div style="background:#fff;border-radius:12px;padding:14px;border:1px solid #e3e8f5">
+    <div style="font-size:22px;margin-bottom:6px">③</div>
+    <div style="font-weight:600;font-size:13px;color:#1a237e;margin-bottom:4px">AI 기능 추가</div>
+    <div style="font-size:12px;color:#666">Gemini 키워드 추천<br>→ 조건별 멀티셀렉트<br>→ Claude 심층분석<br>→ JSON 구조화 응답</div>
+  </div>
+  <div style="background:#fff;border-radius:12px;padding:14px;border:1px solid #e3e8f5">
+    <div style="font-size:22px;margin-bottom:6px">④</div>
+    <div style="font-weight:600;font-size:13px;color:#1a237e;margin-bottom:4px">데이터 품질 개선</div>
+    <div style="font-size:12px;color:#666">노이즈 필터링 추가<br>→ 관련성 점수 체계<br>→ 가격 이상값 제거<br>→ Plotly 시각화</div>
+  </div>
+</div>
+
+<hr style="border:none;border-top:1px solid #dde3f5;margin:0 0 24px">
+
+<h3 style="color:#1565c0;font-size:15px;margin:0 0 12px">⚙️ 주요 기능</h3>
+<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:24px">
+  <div style="background:#e8f5e9;border-radius:12px;padding:14px">
+    <div style="font-weight:600;font-size:13px;color:#1b5e20;margin-bottom:6px">📝 블로그 트렌드 분석</div>
+    <ul style="margin:0;padding-left:16px;font-size:12px;color:#333;line-height:1.8">
+      <li>노이즈 자동 필터링<br><span style="color:#888">(여행·의료·부동산 제외)</span></li>
+      <li>관련성 점수 자동 산정<br><span style="color:#888">(신제품/카페/트렌드/후기)</span></li>
+      <li>최근 3개월 월별 추이</li>
+      <li>콘텐츠 유형 파이차트</li>
+      <li>TOP 15 게시글 순위</li>
+    </ul>
+  </div>
+  <div style="background:#fff3e0;border-radius:12px;padding:14px">
+    <div style="font-weight:600;font-size:13px;color:#bf360c;margin-bottom:6px">🛒 쇼핑 트렌드 분석</div>
+    <ul style="margin:0;padding-left:16px;font-size:12px;color:#333;line-height:1.8">
+      <li>상품유형 자동 분류<br><span style="color:#888">(RTD/농축/건강기능/대용량)</span></li>
+      <li>개당·100ml당 가격 계산</li>
+      <li>가격 이상값 자동 제거<br><span style="color:#888">(100ml 30~600원 범위)</span></li>
+      <li>브랜드 포지셔닝 맵</li>
+      <li>키워드×가격대 히트맵</li>
+    </ul>
+  </div>
+  <div style="background:#e3f2fd;border-radius:12px;padding:14px">
+    <div style="font-weight:600;font-size:13px;color:#0d47a1;margin-bottom:6px">🤖 AI 분석</div>
+    <ul style="margin:0;padding-left:16px;font-size:12px;color:#333;line-height:1.8">
+      <li>Gemini 조건별 키워드 추천<br><span style="color:#888">(카테고리/트렌드/타겟/시즌)</span></li>
+      <li>Claude 심층 분석 리포트</li>
+      <li>플레이버 랭킹 자동 추출</li>
+      <li>NPD 아이디어 3선 제안</li>
+      <li>JSON 구조화 카드 출력</li>
+    </ul>
+  </div>
+</div>
+
+<hr style="border:none;border-top:1px solid #dde3f5;margin:0 0 16px">
+
+<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
+  <div style="background:#fafafa;border-radius:8px;padding:12px;border:1px solid #eee">
+    <div style="font-size:11px;color:#888;margin-bottom:4px">사용 API</div>
+    <div style="font-size:12px;font-weight:500">Naver 검색 API<br>Google Gemini 2.5 Pro<br>Anthropic Claude Sonnet</div>
+  </div>
+  <div style="background:#fafafa;border-radius:8px;padding:12px;border:1px solid #eee">
+    <div style="font-size:11px;color:#888;margin-bottom:4px">개발 방식</div>
+    <div style="font-size:12px;font-weight:500">바이브 코딩<br>(Claude와 대화형 개발)<br>Streamlit Cloud 배포</div>
+  </div>
+  <div style="background:#fafafa;border-radius:8px;padding:12px;border:1px solid #eee">
+    <div style="font-size:11px;color:#888;margin-bottom:4px">활용 목적</div>
+    <div style="font-size:12px;font-weight:500">음료 NPD 시장조사<br>플레이버 트렌드 분석<br>경쟁 제품 가격 인텔리전스</div>
+  </div>
+</div>
+
+</div>
+""", unsafe_allow_html=True)
+
 with st.sidebar:
     st.subheader("🔑 API 키 설정")
     client_id     = st.text_input("Naver Client ID",
