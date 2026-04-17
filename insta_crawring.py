@@ -22,7 +22,7 @@ def get_gemini_keywords(api_key):
                 "[\"저당음료\", \"제로음료\", \"기능성음료\"]"
             )}]
         }],
-        "generationConfig": {"maxOutputTokens": 512, "temperature": 0.7}
+        "generationConfig": {"maxOutputTokens": 4096, "temperature": 0.7}
     }
     try:
         res = requests.post(url, json=payload, timeout=20)
