@@ -14,35 +14,65 @@ st.set_page_config(page_title="AI NPD SUITE - 트렌드 분석", layout="wide")
 
 # ── 패키지 파싱 유틸 ─────────────────────────────────
 def parse_package(title, price):
-    """제목에서 용량·개수 파싱 → 개당/100ml당 가격 계산"""
-    title_lower = title.lower().replace(" ", "")
+    """
+    제목에서 용량·개수 파싱 → 개당/100ml당 가격 계산
+    카테고리 자동 분류: RTD음료 / 농축·분말 / 건강기능 / 대용량 / 기타
+    """
+    t = title.lower().replace(" ", "")
     unit_price = price
     per_100ml = None
     ml = None
     count = 1
 
-    # 개수 파싱 (예: 24개, 30입, 6캔)
-    m_count = re.search(r'(\d+)\s*(개입?|캔|병|팩|입|box|박스)', title_lower)
+    # ── 개수 파싱 (24개입, 30캔, 6팩 등)
+    m_count = re.search(r'(\d+)\s*(개입?|캔|병|팩|입|box|박스|포)', t)
     if m_count:
-        count = int(m_count.group(1))
+        n = int(m_count.group(1))
+        if 1 < n <= 200:          # 비현실적 숫자 제외
+            count = n
 
-    # 용량 파싱 (예: 500ml, 1.5l, 355ml)
-    m_ml = re.search(r'(\d+\.?\d*)\s*(ml|l\b)', title_lower)
+    # ── 용량 파싱 (500ml, 1.5L, 355ml 등)
+    m_ml = re.search(r'(\d+\.?\d*)\s*(ml|l\b)', t)
     if m_ml:
         val = float(m_ml.group(1))
-        unit = m_ml.group(2)
-        ml = val * 1000 if unit == 'l' else val
+        unit_str = m_ml.group(2)
+        ml = val * 1000 if unit_str == 'l' else val
+        if ml > 5000:             # 5L 초과 비현실적 용량 제외
+            ml = None
 
-    if price > 0:
-        unit_price = round(price / count) if count > 1 else price
-        if ml and ml > 0:
-            per_100ml = round(unit_price / ml * 100)
+    # ── 개당 가격 계산
+    if price > 0 and count > 0:
+        unit_price = round(price / count)
+
+    # ── 100ml당 가격 계산
+    if unit_price > 0 and ml and ml >= 50:
+        per_100ml = round(unit_price / ml * 100)
+        # 이상값 필터: 100ml당 50원~3,000원 범위만 유효 RTD로 인정
+        if per_100ml < 50 or per_100ml > 3000:
+            per_100ml = None
+
+    # ── 카테고리 자동 분류
+    농축분말_kw = ['농축','분말','파우더','원액','스틱','스틱형','엑기스','엑스트랙']
+    건강기능_kw = ['앰플','젤리','정','캡슐','환','타블렛','tablet','소프트젤','필름']
+    대용량_kw   = ['말통','말박스','업소용','식당용']
+
+    if any(k in t for k in 농축분말_kw):
+        category = "농축·분말"
+    elif any(k in t for k in 건강기능_kw):
+        category = "건강기능식품"
+    elif any(k in t for k in 대용량_kw) or (ml and ml > 2000):
+        category = "대용량"
+    elif ml and 50 <= ml <= 2000:
+        category = "RTD음료"
+    else:
+        category = "기타"
 
     return {
         "개수": count,
         "용량(ml)": ml,
         "개당가격": unit_price,
-        "100ml당가격": per_100ml
+        "100ml당가격": per_100ml,
+        "상품유형": category,
     }
 
 
@@ -198,7 +228,7 @@ def search_shop(keywords, client_id, client_secret, display=100):
                 "100ml당가격(원)": pkg["100ml당가격"],
                 "용량(ml)": pkg["용량(ml)"],
                 "개수": pkg["개수"],
-                "리뷰수": int(item.get("reviewCount", 0) or 0),
+                "상품유형": pkg["상품유형"],
                 "카테고리": item.get("category2", "") or item.get("category1", ""),
                 "브랜드": item.get("brand", ""),
                 "쇼핑몰": item.get("mallName", ""),
@@ -278,91 +308,136 @@ def render_shop_charts(shop_df):
     if shop_df.empty:
         return
 
+    COLORS = px.colors.qualitative.Pastel
+    layout_base = dict(
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=10, r=10, t=45, b=10)
+    )
+
+    # ── RTD 음료만 필터 (가격 왜곡 제거)
+    rtd = shop_df[shop_df["상품유형"] == "RTD음료"].copy()
+    rtd_valid = rtd[rtd["100ml당가격(원)"].notna() & (rtd["100ml당가격(원)"] > 0)].copy()
+
+    # ━━ Row 1: 상품유형 분포 파이 + 키워드×가격대 히트맵 ━━
     col1, col2 = st.columns(2)
 
-    # ── 리뷰수 기반 버블차트
     with col1:
-        df_bubble = shop_df[shop_df["리뷰수"] > 0].copy()
-        if not df_bubble.empty:
-            df_bubble["개당가격_표시"] = df_bubble["개당가격(원)"].fillna(df_bubble["가격(원)"])
-            fig = px.scatter(
-                df_bubble.head(80),
-                x="개당가격_표시",
-                y="키워드",
-                size="리뷰수",
-                color="키워드",
-                hover_name="상품명",
-                hover_data={"리뷰수": True, "개당가격_표시": ":,", "100ml당가격(원)": True},
-                color_discrete_sequence=px.colors.qualitative.Pastel,
-                title="리뷰수 기반 인기도 버블차트 (X=개당가격)",
-                size_max=50
-            )
-            fig.update_layout(height=400,
-                              plot_bgcolor="rgba(0,0,0,0)",
-                              paper_bgcolor="rgba(0,0,0,0)",
-                              showlegend=False,
-                              xaxis_title="개당 가격(원)",
-                              yaxis_title="",
-                              margin=dict(l=10, r=10, t=40, b=10))
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("리뷰수 데이터가 없어 인기순위 기반으로 표시합니다.")
-            fig = px.bar(shop_df.head(20), x="인기순위", y="개당가격(원)",
-                         color="키워드", hover_name="상품명",
-                         title="인기순위별 개당 가격")
-            fig.update_layout(height=400, plot_bgcolor="rgba(0,0,0,0)",
-                              paper_bgcolor="rgba(0,0,0,0)")
-            st.plotly_chart(fig, use_container_width=True)
+        # 상품유형 파이차트
+        type_cnt = shop_df["상품유형"].value_counts().reset_index()
+        type_cnt.columns = ["상품유형", "수"]
+        fig_pie = px.pie(
+            type_cnt, names="상품유형", values="수",
+            color_discrete_sequence=COLORS,
+            title="수집 상품 유형 분포",
+            hole=0.4
+        )
+        fig_pie.update_traces(textposition="outside", textinfo="percent+label")
+        fig_pie.update_layout(height=360, showlegend=False, **layout_base)
+        st.plotly_chart(fig_pie, use_container_width=True)
 
-    # ── 100ml당 가격 분포
     with col2:
-        df_ml = shop_df[shop_df["100ml당가격(원)"].notna() & (shop_df["100ml당가격(원)"] > 0)].copy()
-        if not df_ml.empty:
-            fig2 = px.box(df_ml, x="키워드", y="100ml당가격(원)",
-                          color="키워드",
-                          color_discrete_sequence=px.colors.qualitative.Pastel,
-                          title="키워드별 100ml당 가격 분포",
-                          points="all")
-            fig2.update_layout(height=400,
-                               plot_bgcolor="rgba(0,0,0,0)",
-                               paper_bgcolor="rgba(0,0,0,0)",
-                               showlegend=False,
-                               xaxis_title="", yaxis_title="100ml당 가격(원)",
-                               margin=dict(l=10, r=10, t=40, b=10))
-            st.plotly_chart(fig2, use_container_width=True)
+        # 키워드 × 가격대 히트맵 (RTD만, 개당가격 기준)
+        if not rtd.empty:
+            bins   = [0, 500, 1000, 2000, 3000, 5000, 10000, 99999]
+            labels = ["~500원","501~1천","1~2천","2~3천","3~5천","5~1만","1만원+"]
+            rtd["가격대"] = pd.cut(rtd["개당가격(원)"], bins=bins, labels=labels)
+            hmap = rtd.groupby(["키워드","가격대"], observed=True).size().unstack(fill_value=0)
+            fig_hmap = px.imshow(
+                hmap,
+                color_continuous_scale="Blues",
+                title="키워드 × 가격대 분포 히트맵 (RTD만)",
+                aspect="auto",
+                text_auto=True
+            )
+            fig_hmap.update_layout(height=360,
+                                   xaxis_title="개당 가격대",
+                                   yaxis_title="",
+                                   coloraxis_showscale=False,
+                                   **layout_base)
+            st.plotly_chart(fig_hmap, use_container_width=True)
         else:
-            # 개당 가격 히스토그램으로 대체
-            fig2 = px.histogram(shop_df, x="개당가격(원)", color="키워드",
-                                nbins=20, barmode="overlay",
-                                color_discrete_sequence=px.colors.qualitative.Pastel,
-                                title="개당 가격 분포")
-            fig2.update_layout(height=400, plot_bgcolor="rgba(0,0,0,0)",
-                               paper_bgcolor="rgba(0,0,0,0)")
-            st.plotly_chart(fig2, use_container_width=True)
+            st.info("RTD음료로 분류된 상품이 없습니다.")
 
-    # ── 브랜드 TOP10 (리뷰수 합산)
-    if shop_df["브랜드"].any():
-        brand_df = shop_df[shop_df["브랜드"] != ""].groupby("브랜드").agg(
-            리뷰수합계=("리뷰수", "sum"),
-            상품수=("상품명", "count"),
-            평균개당가격=("개당가격(원)", "mean")
-        ).reset_index().sort_values("리뷰수합계", ascending=False).head(10)
+    # ━━ Row 2: 인기순위 TOP20 스트립 + 100ml당 가격 박스플롯 ━━
+    col3, col4 = st.columns(2)
 
-        if not brand_df.empty:
-            fig3 = px.bar(brand_df, x="브랜드", y="리뷰수합계",
-                          color="리뷰수합계",
-                          color_continuous_scale="Blues",
-                          text="리뷰수합계",
-                          title="브랜드별 리뷰수 합계 TOP 10",
-                          hover_data={"상품수": True, "평균개당가격": ":.0f"})
-            fig3.update_traces(textposition="outside")
-            fig3.update_layout(height=350,
-                               plot_bgcolor="rgba(0,0,0,0)",
-                               paper_bgcolor="rgba(0,0,0,0)",
-                               coloraxis_showscale=False,
-                               xaxis_title="", yaxis_title="리뷰수 합계",
-                               margin=dict(l=10, r=10, t=40, b=10))
-            st.plotly_chart(fig3, use_container_width=True)
+    with col3:
+        # 인기순위 TOP20 — 키워드별 색상 스트립차트
+        top20 = shop_df[shop_df["인기순위"] <= 20].copy()
+        top20["개당가격_표시"] = top20["개당가격(원)"].fillna(top20["가격(원)"])
+        fig_strip = px.strip(
+            top20,
+            x="키워드",
+            y="개당가격_표시",
+            color="키워드",
+            hover_name="상품명",
+            hover_data={"상품유형": True, "용량(ml)": True, "개수": True},
+            color_discrete_sequence=COLORS,
+            title="인기순위 TOP20 — 키워드별 개당 가격 분포",
+            stripmode="overlay"
+        )
+        fig_strip.update_layout(height=380, showlegend=False,
+                                yaxis_title="개당 가격(원)", xaxis_title="",
+                                **layout_base)
+        st.plotly_chart(fig_strip, use_container_width=True)
+
+    with col4:
+        # 100ml당 가격 박스플롯 (RTD + 이상값 제거)
+        if not rtd_valid.empty:
+            fig_box = px.box(
+                rtd_valid,
+                x="키워드",
+                y="100ml당가격(원)",
+                color="키워드",
+                color_discrete_sequence=COLORS,
+                points="all",
+                hover_name="상품명",
+                title="RTD음료 100ml당 가격 분포 (이상값 제거)",
+            )
+            fig_box.update_layout(height=380, showlegend=False,
+                                  xaxis_title="", yaxis_title="100ml당 가격(원)",
+                                  **layout_base)
+            st.plotly_chart(fig_box, use_container_width=True)
+        else:
+            st.info("100ml당 가격 계산 가능한 RTD음료 데이터가 없습니다.")
+
+    # ━━ Row 3: 브랜드 포지셔닝 (평균가격 × 상품수 버블) ━━
+    brand_has = shop_df[shop_df["브랜드"].str.strip() != ""]
+    if not brand_has.empty:
+        brand_agg = brand_has.groupby(["브랜드","키워드"]).agg(
+            상품수=("상품명","count"),
+            평균개당가격=("개당가격(원)","mean"),
+            최고인기순위=("인기순위","min")
+        ).reset_index()
+        brand_top = brand_agg.sort_values("상품수", ascending=False).head(25)
+
+        fig_brand = px.scatter(
+            brand_top,
+            x="평균개당가격",
+            y="최고인기순위",
+            size="상품수",
+            color="키워드",
+            text="브랜드",
+            hover_data={"상품수": True, "평균개당가격": ":,.0f", "최고인기순위": True},
+            color_discrete_sequence=COLORS,
+            title="브랜드 포지셔닝 맵 — 가격 × 인기순위 (버블=상품수)",
+            size_max=40,
+        )
+        fig_brand.update_traces(textposition="top center", textfont_size=11)
+        fig_brand.update_yaxes(autorange="reversed")   # 1위가 위쪽
+        fig_brand.update_layout(height=420,
+                                xaxis_title="평균 개당가격(원)",
+                                yaxis_title="최고 인기순위 (낮을수록 상위)",
+                                **layout_base)
+        st.plotly_chart(fig_brand, use_container_width=True)
+
+        # 제외된 상품 유형 현황 알림
+        excluded = shop_df[shop_df["상품유형"] != "RTD음료"]["상품유형"].value_counts()
+        if not excluded.empty:
+            with st.expander("ℹ️ 가격 분석에서 제외된 상품 유형"):
+                for typ, cnt in excluded.items():
+                    st.markdown(f"- **{typ}**: {cnt}개 (가격 왜곡 방지를 위해 100ml 분석에서 제외)")
 
 
 # ── Claude 분석 카드 렌더링 ──────────────────────────
