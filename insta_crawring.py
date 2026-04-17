@@ -129,15 +129,15 @@ CATEGORY_PROBE_KW = {
 
 
 def get_datalab_for_categories(categories, client_id, client_secret):
-    """카테고리 대표 키워드로 3개월 DataLab 조회 → 트렌드 요약 텍스트 반환"""
+    """카테고리 대표 키워드 DataLab 3개월 주별 조회 → 트렌드 요약 텍스트"""
     probe_kws = []
     for cat in categories:
         probe_kws.extend(CATEGORY_PROBE_KW.get(cat, [cat])[:2])
-    probe_kws = list(dict.fromkeys(probe_kws))[:10]  # 최대 10개
+    probe_kws = list(dict.fromkeys(probe_kws))[:10]
 
     end_dt   = datetime.now()
     start_dt = end_dt - timedelta(days=90)
-    url      = "https://openapi.naver.com/v1/datalab/search"
+    dl_url   = "https://openapi.naver.com/v1/datalab/search"
     headers  = {
         "X-Naver-Client-Id":     client_id,
         "X-Naver-Client-Secret": client_secret,
@@ -148,13 +148,13 @@ def get_datalab_for_categories(categories, client_id, client_secret):
         batch  = probe_kws[i:i+5]
         groups = [{"groupName": kw, "keywords": [kw]} for kw in batch]
         body   = {
-            "startDate":     start_dt.strftime("%Y-%m-%d"),
-            "endDate":       end_dt.strftime("%Y-%m-%d"),
-            "timeUnit":      "week",
+            "startDate": start_dt.strftime("%Y-%m-%d"),
+            "endDate":   end_dt.strftime("%Y-%m-%d"),
+            "timeUnit":  "week",
             "keywordGroups": groups,
         }
         try:
-            res = requests.post(url, headers=headers,
+            res = requests.post(dl_url, headers=headers,
                                 data=json.dumps(body), timeout=15)
             if res.status_code == 200:
                 all_results.extend(res.json().get("results", []))
@@ -163,49 +163,100 @@ def get_datalab_for_categories(categories, client_id, client_secret):
             pass
 
     if not all_results:
-        return "검색 지표 데이터 없음"
+        return "검색 지표 없음"
 
-    # 요약: 키워드별 최근 4주 평균 지수 정렬
-    summary_lines = []
+    result_lines = []
     for r in all_results:
         kw   = r["title"]
         data = r.get("data", [])
         if data:
             recent4 = [d["ratio"] for d in data[-4:]]
             avg     = sum(recent4) / len(recent4)
-            trend   = "↑상승" if len(data)>1 and data[-1]["ratio"] > data[-4]["ratio"] else "→유지/하락"
-            summary_lines.append(f"  - {kw}: 최근4주 평균지수 {avg:.1f} ({trend})")
-    return "".join(summary_lines) if summary_lines else "데이터 부족"
+            direction = (
+                "↑급상승" if len(data) > 4 and data[-1]["ratio"] > data[0]["ratio"] * 1.3
+                else "↑상승" if data[-1]["ratio"] > data[-4]["ratio"]
+                else "→유지"
+            )
+            result_lines.append(f"  - {kw}: 최근4주 평균지수 {avg:.1f} ({direction})")
+    return "\n".join(result_lines) if result_lines else "데이터 부족"
+
+
+def get_naver_news_trends(categories, client_id, client_secret):
+    """네이버 뉴스 최신 헤드라인 → 음료 뉴스 트렌드 텍스트"""
+    news_url = "https://openapi.naver.com/v1/search/news.json"
+    headers  = {
+        "X-Naver-Client-Id":     client_id,
+        "X-Naver-Client-Secret": client_secret,
+    }
+    news_kws = []
+    for cat in categories[:3]:
+        news_kws.extend(CATEGORY_PROBE_KW.get(cat, [cat])[:1])
+    news_kws = list(dict.fromkeys(news_kws))[:4]
+
+    all_titles = []
+    for kw in news_kws:
+        params = {
+            "query":   f"{kw} 트렌드 신제품",
+            "display": 8,
+            "sort":    "date",
+        }
+        try:
+            res = requests.get(news_url, headers=headers,
+                               params=params, timeout=10)
+            if res.status_code == 200:
+                for item in res.json().get("items", [])[:6]:
+                    title = re.sub(r"<[^>]+>", "", item.get("title", ""))
+                    desc  = re.sub(r"<[^>]+>", "",
+                                   item.get("description", ""))[:60]
+                    date  = item.get("pubDate", "")[:16]
+                    all_titles.append(f"  [{date}] {title} — {desc}")
+            time.sleep(0.3)
+        except Exception:
+            pass
+
+    return "\n".join(all_titles[:20]) if all_titles else "뉴스 없음"
+
+
 
 
 def get_gemini_conditions(api_key, categories, client_id="", client_secret=""):
-    """DataLab 실검색 지표 기반으로 트렌드방향·타겟소비자 추천"""
-    # 1단계: DataLab 지표 수집
-    dl_summary = ""
+    """DataLab 검색 지표 + 네이버 뉴스 기반 트렌드·타겟 추천"""
+    dl_summary   = "검색 지표 없음"
+    news_summary = "뉴스 없음"
+
     if client_id and client_secret:
-        dl_summary = get_datalab_for_categories(categories, client_id, client_secret)
+        # 1단계: DataLab 3개월 주별 검색량
+        dl_summary = get_datalab_for_categories(
+            categories, client_id, client_secret)
+        # 2단계: 네이버 뉴스 최신 헤드라인
+        news_summary = get_naver_news_trends(
+            categories, client_id, client_secret)
 
     url = (f"https://generativelanguage.googleapis.com/v1/models/"
            f"gemini-2.5-pro:generateContent?key={api_key}")
 
-    dl_section = f"""
-[네이버 DataLab 최근 3개월 검색 지표]
-{dl_summary if dl_summary else "지표 없음 (학습 데이터 기반으로 추천)"}
-""" if dl_summary else ""
-
     prompt = f"""당신은 한국 음료 시장 트렌드 전문가입니다.
-아래 음료 카테고리와 네이버 실검색 지표를 분석하여
-가장 관련성 높은 트렌드 방향과 타겟 소비자를 추천해주세요.
+아래 3가지 데이터를 종합 분석하여 가장 관련성 높은
+트렌드 방향과 타겟 소비자를 추천해주세요.
 
-[선택된 음료 카테고리]
+[1. 선택된 음료 카테고리]
 {', '.join(categories)}
-{dl_section}
-검색 지표에서 상승 중인 키워드와 트렌드를 우선 반영해주세요.
+
+[2. 네이버 DataLab 최근 3개월 주별 검색량 지수]
+(↑급상승/↑상승/→유지 표시, 최고값=100 기준 상대 지수)
+{dl_summary}
+
+[3. 네이버 뉴스 최신 헤드라인 (음료 관련)]
+{news_summary}
+
+위 데이터에서 상승 중인 키워드와 뉴스 트렌드를 우선 반영하여
+한국 시장에 맞는 트렌드와 타겟을 추천해주세요.
 반드시 아래 JSON 형식으로만 응답하세요. 설명 없이 JSON만.
 {{
   "trends": ["트렌드1", "트렌드2", "트렌드3", "트렌드4", "트렌드5", "트렌드6"],
   "targets": ["타겟1", "타겟2", "타겟3", "타겟4"],
-  "insight": "검색 지표 기반 핵심 인사이트 1~2줄"
+  "insight": "검색 지표와 뉴스 기반 핵심 인사이트 2~3줄",
+  "data_source": "DataLab+뉴스 기반" 
 }}"""
 
     payload = {
@@ -213,13 +264,17 @@ def get_gemini_conditions(api_key, categories, client_id="", client_secret=""):
         "generationConfig": {"maxOutputTokens": 2048, "temperature": 0.6}
     }
     try:
-        res   = requests.post(url, json=payload, timeout=30)
+        res   = requests.post(url, json=payload, timeout=40)
         data  = res.json()
         parts = data.get("candidates",[{}])[0].get("content",{}).get("parts",[])
         if not parts:
             return None
         text = re.sub(r"```json|```","", parts[0]["text"]).strip()
-        return json.loads(text)
+        result = json.loads(text)
+        # 데이터 소스 기록
+        result["_dl_used"]   = dl_summary != "검색 지표 없음"
+        result["_news_used"] = news_summary != "뉴스 없음"
+        return result
     except Exception as e:
         st.error(f"Gemini 조건 생성 오류: {e}")
         return None
@@ -1441,14 +1496,20 @@ with st.sidebar:
             elif not gkey:
                 st.error("GOOGLE_API_KEY가 Secrets에 없습니다.")
             else:
-                with st.spinner("네이버 DataLab 3개월 지표 조회 + AI 분석 중..."):
+                with st.spinner("① DataLab 3개월 검색 지표 수집 중..."):
                     cond = get_gemini_conditions(
                         gkey, sel_categories, client_id, client_secret)
-                    if cond:
-                        st.session_state["ai_trends"]  = cond.get("trends", [])
-                        st.session_state["ai_targets"] = cond.get("targets", [])
-                        st.session_state["ai_insight"] = cond.get("insight", "")
-                        st.success("✅ 추천 완료!")
+                if cond:
+                    st.session_state["ai_trends"]    = cond.get("trends", [])
+                    st.session_state["ai_targets"]   = cond.get("targets", [])
+                    st.session_state["ai_insight"]   = cond.get("insight", "")
+                    dl_ok   = cond.get("_dl_used", False)
+                    news_ok = cond.get("_news_used", False)
+                    src = []
+                    if dl_ok:   src.append("DataLab 지표")
+                    if news_ok: src.append("뉴스 헤드라인")
+                    src_str = " + ".join(src) if src else "Gemini 학습 데이터"
+                    st.success(f"✅ 추천 완료! (데이터 소스: {src_str})")
 
         # ── STEP 2: 트렌드·타겟 선택 ─────────────────
         trend_done = "ai_trends" in st.session_state
@@ -1456,7 +1517,7 @@ with st.sidebar:
 
         # 인사이트 표시
         if st.session_state.get("ai_insight"):
-            st.info(f"💡 {st.session_state['ai_insight']}")
+            st.info(f"💡 **트렌드 인사이트**\n{st.session_state['ai_insight']}")
 
         # 트렌드 방향
         trend_title = "**② 트렌드 방향** (추천완료 ✅)" if trend_done else "**② 트렌드 방향** (기본)"
