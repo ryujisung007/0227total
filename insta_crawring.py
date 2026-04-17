@@ -423,30 +423,35 @@ def render_blog_charts(blog_df):
             df_recent = df_recent.copy()
             df_recent["월"] = df_recent["날짜"].dt.strftime("%Y-%m")
 
-            # 6개월 전체 월 목록 생성 (데이터 없는 달도 0으로 표시)
-            all_months = pd.date_range(
-                start=six_months_ago.replace(day=1),
-                end=now,
-                freq="MS"
-            ).strftime("%Y-%m").tolist()
+            # ── 실제 데이터 있는 월만 사용 (빈 달 제거)
             keywords_list = df_recent["키워드"].unique().tolist()
-            full_idx = pd.MultiIndex.from_product(
-                [all_months, keywords_list], names=["월","키워드"]
-            )
-            monthly_raw = df_recent.groupby(["월","키워드"]).agg(
+            monthly = df_recent.groupby(["월","키워드"]).agg(
                 게시글수=("제목","count"),
                 평균점수=("관련성점수","mean")
-            )
-            monthly = monthly_raw.reindex(full_idx, fill_value=0).reset_index()
-            # 평균점수 0인 곳(데이터없는달)은 NaN 처리
-            monthly.loc[monthly["게시글수"] == 0, "평균점수"] = None
+            ).reset_index()
 
-            # 월 표시를 "10월","11월"... 형태로 변환
-            monthly["월표시"] = pd.to_datetime(monthly["월"]).dt.strftime("%-m월")
+            # 실제 수집 기간 계산
+            actual_min = df_recent["날짜"].min()
+            actual_max = df_recent["날짜"].max()
+            period_str = (f"{actual_min.strftime('%Y.%m')} ~ "
+                          f"{actual_max.strftime('%Y.%m')}")
+
+            # 월을 "YYYY-MM" 정렬 후 "M월" 표시로 변환
+            monthly = monthly.sort_values("월")
+            # 연도가 바뀌는 경우 "1월(26)" 식으로 표시
+            def fmt_month(ym):
+                dt = pd.to_datetime(ym)
+                if dt.year != now.year:
+                    return f"{dt.month}월({str(dt.year)[2:]})"
+                return f"{dt.month}월"
+            month_order = sorted(monthly["월"].unique())
+            month_label  = {m: fmt_month(m) for m in month_order}
+            monthly["월표시"] = monthly["월"].map(month_label)
 
             fig3 = go.Figure()
             for i, kw in enumerate(keywords_list):
-                df_kw = monthly[monthly["키워드"] == kw]
+                df_kw = monthly[monthly["키워드"] == kw].copy()
+                # 없는 달은 건너뜀 (0 채우지 않음 → 선 끊김 대신 실제만 표시)
                 color = COLORS[i % len(COLORS)]
                 fig3.add_trace(go.Scatter(
                     x=df_kw["월표시"],
@@ -454,57 +459,70 @@ def render_blog_charts(blog_df):
                     mode="lines+markers+text",
                     name=kw,
                     line=dict(width=2.5, color=color),
-                    marker=dict(size=9, color=color),
-                    text=df_kw["게시글수"].where(df_kw["게시글수"] > 0),
+                    marker=dict(size=10, color=color,
+                                line=dict(width=1.5, color="white")),
+                    text=df_kw["게시글수"],
                     textposition="top center",
-                    textfont=dict(size=11),
+                    textfont=dict(size=12, color=color),
                     hovertemplate=(
                         f"<b>{kw}</b><br>"
                         "월: %{x}<br>"
                         "게시글수: %{y}건<br>"
-                        "평균점수: %{customdata:.1f}<extra></extra>"
+                        "평균점수: %{customdata:.1f}점<extra></extra>"
                     ),
-                    customdata=df_kw["평균점수"].fillna(0),
+                    customdata=df_kw["평균점수"],
+                    connectgaps=False,
                 ))
 
             fig3.update_layout(
                 title=dict(
-                    text=f"최근 6개월 월별 언급 추이 "
-                         f"({pd.Timestamp(six_months_ago).strftime('%Y.%m')} ~ "
-                         f"{now.strftime('%Y.%m')})",
-                    font=dict(size=14)
+                    text=(f"수집 데이터 기간별 월별 언급량  "
+                          f"<span style='font-size:12px;color:#888'>({period_str})</span>"),
+                    font=dict(size=14),
+                    x=0, xanchor="left",
+                    pad=dict(t=10)
                 ),
-                height=420,
+                height=440,
                 xaxis=dict(
                     title="",
-                    tickmode="array",
-                    tickvals=monthly["월표시"].unique().tolist(),
-                    ticktext=monthly["월표시"].unique().tolist(),
+                    categoryorder="array",
+                    categoryarray=[month_label[m] for m in month_order],
                     tickfont=dict(size=13),
                     showgrid=True,
-                    gridcolor="rgba(200,200,200,0.3)",
+                    gridcolor="rgba(200,200,200,0.25)",
+                    tickangle=0,
                 ),
                 yaxis=dict(
                     title="게시글 수",
                     showgrid=True,
-                    gridcolor="rgba(200,200,200,0.3)",
+                    gridcolor="rgba(200,200,200,0.25)",
                     rangemode="tozero",
+                    tickfont=dict(size=12),
                 ),
                 legend=dict(
-                    title="키워드",
+                    title="",
                     orientation="h",
-                    yanchor="bottom",
-                    y=1.02,
-                    xanchor="left",
-                    x=0,
+                    yanchor="top",
+                    y=-0.18,          # 차트 아래로 내림 → 제목과 겹침 없음
+                    xanchor="center",
+                    x=0.5,
                     font=dict(size=11),
+                    bgcolor="rgba(0,0,0,0)",
                 ),
                 hovermode="x unified",
-                **LB
+                margin=dict(l=10, r=10, t=55, b=80),  # 하단 범례 공간 확보
+                plot_bgcolor="rgba(0,0,0,0)",
+                paper_bgcolor="rgba(0,0,0,0)",
+            )
+            # 데이터 수집 안내 메시지
+            st.caption(
+                f"📌 네이버 API는 최신순 최대 100건만 반환해요. "
+                f"실제 수집 기간: **{period_str}** "
+                f"(총 {len(df_recent)}건)"
             )
             st.plotly_chart(fig3, use_container_width=True)
         else:
-            st.info("최근 6개월 데이터가 없습니다. 네이버 API 수집 건수를 늘려보세요.")
+            st.info("수집된 날짜 데이터가 없습니다.")
 
     with col4:
         # 관련성점수 TOP15 게시글 테이블
@@ -1132,29 +1150,53 @@ if btn:
 
     # ── PPT 생성 ──────────────────────────────────────
     if not blog_df.empty or not shop_df.empty:
-        st.divider()
-        st.subheader("📊 분석 결과 PPT 다운로드")
-        st.caption("수집된 블로그·쇼핑 데이터와 Claude 분석 결과를 컨설팅 스타일 PPT로 생성합니다.")
+        # session_state에 데이터 저장 (버튼 재클릭 후에도 유지)
+        st.session_state["blog_df_ppt"] = blog_df
+        st.session_state["shop_df_ppt"] = shop_df
 
-        col_ppt1, col_ppt2 = st.columns([1, 4])
-        with col_ppt1:
-            ppt_btn = st.button("📥 PPT 생성하기", use_container_width=True, type="primary")
+    st.divider()
+    st.subheader("📊 분석 결과 PPT 다운로드")
+    st.caption("수집된 블로그·쇼핑 데이터를 BCG/Deloitte 컨설팅 스타일 PPT로 생성합니다. (python-pptx 자동 생성)")
 
-        if ppt_btn:
+    col_ppt1, col_ppt2, col_ppt3 = st.columns([1.2, 1.5, 4])
+    with col_ppt1:
+        ppt_btn = st.button("📥 PPT 생성하기", use_container_width=True, type="primary")
+    with col_ppt2:
+        # 이미 생성된 PPT가 있으면 바로 다운로드 버튼 표시
+        if "ppt_bytes_cache" in st.session_state:
+            st.download_button(
+                label="⬇️ 바로 다운로드",
+                data=st.session_state["ppt_bytes_cache"],
+                file_name=st.session_state.get("ppt_fname", "report.pptx"),
+                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                use_container_width=True,
+            )
+
+    if ppt_btn:
+        _blog = st.session_state.get("blog_df_ppt", pd.DataFrame())
+        _shop = st.session_state.get("shop_df_ppt", pd.DataFrame())
+        if _blog.empty and _shop.empty:
+            st.warning("⚠️ 먼저 분석 시작 버튼을 눌러 데이터를 수집해주세요.")
+        else:
             try:
                 from ppt_gen import build_ppt
                 claude_res = st.session_state.get("claude_result", None)
-                with st.spinner("BCG 스타일 PPT 생성 중... (10~20초)"):
-                    ppt_bytes = build_ppt(blog_df, shop_df, claude_res)
+                with st.spinner("PPT 생성 중... (10~20초)"):
+                    ppt_bytes = build_ppt(_blog, _shop, claude_res)
                 fname = f"NPD_트렌드분석_{datetime.today().strftime('%Y%m%d')}.pptx"
+                # session_state에 저장 → 페이지 재실행 후에도 유지
+                st.session_state["ppt_bytes_cache"] = ppt_bytes
+                st.session_state["ppt_fname"] = fname
+                st.success(f"✅ PPT 생성 완료! 아래 버튼으로 다운로드하세요.")
                 st.download_button(
                     label="⬇️ PPT 다운로드",
                     data=ppt_bytes,
                     file_name=fname,
                     mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                    type="primary",
+                    use_container_width=False,
                 )
-                st.success(f"✅ {fname} 생성 완료! 위 버튼으로 다운로드하세요.")
             except ImportError:
-                st.error("python-pptx 설치 필요: requirements.txt에 python-pptx 추가 후 재배포해주세요.")
+                st.error("python-pptx 미설치 — requirements.txt에 python-pptx 추가 후 재배포해주세요.")
             except Exception as e:
                 st.error(f"PPT 생성 오류: {e}")
