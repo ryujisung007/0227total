@@ -811,7 +811,7 @@ with col_btn:
 
 if st.session_state["show_intro"]:
     st.markdown("""
-<div style="background:linear-gradient(135deg,#f8f9ff 0%,#f0f4ff 100%);
+<div style="user-select:text;-webkit-user-select:text;background:linear-gradient(135deg,#f8f9ff 0%,#f0f4ff 100%);
             border:1px solid #d0d8f0;border-radius:16px;padding:28px 32px;margin-bottom:16px">
 
 <h2 style="margin:0 0 6px;color:#1a237e;font-size:22px">🍹 AI NPD SUITE — 음료 트렌드 분석기</h2>
