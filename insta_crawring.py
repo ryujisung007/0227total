@@ -290,76 +290,113 @@ def get_google_trends(categories):
         return None  # 실패 시 조용히 None 반환
 
 
+def _clean_for_prompt(text):
+    """프롬프트 삽입 전 특수문자 정리 - JSON 파싱 오류 방지"""
+    if not text:
+        return ""
+    # 백슬래시, 큰따옴표, 중괄호를 안전한 문자로 치환
+    text = text.replace("\\", "/")
+    text = text.replace('"', "'")
+    text = text.replace("{", "(").replace("}", ")")
+    # 연속 줄바꿈 정리
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    return "\n".join(lines)
+
+
+def _safe_json_parse(raw_text):
+    """Gemini 응답에서 JSON을 안전하게 추출·파싱"""
+    # 1. ```json ... ``` 블록 제거
+    text = re.sub(r"```json\s*", "", raw_text)
+    text = re.sub(r"```\s*", "", text).strip()
+
+    # 2. 첫 번째 { ~ 마지막 } 범위만 추출
+    start = text.find("{")
+    end   = text.rfind("}") + 1
+    if start == -1 or end == 0:
+        return None
+    text = text[start:end]
+
+    # 3. 잘린 문자열 복구 시도 (마지막 미완성 항목 제거)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        # 마지막 콤마 이후 잘린 경우 — 해당 항목 제거
+        text_fixed = re.sub(r',\s*"[^"]*"\s*$', "", text)
+        text_fixed = re.sub(r',\s*"[^"]*":\s*"[^"]*$', "", text_fixed)
+        # 닫히지 않은 배열/객체 닫기
+        open_braces   = text_fixed.count("{") - text_fixed.count("}")
+        open_brackets = text_fixed.count("[") - text_fixed.count("]")
+        text_fixed += "]" * max(open_brackets, 0)
+        text_fixed += "}" * max(open_braces, 0)
+        try:
+            return json.loads(text_fixed)
+        except Exception:
+            return None
+
+
 def get_gemini_conditions(api_key, categories, client_id="", client_secret=""):
     """DataLab + 뉴스 + 구글 트렌드(가능시) 기반 트렌드·타겟 추천"""
     dl_summary     = "검색 지표 없음"
     news_summary   = "뉴스 없음"
-    google_summary = None   # None = 조회 실패/미사용
+    google_summary = None
 
-    # ── 1. 네이버 DataLab 3개월 주별 검색량
     if client_id and client_secret:
-        dl_summary = get_datalab_for_categories(
-            categories, client_id, client_secret)
+        dl_summary   = _clean_for_prompt(
+            get_datalab_for_categories(categories, client_id, client_secret))
+        news_summary = _clean_for_prompt(
+            get_naver_news_trends(categories, client_id, client_secret))
 
-    # ── 2. 네이버 뉴스 헤드라인
-    if client_id and client_secret:
-        news_summary = get_naver_news_trends(
-            categories, client_id, client_secret)
+    google_raw     = get_google_trends(categories)
+    google_summary = _clean_for_prompt(google_raw) if google_raw else None
 
-    # ── 3. 구글 트렌드 (글로벌, 실패 시 자동 폴백)
-    google_summary = get_google_trends(categories)
+    # 프롬프트 조립
+    if google_summary:
+        google_block = "[3. 구글 트렌드 글로벌 Food and Drink 카테고리]\n" + google_summary
+    else:
+        google_block = "[3. 구글 트렌드] 조회 불가 - 네이버 데이터만 사용"
 
-    # ── Gemini 프롬프트 구성
-    google_section = f"""
-[3. 구글 트렌드 글로벌 검색량 지수 (Food & Drink 카테고리)]
-(↑급상승/↑상승/→유지 + 급상승 연관 검색어 포함)
-{google_summary}
-""" if google_summary else """
-[3. 구글 트렌드] 현재 조회 불가 (네이버 데이터 기반으로 추천)
-"""
 
+    cat_str    = ", ".join(categories)
     url = (f"https://generativelanguage.googleapis.com/v1/models/"
            f"gemini-2.5-pro:generateContent?key={api_key}")
 
-    prompt = f"""당신은 한국 음료 시장 트렌드 전문가입니다.
-아래 데이터를 종합 분석하여 가장 관련성 높은
-트렌드 방향과 타겟 소비자를 추천해주세요.
-
-[1. 선택된 음료 카테고리]
-{', '.join(categories)}
-
-[2. 네이버 DataLab 최근 3개월 주별 검색량 지수]
-(한국 소비자 검색 기반, ↑급상승/↑상승/→유지)
-{dl_summary}
-{google_section}
-[4. 네이버 뉴스 최신 헤드라인 (음료 관련)]
-{news_summary}
-
-분석 지침:
-- 구글 트렌드에서 글로벌 급상승 키워드는 한국 시장 선도 지표로 활용
-- 네이버 DataLab 상승 키워드는 현재 한국 소비자 관심 지표
-- 뉴스 헤드라인에서 신제품·시장 변화 반영
-- 글로벌 트렌드가 한국에 적용될 가능성도 트렌드로 포함
-
-반드시 아래 JSON 형식으로만 응답하세요. 설명 없이 JSON만.
-{{
-  "trends": ["트렌드1", "트렌드2", "트렌드3", "트렌드4", "트렌드5", "트렌드6"],
-  "targets": ["타겟1", "타겟2", "타겟3", "타겟4"],
-  "insight": "글로벌+한국 검색 지표 및 뉴스 기반 핵심 인사이트 2~3줄"
-}}"""
+    prompt = (
+        "당신은 한국 음료 시장 트렌드 전문가입니다.\n"
+        "아래 데이터를 분석하여 트렌드 방향과 타겟 소비자를 추천해주세요.\n\n"
+        "[1. 음료 카테고리]\n" + cat_str + "\n\n"
+        "[2. 네이버 DataLab 3개월 주별 검색량]\n" + dl_summary + "\n\n"
+        + google_block + "\n\n"
+        "[4. 네이버 뉴스 헤드라인]\n" + news_summary + "\n\n"
+        "분석 지침:\n"
+        "- 구글 트렌드 급상승은 글로벌 선도 지표\n"
+        "- DataLab 상승은 한국 소비자 관심 지표\n"
+        "- 뉴스에서 신제품 및 시장 변화 반영\n\n"
+        "반드시 아래 JSON 형식으로만 응답. 설명 없이 JSON만 출력.\n"
+        '{"trends":["트렌드1","트렌드2","트렌드3","트렌드4","트렌드5","트렌드6"],'
+        '"targets":["타겟1","타겟2","타겟3","타겟4"],'
+        '"insight":"핵심 인사이트 2줄"}'
+    )
 
     payload = {
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-        "generationConfig": {"maxOutputTokens": 2048, "temperature": 0.6}
+        "generationConfig": {
+            "maxOutputTokens": 1024,   # 짧게 — JSON만 받으므로 충분
+            "temperature": 0.5,
+            "responseMimeType": "application/json",  # JSON 모드 강제
+        }
     }
     try:
         res   = requests.post(url, json=payload, timeout=40)
         data  = res.json()
         parts = data.get("candidates",[{}])[0].get("content",{}).get("parts",[])
         if not parts:
+            st.warning("Gemini 응답이 비어있습니다. (토큰 부족 가능성)")
             return None
-        text = re.sub(r"```json|```","", parts[0]["text"]).strip()
-        result = json.loads(text)
+        raw  = parts[0]["text"]
+        result = _safe_json_parse(raw)
+        if result is None:
+            st.error(f"JSON 파싱 실패. 응답 원문: {raw[:200]}")
+            return None
         result["_dl_used"]     = dl_summary != "검색 지표 없음"
         result["_news_used"]   = news_summary != "뉴스 없음"
         result["_google_used"] = google_summary is not None
@@ -626,7 +663,43 @@ def search_shop(keywords, client_id, client_secret, display=100):
 
 
 # ── 블로그 차트 ──────────────────────────────────────
-def render_blog_charts(blog_df):
+def fetch_datalab_range(keywords_list, time_unit, months,
+                        client_id, client_secret):
+    """기간 옵션 포함 DataLab 호출 (최상위 함수)"""
+    end_dt = datetime.now()
+    if time_unit == "month":
+        start_dt = (end_dt.replace(day=1) -
+                    pd.DateOffset(months=months-1)).to_pydatetime()
+    else:
+        start_dt = end_dt - timedelta(weeks=months * 4)
+    url = "https://openapi.naver.com/v1/datalab/search"
+    headers = {
+        "X-Naver-Client-Id":     client_id,
+        "X-Naver-Client-Secret": client_secret,
+        "Content-Type":          "application/json",
+    }
+    start_str = start_dt.strftime("%Y-%m-%d")
+    end_str   = end_dt.strftime("%Y-%m-%d")
+    all_results = []
+    for i in range(0, len(keywords_list), 5):
+        batch  = keywords_list[i:i+5]
+        groups = [{"groupName": kw, "keywords": [kw]} for kw in batch]
+        body   = {"startDate": start_str, "endDate": end_str,
+                  "timeUnit":  time_unit, "keywordGroups": groups}
+        try:
+            res = requests.post(url, headers=headers,
+                                data=json.dumps(body), timeout=15)
+            if res.status_code == 200:
+                all_results.extend(res.json().get("results", []))
+            else:
+                return {"error": f"{res.status_code}: {res.text[:200]}"}
+            time.sleep(0.3)
+        except Exception as e:
+            return {"error": str(e)}
+    return {"results": all_results}
+
+
+def render_blog_charts(blog_df, client_id="", client_secret=""):
     if blog_df.empty:
         return
 
@@ -793,66 +866,42 @@ def render_blog_charts(blog_df):
                 "실제 검색량이 아닌 트렌드 방향을 나타냅니다."
             )
 
-        def fetch_datalab_range(keywords_list, time_unit, months,
-                                 client_id, client_secret):
-            """기간 옵션 포함 DataLab 호출"""
-            end_dt   = datetime.now()
-            if time_unit == "month":
-                start_dt = (end_dt.replace(day=1) -
-                            pd.DateOffset(months=months-1)).to_pydatetime()
-            else:
-                weeks = months * 4
-                start_dt = end_dt - timedelta(weeks=weeks)
-            url = "https://openapi.naver.com/v1/datalab/search"
-            headers = {
-                "X-Naver-Client-Id":     client_id,
-                "X-Naver-Client-Secret": client_secret,
-                "Content-Type":          "application/json",
-            }
-            start_str = start_dt.strftime("%Y-%m-%d")
-            end_str   = end_dt.strftime("%Y-%m-%d")
-            all_results = []
-            for batch_start in range(0, len(keywords_list), 5):
-                batch  = keywords_list[batch_start:batch_start+5]
-                groups = [{"groupName": kw, "keywords": [kw]} for kw in batch]
-                body   = {"startDate": start_str, "endDate": end_str,
-                          "timeUnit": time_unit, "keywordGroups": groups}
-                try:
-                    res = requests.post(url, headers=headers,
-                                        data=json.dumps(body), timeout=15)
-                    if res.status_code == 200:
-                        all_results.extend(res.json().get("results", []))
-                    else:
-                        return {"error": f"{res.status_code}: {res.text[:200]}"}
-                    time.sleep(0.3)
-                except Exception as e:
-                    return {"error": str(e)}
-            return {"results": all_results}
-
         if keywords_for_dl and client_id and client_secret:
             with tab_month:
                 period_opt = st.radio("기간", ["3개월","6개월"],
                                       horizontal=True, key="dl_month_period")
                 months_m = 3 if period_opt == "3개월" else 6
-                ck_m = f"dl_month_{months_m}_{'_'.join(keywords_for_dl)}"
+                import hashlib
+                kw_hash = hashlib.md5("_".join(keywords_for_dl).encode()).hexdigest()[:8]
+                ck_m = f"dl_month_{months_m}_{kw_hash}"
                 if ck_m not in st.session_state:
-                    with st.spinner(f"DataLab 월별 {months_m}개월 조회 중..."):
-                        st.session_state[ck_m] = fetch_datalab_range(
-                            keywords_for_dl, "month", months_m,
-                            client_id, client_secret)
-                render_datalab_chart(st.session_state[ck_m], "month")
+                    if not client_id or not client_secret:
+                        st.warning("API 키가 없어 DataLab 조회를 건너뜁니다.")
+                    else:
+                        with st.spinner(f"DataLab 월별 {months_m}개월 조회 중..."):
+                            st.session_state[ck_m] = fetch_datalab_range(
+                                keywords_for_dl, "month", months_m,
+                                client_id, client_secret)
+                if ck_m in st.session_state:
+                    render_datalab_chart(st.session_state[ck_m], "month")
 
             with tab_week:
                 period_opt_w = st.radio("기간", ["3개월","6개월"],
                                         horizontal=True, key="dl_week_period")
                 months_w = 3 if period_opt_w == "3개월" else 6
-                ck_w = f"dl_week_{months_w}_{'_'.join(keywords_for_dl)}"
+                import hashlib as _hl
+                kw_hash_w = _hl.md5("_".join(keywords_for_dl).encode()).hexdigest()[:8]
+                ck_w = f"dl_week_{months_w}_{kw_hash_w}"
                 if ck_w not in st.session_state:
-                    with st.spinner(f"DataLab 주별 {months_w}개월 조회 중..."):
-                        st.session_state[ck_w] = fetch_datalab_range(
-                            keywords_for_dl, "week", months_w,
-                            client_id, client_secret)
-                render_datalab_chart(st.session_state[ck_w], "week")
+                    if not client_id or not client_secret:
+                        st.warning("API 키가 없어 DataLab 조회를 건너뜁니다.")
+                    else:
+                        with st.spinner(f"DataLab 주별 {months_w}개월 조회 중..."):
+                            st.session_state[ck_w] = fetch_datalab_range(
+                                keywords_for_dl, "week", months_w,
+                                client_id, client_secret)
+                if ck_w in st.session_state:
+                    render_datalab_chart(st.session_state[ck_w], "week")
         else:
             with tab_month:
                 st.info("🚀 분석 시작 후 DataLab 트렌드가 표시됩니다.")
@@ -1728,7 +1777,7 @@ if btn:
             recent = blog_df.dropna(subset=["날짜"])
             m4.metric("최신 게시글",
                       recent["날짜"].max().strftime("%Y-%m-%d") if not recent.empty else "-")
-            render_blog_charts(blog_df)
+            render_blog_charts(blog_df, client_id, client_secret)
             with st.expander("📋 블로그 원본 데이터 보기 (점수순 정렬)"):
                 st.dataframe(blog_df.drop(columns=["날짜"]), use_container_width=True,
                              column_config={
