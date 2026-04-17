@@ -113,30 +113,108 @@ def get_gemini_keywords(api_key, categories, trends, targets, season):
 
 
 # ── Gemini 카테고리 → 트렌드/타겟 자동 생성 ──────────
-def get_gemini_conditions(api_key, categories):
-    """선택한 음료 카테고리 기반으로 관련 트렌드방향·타겟소비자를 AI가 생성"""
+# 카테고리별 대표 검색어 (DataLab 조회용)
+CATEGORY_PROBE_KW = {
+    "탄산음료":   ["탄산음료","제로탄산","스파클링워터"],
+    "차(Tea)":    ["차음료","RTD차","보틀티"],
+    "과일주스":   ["과일주스","착즙주스","NFC주스"],
+    "에너지음료": ["에너지음료","고카페인음료","부스터음료"],
+    "유제품음료": ["유제품음료","단백질음료","발효유"],
+    "기능성음료": ["기능성음료","건강음료","이온음료"],
+    "RTD커피":    ["RTD커피","콜드브루캔","bottled커피"],
+    "발효음료":   ["발효음료","콤부차","프로바이오틱스음료"],
+    "스포츠음료": ["스포츠음료","전해질음료","운동음료"],
+    "식물성음료": ["식물성음료","오트밀크","아몬드밀크"],
+}
+
+
+def get_datalab_for_categories(categories, client_id, client_secret):
+    """카테고리 대표 키워드로 3개월 DataLab 조회 → 트렌드 요약 텍스트 반환"""
+    probe_kws = []
+    for cat in categories:
+        probe_kws.extend(CATEGORY_PROBE_KW.get(cat, [cat])[:2])
+    probe_kws = list(dict.fromkeys(probe_kws))[:10]  # 최대 10개
+
+    end_dt   = datetime.now()
+    start_dt = end_dt - timedelta(days=90)
+    url      = "https://openapi.naver.com/v1/datalab/search"
+    headers  = {
+        "X-Naver-Client-Id":     client_id,
+        "X-Naver-Client-Secret": client_secret,
+        "Content-Type":          "application/json",
+    }
+    all_results = []
+    for i in range(0, len(probe_kws), 5):
+        batch  = probe_kws[i:i+5]
+        groups = [{"groupName": kw, "keywords": [kw]} for kw in batch]
+        body   = {
+            "startDate":     start_dt.strftime("%Y-%m-%d"),
+            "endDate":       end_dt.strftime("%Y-%m-%d"),
+            "timeUnit":      "week",
+            "keywordGroups": groups,
+        }
+        try:
+            res = requests.post(url, headers=headers,
+                                data=json.dumps(body), timeout=15)
+            if res.status_code == 200:
+                all_results.extend(res.json().get("results", []))
+            time.sleep(0.3)
+        except Exception:
+            pass
+
+    if not all_results:
+        return "검색 지표 데이터 없음"
+
+    # 요약: 키워드별 최근 4주 평균 지수 정렬
+    summary_lines = []
+    for r in all_results:
+        kw   = r["title"]
+        data = r.get("data", [])
+        if data:
+            recent4 = [d["ratio"] for d in data[-4:]]
+            avg     = sum(recent4) / len(recent4)
+            trend   = "↑상승" if len(data)>1 and data[-1]["ratio"] > data[-4]["ratio"] else "→유지/하락"
+            summary_lines.append(f"  - {kw}: 최근4주 평균지수 {avg:.1f} ({trend})")
+    return "".join(summary_lines) if summary_lines else "데이터 부족"
+
+
+def get_gemini_conditions(api_key, categories, client_id="", client_secret=""):
+    """DataLab 실검색 지표 기반으로 트렌드방향·타겟소비자 추천"""
+    # 1단계: DataLab 지표 수집
+    dl_summary = ""
+    if client_id and client_secret:
+        dl_summary = get_datalab_for_categories(categories, client_id, client_secret)
+
     url = (f"https://generativelanguage.googleapis.com/v1/models/"
            f"gemini-2.5-pro:generateContent?key={api_key}")
+
+    dl_section = f"""
+[네이버 DataLab 최근 3개월 검색 지표]
+{dl_summary if dl_summary else "지표 없음 (학습 데이터 기반으로 추천)"}
+""" if dl_summary else ""
+
     prompt = f"""당신은 한국 음료 시장 트렌드 전문가입니다.
-아래 음료 카테고리에 가장 관련성 높은 트렌드 방향과 타겟 소비자를 추천해주세요.
+아래 음료 카테고리와 네이버 실검색 지표를 분석하여
+가장 관련성 높은 트렌드 방향과 타겟 소비자를 추천해주세요.
 
 [선택된 음료 카테고리]
 {', '.join(categories)}
-
+{dl_section}
+검색 지표에서 상승 중인 키워드와 트렌드를 우선 반영해주세요.
 반드시 아래 JSON 형식으로만 응답하세요. 설명 없이 JSON만.
 {{
-  "trends": ["트렌드1", "트렌드2", "트렌드3", "트렌드4", "트렌드5"],
-  "targets": ["타겟1", "타겟2", "타겟3", "타겟4"]
-}}
-트렌드는 5~8개, 타겟은 3~5개 추천해주세요."""
+  "trends": ["트렌드1", "트렌드2", "트렌드3", "트렌드4", "트렌드5", "트렌드6"],
+  "targets": ["타겟1", "타겟2", "타겟3", "타겟4"],
+  "insight": "검색 지표 기반 핵심 인사이트 1~2줄"
+}}"""
 
     payload = {
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-        "generationConfig": {"maxOutputTokens": 1024, "temperature": 0.6}
+        "generationConfig": {"maxOutputTokens": 2048, "temperature": 0.6}
     }
     try:
-        res  = requests.post(url, json=payload, timeout=20)
-        data = res.json()
+        res   = requests.post(url, json=payload, timeout=30)
+        data  = res.json()
         parts = data.get("candidates",[{}])[0].get("content",{}).get("parts",[])
         if not parts:
             return None
@@ -1352,51 +1430,71 @@ with st.sidebar:
             ["봄(3~5월)","여름(6~8월)","가을(9~11월)","겨울(12~2월)","연중"],
             index=0)
 
-        if st.button("🔍 AI 트렌드·타겟 생성", use_container_width=True):
+        btn_label = (
+            "✅ 트렌드·타겟 재생성"
+            if "ai_trends" in st.session_state
+            else "🔍 DataLab 지표로 트렌드·타겟 생성"
+        )
+        if st.button(btn_label, use_container_width=True):
             if not sel_categories:
                 st.warning("카테고리를 1개 이상 선택해주세요.")
             elif not gkey:
                 st.error("GOOGLE_API_KEY가 Secrets에 없습니다.")
             else:
-                with st.spinner("AI가 관련 트렌드·타겟 분석 중..."):
-                    cond = get_gemini_conditions(gkey, sel_categories)
+                with st.spinner("네이버 DataLab 3개월 지표 조회 + AI 분석 중..."):
+                    cond = get_gemini_conditions(
+                        gkey, sel_categories, client_id, client_secret)
                     if cond:
                         st.session_state["ai_trends"]  = cond.get("trends", [])
                         st.session_state["ai_targets"] = cond.get("targets", [])
-                        st.success("트렌드·타겟 생성 완료!")
+                        st.session_state["ai_insight"] = cond.get("insight", "")
+                        st.success("✅ 추천 완료!")
 
-        # ── STEP 2: AI 생성 트렌드·타겟 선택 ─────────
-        if "ai_trends" in st.session_state:
-            st.markdown("**② 트렌드 방향 선택** (AI 추천)")
-            sel_trends = st.multiselect("",
-                st.session_state["ai_trends"],
-                default=st.session_state["ai_trends"][:3],
-                key="sel_trends_ai",
-                label_visibility="collapsed")
-        else:
-            st.markdown("**② 트렌드 방향** (기본)")
-            sel_trends = st.multiselect("",
-                ["저당/제로슈거","프리미엄","기능성/건강","비건/식물성",
-                 "자연/천연","다이어트","피로회복","스트레스완화"],
-                default=["저당/제로슈거","기능성/건강"],
-                key="sel_trends_default",
-                label_visibility="collapsed")
+        # ── STEP 2: 트렌드·타겟 선택 ─────────────────
+        trend_done = "ai_trends" in st.session_state
+        target_done = "ai_targets" in st.session_state
 
-        if "ai_targets" in st.session_state:
-            st.markdown("**③ 타겟 소비자 선택** (AI 추천)")
-            sel_targets = st.multiselect("",
-                st.session_state["ai_targets"],
-                default=st.session_state["ai_targets"][:2],
-                key="sel_targets_ai",
-                label_visibility="collapsed")
-        else:
-            st.markdown("**③ 타겟 소비자** (기본)")
-            sel_targets = st.multiselect("",
-                ["10~20대","30~40대","50대 이상","운동/헬스",
-                 "다이어트","직장인","임산부/어린이"],
-                default=["30~40대"],
-                key="sel_targets_default",
-                label_visibility="collapsed")
+        # 인사이트 표시
+        if st.session_state.get("ai_insight"):
+            st.info(f"💡 {st.session_state['ai_insight']}")
+
+        # 트렌드 방향
+        trend_title = "**② 트렌드 방향** (추천완료 ✅)" if trend_done else "**② 트렌드 방향** (기본)"
+        st.markdown(trend_title)
+        base_trends = (st.session_state["ai_trends"]
+                       if trend_done
+                       else ["저당/제로슈거","프리미엄","기능성/건강",
+                             "비건/식물성","자연/천연","다이어트","피로회복","스트레스완화"])
+        sel_trends = st.multiselect("",
+            base_trends,
+            default=base_trends[:3] if trend_done else base_trends[:2],
+            key="sel_trends_ms",
+            label_visibility="collapsed")
+        # 직접 추가
+        trend_extra = st.text_input("➕ 트렌드 직접 추가",
+            value="", placeholder="예: 고단백, 저카페인",
+            key="trend_extra_input")
+        if trend_extra.strip():
+            sel_trends += [t.strip() for t in trend_extra.split(",") if t.strip()]
+
+        # 타겟 소비자
+        target_title = "**③ 타겟 소비자** (추천완료 ✅)" if target_done else "**③ 타겟 소비자** (기본)"
+        st.markdown(target_title)
+        base_targets = (st.session_state["ai_targets"]
+                        if target_done
+                        else ["10~20대","30~40대","50대 이상","운동/헬스",
+                              "다이어트","직장인","임산부/어린이"])
+        sel_targets = st.multiselect("",
+            base_targets,
+            default=base_targets[:2],
+            key="sel_targets_ms",
+            label_visibility="collapsed")
+        # 직접 추가
+        target_extra = st.text_input("➕ 타겟 직접 추가",
+            value="", placeholder="예: 수험생, 시니어",
+            key="target_extra_input")
+        if target_extra.strip():
+            sel_targets += [t.strip() for t in target_extra.split(",") if t.strip()]
 
         # ── STEP 3: 키워드 생성 ───────────────────────
         st.divider()
