@@ -219,44 +219,133 @@ def get_naver_news_trends(categories, client_id, client_secret):
 
 
 
-def get_gemini_conditions(api_key, categories, client_id="", client_secret=""):
-    """DataLab 검색 지표 + 네이버 뉴스 기반 트렌드·타겟 추천"""
-    dl_summary   = "검색 지표 없음"
-    news_summary = "뉴스 없음"
+# 카테고리별 글로벌 구글 트렌드 검색 키워드
+CATEGORY_GLOBAL_KW = {
+    "탄산음료":   ["zero sugar soda","sparkling water","carbonated drink"],
+    "차(Tea)":    ["bottled tea","RTD tea","cold brew tea"],
+    "과일주스":   ["fruit juice trend","NFC juice","cold pressed juice"],
+    "에너지음료": ["energy drink trend","functional energy","nootropic drink"],
+    "유제품음료": ["protein drink","dairy beverage","plant milk"],
+    "기능성음료": ["functional beverage","health drink","wellness drink"],
+    "RTD커피":    ["RTD coffee","cold brew","canned coffee trend"],
+    "발효음료":   ["kombucha trend","probiotic drink","fermented beverage"],
+    "스포츠음료": ["sports drink trend","electrolyte drink","hydration"],
+    "식물성음료": ["oat milk","plant based drink","almond milk trend"],
+}
 
+
+def get_google_trends(categories):
+    """
+    pytrends로 글로벌 구글 트렌드 조회.
+    실패 시 None 반환 (호출부에서 폴백 처리)
+    """
+    try:
+        from pytrends.request import TrendReq
+        
+
+        # 카테고리별 대표 글로벌 키워드 수집 (최대 5개)
+        kw_list = []
+        for cat in categories[:3]:
+            kw_list.extend(CATEGORY_GLOBAL_KW.get(cat, [])[:1])
+        kw_list = list(dict.fromkeys(kw_list))[:5]
+        if not kw_list:
+            return None
+
+        pt = TrendReq(hl="en-US", tz=0, timeout=(8, 20), retries=1,
+                      backoff_factor=0.5)
+        # 글로벌 Food & Drink 카테고리(71), 최근 3개월
+        pt.build_payload(kw_list, cat=71,
+                         timeframe="today 3-m", geo="", gprop="")
+        df = pt.interest_over_time()
+        if df.empty:
+            return None
+
+        lines = []
+        for kw in kw_list:
+            if kw not in df.columns:
+                continue
+            series  = df[kw].dropna()
+            avg     = series.tail(4).mean()
+            first4  = series.head(4).mean()
+            direction = (
+                "↑급상승" if avg > first4 * 1.3
+                else "↑상승" if avg > first4
+                else "→유지"
+            )
+            lines.append(f"  - {kw}: 최근4주 평균지수 {avg:.1f} ({direction})")
+
+        # 연관 검색어 (상위 5개)
+        related = pt.related_queries()
+        rising_lines = []
+        for kw in kw_list[:2]:
+            rising = related.get(kw, {}).get("rising")
+            if rising is not None and not rising.empty:
+                for _, row in rising.head(3).iterrows():
+                    rising_lines.append(f"  - 급상승 연관어: {row['query']}")
+
+        all_lines = lines + rising_lines
+        return "\n".join(all_lines) if all_lines else None
+
+    except Exception:
+        return None  # 실패 시 조용히 None 반환
+
+
+def get_gemini_conditions(api_key, categories, client_id="", client_secret=""):
+    """DataLab + 뉴스 + 구글 트렌드(가능시) 기반 트렌드·타겟 추천"""
+    dl_summary     = "검색 지표 없음"
+    news_summary   = "뉴스 없음"
+    google_summary = None   # None = 조회 실패/미사용
+
+    # ── 1. 네이버 DataLab 3개월 주별 검색량
     if client_id and client_secret:
-        # 1단계: DataLab 3개월 주별 검색량
         dl_summary = get_datalab_for_categories(
             categories, client_id, client_secret)
-        # 2단계: 네이버 뉴스 최신 헤드라인
+
+    # ── 2. 네이버 뉴스 헤드라인
+    if client_id and client_secret:
         news_summary = get_naver_news_trends(
             categories, client_id, client_secret)
+
+    # ── 3. 구글 트렌드 (글로벌, 실패 시 자동 폴백)
+    google_summary = get_google_trends(categories)
+
+    # ── Gemini 프롬프트 구성
+    google_section = f"""
+[3. 구글 트렌드 글로벌 검색량 지수 (Food & Drink 카테고리)]
+(↑급상승/↑상승/→유지 + 급상승 연관 검색어 포함)
+{google_summary}
+""" if google_summary else """
+[3. 구글 트렌드] 현재 조회 불가 (네이버 데이터 기반으로 추천)
+"""
 
     url = (f"https://generativelanguage.googleapis.com/v1/models/"
            f"gemini-2.5-pro:generateContent?key={api_key}")
 
     prompt = f"""당신은 한국 음료 시장 트렌드 전문가입니다.
-아래 3가지 데이터를 종합 분석하여 가장 관련성 높은
+아래 데이터를 종합 분석하여 가장 관련성 높은
 트렌드 방향과 타겟 소비자를 추천해주세요.
 
 [1. 선택된 음료 카테고리]
 {', '.join(categories)}
 
 [2. 네이버 DataLab 최근 3개월 주별 검색량 지수]
-(↑급상승/↑상승/→유지 표시, 최고값=100 기준 상대 지수)
+(한국 소비자 검색 기반, ↑급상승/↑상승/→유지)
 {dl_summary}
-
-[3. 네이버 뉴스 최신 헤드라인 (음료 관련)]
+{google_section}
+[4. 네이버 뉴스 최신 헤드라인 (음료 관련)]
 {news_summary}
 
-위 데이터에서 상승 중인 키워드와 뉴스 트렌드를 우선 반영하여
-한국 시장에 맞는 트렌드와 타겟을 추천해주세요.
+분석 지침:
+- 구글 트렌드에서 글로벌 급상승 키워드는 한국 시장 선도 지표로 활용
+- 네이버 DataLab 상승 키워드는 현재 한국 소비자 관심 지표
+- 뉴스 헤드라인에서 신제품·시장 변화 반영
+- 글로벌 트렌드가 한국에 적용될 가능성도 트렌드로 포함
+
 반드시 아래 JSON 형식으로만 응답하세요. 설명 없이 JSON만.
 {{
   "trends": ["트렌드1", "트렌드2", "트렌드3", "트렌드4", "트렌드5", "트렌드6"],
   "targets": ["타겟1", "타겟2", "타겟3", "타겟4"],
-  "insight": "검색 지표와 뉴스 기반 핵심 인사이트 2~3줄",
-  "data_source": "DataLab+뉴스 기반" 
+  "insight": "글로벌+한국 검색 지표 및 뉴스 기반 핵심 인사이트 2~3줄"
 }}"""
 
     payload = {
@@ -271,9 +360,9 @@ def get_gemini_conditions(api_key, categories, client_id="", client_secret=""):
             return None
         text = re.sub(r"```json|```","", parts[0]["text"]).strip()
         result = json.loads(text)
-        # 데이터 소스 기록
-        result["_dl_used"]   = dl_summary != "검색 지표 없음"
-        result["_news_used"] = news_summary != "뉴스 없음"
+        result["_dl_used"]     = dl_summary != "검색 지표 없음"
+        result["_news_used"]   = news_summary != "뉴스 없음"
+        result["_google_used"] = google_summary is not None
         return result
     except Exception as e:
         st.error(f"Gemini 조건 생성 오류: {e}")
@@ -1496,20 +1585,19 @@ with st.sidebar:
             elif not gkey:
                 st.error("GOOGLE_API_KEY가 Secrets에 없습니다.")
             else:
-                with st.spinner("① DataLab 3개월 검색 지표 수집 중..."):
+                with st.spinner("DataLab + 뉴스 + 구글 트렌드 수집 중..."):
                     cond = get_gemini_conditions(
                         gkey, sel_categories, client_id, client_secret)
                 if cond:
                     st.session_state["ai_trends"]    = cond.get("trends", [])
                     st.session_state["ai_targets"]   = cond.get("targets", [])
                     st.session_state["ai_insight"]   = cond.get("insight", "")
-                    dl_ok   = cond.get("_dl_used", False)
-                    news_ok = cond.get("_news_used", False)
                     src = []
-                    if dl_ok:   src.append("DataLab 지표")
-                    if news_ok: src.append("뉴스 헤드라인")
+                    if cond.get("_dl_used"):     src.append("네이버 DataLab")
+                    if cond.get("_news_used"):   src.append("네이버 뉴스")
+                    if cond.get("_google_used"): src.append("구글 트렌드 🌐")
                     src_str = " + ".join(src) if src else "Gemini 학습 데이터"
-                    st.success(f"✅ 추천 완료! (데이터 소스: {src_str})")
+                    st.success(f"✅ 추천 완료!  데이터 소스: {src_str}")
 
         # ── STEP 2: 트렌드·타겟 선택 ─────────────────
         trend_done = "ai_trends" in st.session_state
