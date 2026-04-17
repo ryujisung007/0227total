@@ -936,6 +936,175 @@ def render_claude_cards(result):
 # ══════════════════════════════════════════════════════
 # ── UI ────────────────────────────────────────────────
 # ══════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════
+# ── HTML 리포트 생성 ──────────────────────────────────
+# ══════════════════════════════════════════════════════
+def build_html_report(blog_df, shop_df, claude_result=None):
+    """BCG 스타일 HTML 리포트 생성 → str 반환"""
+    today = datetime.today().strftime("%Y년 %m월 %d일")
+    keywords = ", ".join(blog_df["키워드"].unique()[:6]) if not blog_df.empty else "-"
+
+    # ── 블로그 TOP10 테이블
+    blog_rows = ""
+    if not blog_df.empty:
+        top = blog_df.nlargest(10, "관련성점수")
+        medals = ["🥇","🥈","🥉","④","⑤","⑥","⑦","⑧","⑨","⑩"]
+        for i, (_, r) in enumerate(top.iterrows()):
+            m = medals[i] if i < len(medals) else str(i+1)
+            blog_rows += f"""
+            <tr>
+              <td>{m}</td>
+              <td><span class="score">{int(r.get('관련성점수',0))}</span></td>
+              <td><span class="tag">{r.get('콘텐츠유형','')}</span></td>
+              <td>{r.get('키워드','')}</td>
+              <td><a href="{r.get('URL','#')}" target="_blank">{str(r.get('제목',''))[:50]}</a></td>
+            </tr>"""
+
+    # ── 쇼핑 TOP10 테이블
+    shop_rows = ""
+    if not shop_df.empty:
+        rtd = shop_df[shop_df["상품유형"]=="RTD음료"].head(10)
+        for i, (_, r) in enumerate(rtd.iterrows()):
+            u = f"{int(r['개당가격(원)']):,}원" if r.get('개당가격(원)') else "-"
+            m = f"{int(r['100ml당가격(원)']):,}원" if r.get('100ml당가격(원)') else "-"
+            shop_rows += f"""
+            <tr>
+              <td>{i+1}</td>
+              <td>{r.get('키워드','')}</td>
+              <td><a href="{r.get('URL','#')}" target="_blank">{str(r.get('상품명',''))[:40]}</a></td>
+              <td>{r.get('브랜드','')}</td>
+              <td class="price">{u}</td>
+              <td class="price">{m}</td>
+              <td><span class="tag">{r.get('상품유형','')}</span></td>
+            </tr>"""
+
+    # ── NPD 아이디어 카드
+    npd_cards = ""
+    if claude_result and "npd_ideas" in claude_result:
+        colors = ["#00B4D8","#0096B4","#007A96"]
+        for i, idea in enumerate(claude_result["npd_ideas"][:3]):
+            c = colors[i % 3]
+            npd_cards += f"""
+            <div class="npd-card">
+              <div class="npd-num" style="background:{c}">{i+1}</div>
+              <div class="npd-body">
+                <div class="npd-title">{idea.get('idea','')}</div>
+                <div class="npd-meta">🍹 {idea.get('flavor','')} &nbsp;|&nbsp; 🏷️ {idea.get('concept','')} &nbsp;|&nbsp; 💰 {idea.get('price_range','')}</div>
+                <div class="npd-reason">{idea.get('reason','')}</div>
+              </div>
+            </div>"""
+
+    html = f"""<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI NPD SUITE — 음료 트렌드 분석 리포트</title>
+<style>
+  *{{box-sizing:border-box;margin:0;padding:0}}
+  body{{font-family:'Malgun Gothic','Apple SD Gothic Neo',sans-serif;
+        background:#f0f4f8;color:#1a2535;font-size:14px}}
+  .cover{{background:linear-gradient(135deg,#1E3A5F 0%,#0f1f35 100%);
+           color:#fff;padding:60px 80px;position:relative;overflow:hidden}}
+  .cover::before{{content:'';position:absolute;right:-80px;top:-80px;
+                   width:400px;height:400px;border-radius:50%;
+                   background:rgba(0,180,216,0.08)}}
+  .cover-badge{{display:inline-block;background:#00B4D8;color:#fff;
+                 font-size:11px;font-weight:700;letter-spacing:2px;
+                 padding:4px 12px;border-radius:20px;margin-bottom:16px}}
+  .cover h1{{font-size:36px;font-weight:700;line-height:1.3;margin-bottom:12px}}
+  .cover-sub{{color:#b0c4d8;font-size:15px;margin-bottom:32px}}
+  .cover-meta{{display:flex;gap:40px}}
+  .cover-meta-item label{{display:block;color:#b0c4d8;font-size:11px;
+                            letter-spacing:1px;margin-bottom:4px}}
+  .cover-meta-item span{{font-size:18px;font-weight:600;color:#00B4D8}}
+  .container{{max-width:1100px;margin:0 auto;padding:40px 24px}}
+  .section{{background:#fff;border-radius:12px;margin-bottom:24px;
+             box-shadow:0 2px 12px rgba(0,0,0,0.06);overflow:hidden}}
+  .section-header{{background:#1E3A5F;color:#fff;padding:16px 24px;
+                    display:flex;align-items:center;gap:10px}}
+  .section-header h2{{font-size:16px;font-weight:600}}
+  .section-header .icon{{font-size:18px}}
+  .section-body{{padding:24px}}
+  table{{width:100%;border-collapse:collapse;font-size:13px}}
+  th{{background:#f5f7fa;color:#1E3A5F;font-weight:600;padding:10px 12px;
+      text-align:left;border-bottom:2px solid #e2e8f0}}
+  td{{padding:9px 12px;border-bottom:1px solid #f0f4f8;vertical-align:middle}}
+  tr:hover td{{background:#f8fbff}}
+  a{{color:#00B4D8;text-decoration:none}}
+  a:hover{{text-decoration:underline}}
+  .score{{display:inline-block;background:#1E3A5F;color:#00B4D8;
+           font-weight:700;padding:2px 8px;border-radius:6px;font-size:13px}}
+  .tag{{display:inline-block;background:#e8f4f8;color:#00B4D8;
+         font-size:11px;padding:2px 8px;border-radius:10px;font-weight:600}}
+  .price{{color:#1E3A5F;font-weight:600}}
+  .npd-grid{{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}}
+  .npd-card{{border:1px solid #e2e8f0;border-radius:10px;overflow:hidden}}
+  .npd-num{{background:#00B4D8;color:#fff;font-size:22px;font-weight:700;
+             text-align:center;padding:16px}}
+  .npd-body{{padding:16px}}
+  .npd-title{{font-size:15px;font-weight:700;color:#1E3A5F;margin-bottom:8px}}
+  .npd-meta{{font-size:12px;color:#666;margin-bottom:8px;line-height:1.6}}
+  .npd-reason{{font-size:13px;color:#444;line-height:1.6;
+                background:#f8fbff;border-radius:6px;padding:8px}}
+  .footer{{text-align:center;color:#888;font-size:12px;padding:32px;}}
+  @media(max-width:768px){{
+    .cover{{padding:32px 24px}}
+    .cover h1{{font-size:24px}}
+    .npd-grid{{grid-template-columns:1fr}}
+    .cover-meta{{flex-wrap:wrap;gap:20px}}
+  }}
+</style>
+</head>
+<body>
+<div class="cover">
+  <div class="cover-badge">AI NPD SUITE</div>
+  <h1>네이버 음료 트렌드<br>분석 리포트</h1>
+  <div class="cover-sub">블로그 + 쇼핑 데이터 기반 실시간 시장 인텔리전스</div>
+  <div class="cover-meta">
+    <div class="cover-meta-item"><label>분석 키워드</label><span>{keywords}</span></div>
+    <div class="cover-meta-item"><label>블로그 수집</label><span>{len(blog_df):,}건</span></div>
+    <div class="cover-meta-item"><label>쇼핑 수집</label><span>{len(shop_df):,}개</span></div>
+    <div class="cover-meta-item"><label>생성일</label><span>{today}</span></div>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section">
+    <div class="section-header"><span class="icon">📝</span><h2>블로그 트렌드 — 관련성 점수 TOP 10</h2></div>
+    <div class="section-body">
+      <table>
+        <thead><tr><th>순위</th><th>점수</th><th>유형</th><th>키워드</th><th>제목</th></tr></thead>
+        <tbody>{blog_rows}</tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-header"><span class="icon">🛒</span><h2>쇼핑 트렌드 — RTD음료 TOP 10</h2></div>
+    <div class="section-body">
+      <table>
+        <thead><tr><th>순위</th><th>키워드</th><th>상품명</th><th>브랜드</th><th>개당가격</th><th>100ml당</th><th>유형</th></tr></thead>
+        <tbody>{shop_rows}</tbody>
+      </table>
+    </div>
+  </div>
+
+  {"" if not npd_cards else f'''
+  <div class="section">
+    <div class="section-header"><span class="icon">💡</span><h2>NPD 인사이트 — Claude AI 신제품 아이디어</h2></div>
+    <div class="section-body">
+      <div class="npd-grid">{npd_cards}</div>
+    </div>
+  </div>'''}
+
+</div>
+<div class="footer">AI NPD SUITE &nbsp;|&nbsp; Powered by Naver API · Anthropic Claude &nbsp;|&nbsp; {today}</div>
+</body>
+</html>"""
+    return html
+
 st.title("🍹 AI NPD SUITE — 네이버 음료 트렌드 분석")
 st.caption("네이버 블로그 + 쇼핑 API · Gemini 키워드 추천 · Claude 심층 분석")
 
@@ -1275,171 +1444,3 @@ if html_btn and (not _blog.empty or not _shop.empty):
     st.session_state["html_cache"] = html_str.encode("utf-8")
     st.session_state["html_fname"] = fname_h
     st.success("✅ HTML 생성 완료! 위 ⬇️ HTML 다운로드 버튼을 클릭하세요.")
-# ══════════════════════════════════════════════════════
-# ── HTML 리포트 생성 ──────────────────────────────────
-# ══════════════════════════════════════════════════════
-def build_html_report(blog_df, shop_df, claude_result=None):
-    """BCG 스타일 HTML 리포트 생성 → str 반환"""
-    today = datetime.today().strftime("%Y년 %m월 %d일")
-    keywords = ", ".join(blog_df["키워드"].unique()[:6]) if not blog_df.empty else "-"
-
-    # ── 블로그 TOP10 테이블
-    blog_rows = ""
-    if not blog_df.empty:
-        top = blog_df.nlargest(10, "관련성점수")
-        medals = ["🥇","🥈","🥉","④","⑤","⑥","⑦","⑧","⑨","⑩"]
-        for i, (_, r) in enumerate(top.iterrows()):
-            m = medals[i] if i < len(medals) else str(i+1)
-            blog_rows += f"""
-            <tr>
-              <td>{m}</td>
-              <td><span class="score">{int(r.get('관련성점수',0))}</span></td>
-              <td><span class="tag">{r.get('콘텐츠유형','')}</span></td>
-              <td>{r.get('키워드','')}</td>
-              <td><a href="{r.get('URL','#')}" target="_blank">{str(r.get('제목',''))[:50]}</a></td>
-            </tr>"""
-
-    # ── 쇼핑 TOP10 테이블
-    shop_rows = ""
-    if not shop_df.empty:
-        rtd = shop_df[shop_df["상품유형"]=="RTD음료"].head(10)
-        for i, (_, r) in enumerate(rtd.iterrows()):
-            u = f"{int(r['개당가격(원)']):,}원" if r.get('개당가격(원)') else "-"
-            m = f"{int(r['100ml당가격(원)']):,}원" if r.get('100ml당가격(원)') else "-"
-            shop_rows += f"""
-            <tr>
-              <td>{i+1}</td>
-              <td>{r.get('키워드','')}</td>
-              <td><a href="{r.get('URL','#')}" target="_blank">{str(r.get('상품명',''))[:40]}</a></td>
-              <td>{r.get('브랜드','')}</td>
-              <td class="price">{u}</td>
-              <td class="price">{m}</td>
-              <td><span class="tag">{r.get('상품유형','')}</span></td>
-            </tr>"""
-
-    # ── NPD 아이디어 카드
-    npd_cards = ""
-    if claude_result and "npd_ideas" in claude_result:
-        colors = ["#00B4D8","#0096B4","#007A96"]
-        for i, idea in enumerate(claude_result["npd_ideas"][:3]):
-            c = colors[i % 3]
-            npd_cards += f"""
-            <div class="npd-card">
-              <div class="npd-num" style="background:{c}">{i+1}</div>
-              <div class="npd-body">
-                <div class="npd-title">{idea.get('idea','')}</div>
-                <div class="npd-meta">🍹 {idea.get('flavor','')} &nbsp;|&nbsp; 🏷️ {idea.get('concept','')} &nbsp;|&nbsp; 💰 {idea.get('price_range','')}</div>
-                <div class="npd-reason">{idea.get('reason','')}</div>
-              </div>
-            </div>"""
-
-    html = f"""<!DOCTYPE html>
-<html lang="ko">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AI NPD SUITE — 음료 트렌드 분석 리포트</title>
-<style>
-  *{{box-sizing:border-box;margin:0;padding:0}}
-  body{{font-family:'Malgun Gothic','Apple SD Gothic Neo',sans-serif;
-        background:#f0f4f8;color:#1a2535;font-size:14px}}
-  .cover{{background:linear-gradient(135deg,#1E3A5F 0%,#0f1f35 100%);
-           color:#fff;padding:60px 80px;position:relative;overflow:hidden}}
-  .cover::before{{content:'';position:absolute;right:-80px;top:-80px;
-                   width:400px;height:400px;border-radius:50%;
-                   background:rgba(0,180,216,0.08)}}
-  .cover-badge{{display:inline-block;background:#00B4D8;color:#fff;
-                 font-size:11px;font-weight:700;letter-spacing:2px;
-                 padding:4px 12px;border-radius:20px;margin-bottom:16px}}
-  .cover h1{{font-size:36px;font-weight:700;line-height:1.3;margin-bottom:12px}}
-  .cover-sub{{color:#b0c4d8;font-size:15px;margin-bottom:32px}}
-  .cover-meta{{display:flex;gap:40px}}
-  .cover-meta-item label{{display:block;color:#b0c4d8;font-size:11px;
-                            letter-spacing:1px;margin-bottom:4px}}
-  .cover-meta-item span{{font-size:18px;font-weight:600;color:#00B4D8}}
-  .container{{max-width:1100px;margin:0 auto;padding:40px 24px}}
-  .section{{background:#fff;border-radius:12px;margin-bottom:24px;
-             box-shadow:0 2px 12px rgba(0,0,0,0.06);overflow:hidden}}
-  .section-header{{background:#1E3A5F;color:#fff;padding:16px 24px;
-                    display:flex;align-items:center;gap:10px}}
-  .section-header h2{{font-size:16px;font-weight:600}}
-  .section-header .icon{{font-size:18px}}
-  .section-body{{padding:24px}}
-  table{{width:100%;border-collapse:collapse;font-size:13px}}
-  th{{background:#f5f7fa;color:#1E3A5F;font-weight:600;padding:10px 12px;
-      text-align:left;border-bottom:2px solid #e2e8f0}}
-  td{{padding:9px 12px;border-bottom:1px solid #f0f4f8;vertical-align:middle}}
-  tr:hover td{{background:#f8fbff}}
-  a{{color:#00B4D8;text-decoration:none}}
-  a:hover{{text-decoration:underline}}
-  .score{{display:inline-block;background:#1E3A5F;color:#00B4D8;
-           font-weight:700;padding:2px 8px;border-radius:6px;font-size:13px}}
-  .tag{{display:inline-block;background:#e8f4f8;color:#00B4D8;
-         font-size:11px;padding:2px 8px;border-radius:10px;font-weight:600}}
-  .price{{color:#1E3A5F;font-weight:600}}
-  .npd-grid{{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}}
-  .npd-card{{border:1px solid #e2e8f0;border-radius:10px;overflow:hidden}}
-  .npd-num{{background:#00B4D8;color:#fff;font-size:22px;font-weight:700;
-             text-align:center;padding:16px}}
-  .npd-body{{padding:16px}}
-  .npd-title{{font-size:15px;font-weight:700;color:#1E3A5F;margin-bottom:8px}}
-  .npd-meta{{font-size:12px;color:#666;margin-bottom:8px;line-height:1.6}}
-  .npd-reason{{font-size:13px;color:#444;line-height:1.6;
-                background:#f8fbff;border-radius:6px;padding:8px}}
-  .footer{{text-align:center;color:#888;font-size:12px;padding:32px;}}
-  @media(max-width:768px){{
-    .cover{{padding:32px 24px}}
-    .cover h1{{font-size:24px}}
-    .npd-grid{{grid-template-columns:1fr}}
-    .cover-meta{{flex-wrap:wrap;gap:20px}}
-  }}
-</style>
-</head>
-<body>
-<div class="cover">
-  <div class="cover-badge">AI NPD SUITE</div>
-  <h1>네이버 음료 트렌드<br>분석 리포트</h1>
-  <div class="cover-sub">블로그 + 쇼핑 데이터 기반 실시간 시장 인텔리전스</div>
-  <div class="cover-meta">
-    <div class="cover-meta-item"><label>분석 키워드</label><span>{keywords}</span></div>
-    <div class="cover-meta-item"><label>블로그 수집</label><span>{len(blog_df):,}건</span></div>
-    <div class="cover-meta-item"><label>쇼핑 수집</label><span>{len(shop_df):,}개</span></div>
-    <div class="cover-meta-item"><label>생성일</label><span>{today}</span></div>
-  </div>
-</div>
-
-<div class="container">
-
-  <div class="section">
-    <div class="section-header"><span class="icon">📝</span><h2>블로그 트렌드 — 관련성 점수 TOP 10</h2></div>
-    <div class="section-body">
-      <table>
-        <thead><tr><th>순위</th><th>점수</th><th>유형</th><th>키워드</th><th>제목</th></tr></thead>
-        <tbody>{blog_rows}</tbody>
-      </table>
-    </div>
-  </div>
-
-  <div class="section">
-    <div class="section-header"><span class="icon">🛒</span><h2>쇼핑 트렌드 — RTD음료 TOP 10</h2></div>
-    <div class="section-body">
-      <table>
-        <thead><tr><th>순위</th><th>키워드</th><th>상품명</th><th>브랜드</th><th>개당가격</th><th>100ml당</th><th>유형</th></tr></thead>
-        <tbody>{shop_rows}</tbody>
-      </table>
-    </div>
-  </div>
-
-  {"" if not npd_cards else f'''
-  <div class="section">
-    <div class="section-header"><span class="icon">💡</span><h2>NPD 인사이트 — Claude AI 신제품 아이디어</h2></div>
-    <div class="section-body">
-      <div class="npd-grid">{npd_cards}</div>
-    </div>
-  </div>'''}
-
-</div>
-<div class="footer">AI NPD SUITE &nbsp;|&nbsp; Powered by Naver API · Anthropic Claude &nbsp;|&nbsp; {today}</div>
-</body>
-</html>"""
-    return html
