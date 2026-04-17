@@ -6,6 +6,8 @@ from collections import Counter
 import time
 import json
 import re
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -1120,9 +1122,39 @@ if btn:
                 result = analyze_with_claude(akey, blog_df, shop_df)
             if result:
                 render_claude_cards(result)
+                st.session_state["claude_result"] = result
                 st.download_button(
                     "⬇️ 분석 JSON 다운로드",
                     data=json.dumps(result, ensure_ascii=False, indent=2),
                     file_name=f"claude_report_{datetime.today().strftime('%Y%m%d')}.json",
                     mime="application/json"
                 )
+
+    # ── PPT 생성 ──────────────────────────────────────
+    if not blog_df.empty or not shop_df.empty:
+        st.divider()
+        st.subheader("📊 분석 결과 PPT 다운로드")
+        st.caption("수집된 블로그·쇼핑 데이터와 Claude 분석 결과를 컨설팅 스타일 PPT로 생성합니다.")
+
+        col_ppt1, col_ppt2 = st.columns([1, 4])
+        with col_ppt1:
+            ppt_btn = st.button("📥 PPT 생성하기", use_container_width=True, type="primary")
+
+        if ppt_btn:
+            try:
+                from ppt_gen import build_ppt
+                claude_res = st.session_state.get("claude_result", None)
+                with st.spinner("BCG 스타일 PPT 생성 중... (10~20초)"):
+                    ppt_bytes = build_ppt(blog_df, shop_df, claude_res)
+                fname = f"NPD_트렌드분석_{datetime.today().strftime('%Y%m%d')}.pptx"
+                st.download_button(
+                    label="⬇️ PPT 다운로드",
+                    data=ppt_bytes,
+                    file_name=fname,
+                    mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                )
+                st.success(f"✅ {fname} 생성 완료! 위 버튼으로 다운로드하세요.")
+            except ImportError:
+                st.error("python-pptx 설치 필요: requirements.txt에 python-pptx 추가 후 재배포해주세요.")
+            except Exception as e:
+                st.error(f"PPT 생성 오류: {e}")
