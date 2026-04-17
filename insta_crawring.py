@@ -112,6 +112,41 @@ def get_gemini_keywords(api_key, categories, trends, targets, season):
         return []
 
 
+# ── Gemini 카테고리 → 트렌드/타겟 자동 생성 ──────────
+def get_gemini_conditions(api_key, categories):
+    """선택한 음료 카테고리 기반으로 관련 트렌드방향·타겟소비자를 AI가 생성"""
+    url = (f"https://generativelanguage.googleapis.com/v1/models/"
+           f"gemini-2.5-pro:generateContent?key={api_key}")
+    prompt = f"""당신은 한국 음료 시장 트렌드 전문가입니다.
+아래 음료 카테고리에 가장 관련성 높은 트렌드 방향과 타겟 소비자를 추천해주세요.
+
+[선택된 음료 카테고리]
+{', '.join(categories)}
+
+반드시 아래 JSON 형식으로만 응답하세요. 설명 없이 JSON만.
+{{
+  "trends": ["트렌드1", "트렌드2", "트렌드3", "트렌드4", "트렌드5"],
+  "targets": ["타겟1", "타겟2", "타겟3", "타겟4"]
+}}
+트렌드는 5~8개, 타겟은 3~5개 추천해주세요."""
+
+    payload = {
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "generationConfig": {"maxOutputTokens": 1024, "temperature": 0.6}
+    }
+    try:
+        res  = requests.post(url, json=payload, timeout=20)
+        data = res.json()
+        parts = data.get("candidates",[{}])[0].get("content",{}).get("parts",[])
+        if not parts:
+            return None
+        text = re.sub(r"```json|```","", parts[0]["text"]).strip()
+        return json.loads(text)
+    except Exception as e:
+        st.error(f"Gemini 조건 생성 오류: {e}")
+        return None
+
+
 # ── Claude 분석 ──────────────────────────────────────
 def analyze_with_claude(api_key, blog_df, shop_df):
     blog_sample = blog_df.head(50).to_csv(index=False) if not blog_df.empty else "없음"
@@ -536,22 +571,66 @@ def render_blog_charts(blog_df):
                 "실제 검색량이 아닌 트렌드 방향을 나타냅니다."
             )
 
+        def fetch_datalab_range(keywords_list, time_unit, months,
+                                 client_id, client_secret):
+            """기간 옵션 포함 DataLab 호출"""
+            end_dt   = datetime.now()
+            if time_unit == "month":
+                start_dt = (end_dt.replace(day=1) -
+                            pd.DateOffset(months=months-1)).to_pydatetime()
+            else:
+                weeks = months * 4
+                start_dt = end_dt - timedelta(weeks=weeks)
+            url = "https://openapi.naver.com/v1/datalab/search"
+            headers = {
+                "X-Naver-Client-Id":     client_id,
+                "X-Naver-Client-Secret": client_secret,
+                "Content-Type":          "application/json",
+            }
+            start_str = start_dt.strftime("%Y-%m-%d")
+            end_str   = end_dt.strftime("%Y-%m-%d")
+            all_results = []
+            for batch_start in range(0, len(keywords_list), 5):
+                batch  = keywords_list[batch_start:batch_start+5]
+                groups = [{"groupName": kw, "keywords": [kw]} for kw in batch]
+                body   = {"startDate": start_str, "endDate": end_str,
+                          "timeUnit": time_unit, "keywordGroups": groups}
+                try:
+                    res = requests.post(url, headers=headers,
+                                        data=json.dumps(body), timeout=15)
+                    if res.status_code == 200:
+                        all_results.extend(res.json().get("results", []))
+                    else:
+                        return {"error": f"{res.status_code}: {res.text[:200]}"}
+                    time.sleep(0.3)
+                except Exception as e:
+                    return {"error": str(e)}
+            return {"results": all_results}
+
         if keywords_for_dl and client_id and client_secret:
             with tab_month:
-                cache_key = f"dl_month_{'_'.join(keywords_for_dl[:5])}"
-                if cache_key not in st.session_state:
-                    with st.spinner("DataLab 월별 트렌드 조회 중..."):
-                        st.session_state[cache_key] = fetch_datalab(
-                            keywords_for_dl, "month", client_id, client_secret)
-                render_datalab_chart(st.session_state[cache_key], "month")
+                period_opt = st.radio("기간", ["3개월","6개월"],
+                                      horizontal=True, key="dl_month_period")
+                months_m = 3 if period_opt == "3개월" else 6
+                ck_m = f"dl_month_{months_m}_{'_'.join(keywords_for_dl)}"
+                if ck_m not in st.session_state:
+                    with st.spinner(f"DataLab 월별 {months_m}개월 조회 중..."):
+                        st.session_state[ck_m] = fetch_datalab_range(
+                            keywords_for_dl, "month", months_m,
+                            client_id, client_secret)
+                render_datalab_chart(st.session_state[ck_m], "month")
 
             with tab_week:
-                cache_key_w = f"dl_week_{'_'.join(keywords_for_dl[:5])}"
-                if cache_key_w not in st.session_state:
-                    with st.spinner("DataLab 주별 트렌드 조회 중..."):
-                        st.session_state[cache_key_w] = fetch_datalab(
-                            keywords_for_dl, "week", client_id, client_secret)
-                render_datalab_chart(st.session_state[cache_key_w], "week")
+                period_opt_w = st.radio("기간", ["3개월","6개월"],
+                                        horizontal=True, key="dl_week_period")
+                months_w = 3 if period_opt_w == "3개월" else 6
+                ck_w = f"dl_week_{months_w}_{'_'.join(keywords_for_dl)}"
+                if ck_w not in st.session_state:
+                    with st.spinner(f"DataLab 주별 {months_w}개월 조회 중..."):
+                        st.session_state[ck_w] = fetch_datalab_range(
+                            keywords_for_dl, "week", months_w,
+                            client_id, client_secret)
+                render_datalab_chart(st.session_state[ck_w], "week")
         else:
             with tab_month:
                 st.info("🚀 분석 시작 후 DataLab 트렌드가 표시됩니다.")
@@ -1259,35 +1338,85 @@ with st.sidebar:
     keyword_mode = st.radio("입력 방식", ["✍️ 직접 입력", "🤖 Gemini AI 추천"], horizontal=True)
 
     if keyword_mode == "🤖 Gemini AI 추천":
-        st.markdown("**검색 조건 선택**")
-        sel_categories = st.multiselect("음료 카테고리",
-            ["탄산음료","차(Tea)","과일주스","에너지음료","유제품음료","기능성음료","RTD커피","발효음료"],
-            default=["탄산음료","기능성음료"])
-        sel_trends = st.multiselect("트렌드 방향",
-            ["저당/제로슈거","프리미엄","기능성/건강","비건/식물성","자연/천연","다이어트","피로회복","스트레스완화"],
-            default=["저당/제로슈거","기능성/건강"])
-        sel_targets = st.multiselect("타겟 소비자",
-            ["10~20대","30~40대","50대 이상","운동/헬스","다이어트","직장인","임산부/어린이"],
-            default=["30~40대"])
-        sel_season = st.selectbox("시즌",
-            ["봄(3~5월)","여름(6~8월)","가을(9~11월)","겨울(12~2월)","연중"], index=0)
+        gkey = st.secrets.get("GOOGLE_API_KEY", "")
 
-        if st.button("✨ AI 키워드 추천받기", use_container_width=True):
-            gkey = st.secrets.get("GOOGLE_API_KEY", "")
+        # ── STEP 1: 카테고리 선택 ──────────────────────
+        st.markdown("**① 음료 카테고리 선택**")
+        sel_categories = st.multiselect("",
+            ["탄산음료","차(Tea)","과일주스","에너지음료","유제품음료",
+             "기능성음료","RTD커피","발효음료","스포츠음료","식물성음료"],
+            default=["탄산음료","기능성음료"],
+            label_visibility="collapsed")
+
+        sel_season = st.selectbox("시즌",
+            ["봄(3~5월)","여름(6~8월)","가을(9~11월)","겨울(12~2월)","연중"],
+            index=0)
+
+        if st.button("🔍 AI 트렌드·타겟 생성", use_container_width=True):
+            if not sel_categories:
+                st.warning("카테고리를 1개 이상 선택해주세요.")
+            elif not gkey:
+                st.error("GOOGLE_API_KEY가 Secrets에 없습니다.")
+            else:
+                with st.spinner("AI가 관련 트렌드·타겟 분석 중..."):
+                    cond = get_gemini_conditions(gkey, sel_categories)
+                    if cond:
+                        st.session_state["ai_trends"]  = cond.get("trends", [])
+                        st.session_state["ai_targets"] = cond.get("targets", [])
+                        st.success("트렌드·타겟 생성 완료!")
+
+        # ── STEP 2: AI 생성 트렌드·타겟 선택 ─────────
+        if "ai_trends" in st.session_state:
+            st.markdown("**② 트렌드 방향 선택** (AI 추천)")
+            sel_trends = st.multiselect("",
+                st.session_state["ai_trends"],
+                default=st.session_state["ai_trends"][:3],
+                key="sel_trends_ai",
+                label_visibility="collapsed")
+        else:
+            st.markdown("**② 트렌드 방향** (기본)")
+            sel_trends = st.multiselect("",
+                ["저당/제로슈거","프리미엄","기능성/건강","비건/식물성",
+                 "자연/천연","다이어트","피로회복","스트레스완화"],
+                default=["저당/제로슈거","기능성/건강"],
+                key="sel_trends_default",
+                label_visibility="collapsed")
+
+        if "ai_targets" in st.session_state:
+            st.markdown("**③ 타겟 소비자 선택** (AI 추천)")
+            sel_targets = st.multiselect("",
+                st.session_state["ai_targets"],
+                default=st.session_state["ai_targets"][:2],
+                key="sel_targets_ai",
+                label_visibility="collapsed")
+        else:
+            st.markdown("**③ 타겟 소비자** (기본)")
+            sel_targets = st.multiselect("",
+                ["10~20대","30~40대","50대 이상","운동/헬스",
+                 "다이어트","직장인","임산부/어린이"],
+                default=["30~40대"],
+                key="sel_targets_default",
+                label_visibility="collapsed")
+
+        # ── STEP 3: 키워드 생성 ───────────────────────
+        st.divider()
+        if st.button("✨ AI 검색키워드 추천", use_container_width=True, type="primary"):
             if not gkey:
                 st.error("GOOGLE_API_KEY가 Secrets에 없습니다.")
             else:
-                with st.spinner("Gemini 분석 중..."):
-                    suggested = get_gemini_keywords(gkey, sel_categories, sel_trends, sel_targets, sel_season)
+                with st.spinner("키워드 생성 중..."):
+                    suggested = get_gemini_keywords(
+                        gkey, sel_categories, sel_trends, sel_targets, sel_season)
                     if suggested:
                         st.session_state["ai_keyword_list"] = suggested
-                        st.success(f"{len(suggested)}개 키워드 추천 완료!")
+                        st.success(f"{len(suggested)}개 키워드 생성 완료!")
 
+        # ── STEP 4: 키워드 선택·수정 ──────────────────
         if "ai_keyword_list" in st.session_state:
-            st.markdown("**추천 키워드 선택 (체크 또는 직접 수정)**")
+            st.markdown("**④ 키워드 선택 및 수정**")
             selected_kws = []
             for i, kw in enumerate(st.session_state["ai_keyword_list"]):
-                c1, c2 = st.columns([0.15, 0.85])
+                c1, c2 = st.columns([0.12, 0.88])
                 with c1:
                     checked = st.checkbox("", value=True, key=f"kw_chk_{i}")
                 with c2:
@@ -1295,18 +1424,17 @@ with st.sidebar:
                                            label_visibility="collapsed")
                 if checked and edited.strip():
                     selected_kws.append(edited.strip())
-            # 추가 직접입력란
-            extra = st.text_input("➕ 키워드 직접 추가 (콤마 구분)",
-                                  value="", placeholder="예: 단백질음료, 저칼로리음료",
+            extra = st.text_input("➕ 직접 추가 (콤마 구분)",
+                                  value="", placeholder="단백질음료, 저칼로리음료",
                                   key="kw_extra")
             if extra.strip():
                 selected_kws += [k.strip() for k in extra.split(",") if k.strip()]
-            raw_keywords = ", ".join(dict.fromkeys(selected_kws))  # 중복 제거
+            raw_keywords = ", ".join(dict.fromkeys(selected_kws))
             if raw_keywords:
-                st.caption(f"선택된 키워드 {len(selected_kws)}개: `{raw_keywords}`")
+                st.caption(f"✅ {len(selected_kws)}개: `{raw_keywords}`")
         else:
             raw_keywords = ""
-            st.caption("버튼을 눌러 키워드를 추천받으세요.")
+            st.caption("위 버튼을 순서대로 눌러주세요.")
     else:
         raw_keywords = st.text_input("키워드 (콤마 구분)", value="저당음료, 제로음료, 기능성음료")
 
