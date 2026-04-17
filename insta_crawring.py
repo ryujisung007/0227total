@@ -373,9 +373,9 @@ def render_blog_charts(blog_df):
               margin=dict(l=10, r=10, t=45, b=10))
 
     now = datetime.now()
-    three_months_ago = now - timedelta(days=90)
+    six_months_ago = now - timedelta(days=183)   # 6개월 = 약 183일
     df_dated  = blog_df.dropna(subset=["날짜"]).copy()
-    df_recent = df_dated[df_dated["날짜"] >= three_months_ago].copy()
+    df_recent = df_dated[df_dated["날짜"] >= six_months_ago].copy()
 
     # ━━ Row 1: 점수 분포 + 콘텐츠 유형 파이 ━━
     col1, col2 = st.columns(2)
@@ -420,21 +420,89 @@ def render_blog_charts(blog_df):
         if not df_recent.empty:
             df_recent = df_recent.copy()
             df_recent["월"] = df_recent["날짜"].dt.strftime("%Y-%m")
-            monthly = df_recent.groupby(["월","키워드"]).agg(
+
+            # 6개월 전체 월 목록 생성 (데이터 없는 달도 0으로 표시)
+            all_months = pd.date_range(
+                start=six_months_ago.replace(day=1),
+                end=now,
+                freq="MS"
+            ).strftime("%Y-%m").tolist()
+            keywords_list = df_recent["키워드"].unique().tolist()
+            full_idx = pd.MultiIndex.from_product(
+                [all_months, keywords_list], names=["월","키워드"]
+            )
+            monthly_raw = df_recent.groupby(["월","키워드"]).agg(
                 게시글수=("제목","count"),
                 평균점수=("관련성점수","mean")
-            ).reset_index()
-            fig3 = px.line(monthly, x="월", y="게시글수", color="키워드",
-                           markers=True,
-                           title="최근 3개월 월별 언급 추이",
-                           color_discrete_sequence=COLORS,
-                           hover_data={"평균점수":":.1f"})
-            fig3.update_traces(line_width=2.5, marker_size=9)
-            fig3.update_layout(height=380, xaxis_title="",
-                               yaxis_title="게시글 수", legend_title="키워드", **LB)
+            )
+            monthly = monthly_raw.reindex(full_idx, fill_value=0).reset_index()
+            # 평균점수 0인 곳(데이터없는달)은 NaN 처리
+            monthly.loc[monthly["게시글수"] == 0, "평균점수"] = None
+
+            # 월 표시를 "10월","11월"... 형태로 변환
+            monthly["월표시"] = pd.to_datetime(monthly["월"]).dt.strftime("%-m월")
+
+            fig3 = go.Figure()
+            for i, kw in enumerate(keywords_list):
+                df_kw = monthly[monthly["키워드"] == kw]
+                color = COLORS[i % len(COLORS)]
+                fig3.add_trace(go.Scatter(
+                    x=df_kw["월표시"],
+                    y=df_kw["게시글수"],
+                    mode="lines+markers+text",
+                    name=kw,
+                    line=dict(width=2.5, color=color),
+                    marker=dict(size=9, color=color),
+                    text=df_kw["게시글수"].where(df_kw["게시글수"] > 0),
+                    textposition="top center",
+                    textfont=dict(size=11),
+                    hovertemplate=(
+                        f"<b>{kw}</b><br>"
+                        "월: %{x}<br>"
+                        "게시글수: %{y}건<br>"
+                        "평균점수: %{customdata:.1f}<extra></extra>"
+                    ),
+                    customdata=df_kw["평균점수"].fillna(0),
+                ))
+
+            fig3.update_layout(
+                title=dict(
+                    text=f"최근 6개월 월별 언급 추이 "
+                         f"({pd.Timestamp(six_months_ago).strftime('%Y.%m')} ~ "
+                         f"{now.strftime('%Y.%m')})",
+                    font=dict(size=14)
+                ),
+                height=420,
+                xaxis=dict(
+                    title="",
+                    tickmode="array",
+                    tickvals=monthly["월표시"].unique().tolist(),
+                    ticktext=monthly["월표시"].unique().tolist(),
+                    tickfont=dict(size=13),
+                    showgrid=True,
+                    gridcolor="rgba(200,200,200,0.3)",
+                ),
+                yaxis=dict(
+                    title="게시글 수",
+                    showgrid=True,
+                    gridcolor="rgba(200,200,200,0.3)",
+                    rangemode="tozero",
+                ),
+                legend=dict(
+                    title="키워드",
+                    orientation="h",
+                    yanchor="bottom",
+                    y=1.02,
+                    xanchor="left",
+                    x=0,
+                    font=dict(size=11),
+                ),
+                hovermode="x unified",
+                **LB
+            )
             st.plotly_chart(fig3, use_container_width=True)
         else:
-            st.info("최근 3개월 데이터가 없습니다.")
+            st.info("최근 6개월 데이터가 없습니다. 네이버 API 수집 건수를 늘려보세요.")
 
     with col4:
         # 관련성점수 TOP15 게시글 테이블
@@ -854,7 +922,7 @@ if st.session_state["show_intro"]:
     <ul style="margin:0;padding-left:16px;font-size:12px;color:#333;line-height:1.8">
       <li>노이즈 자동 필터링<br><span style="color:#888">(여행·의료·부동산 제외)</span></li>
       <li>관련성 점수 자동 산정<br><span style="color:#888">(신제품/카페/트렌드/후기)</span></li>
-      <li>최근 3개월 월별 추이</li>
+      <li>최근 6개월 월별 추이</li>
       <li>콘텐츠 유형 파이차트</li>
       <li>TOP 15 게시글 순위</li>
     </ul>
