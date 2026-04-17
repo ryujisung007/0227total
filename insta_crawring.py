@@ -202,6 +202,9 @@ EXCLUDE_KW = [
     "전자담배","액상","니코틴","vape","pod","팟",
     "반려","강아지","고양이","펫","pet",
     "공연","전시","뮤지컬","콘서트",
+    # ── 커피 중심 카페 블로그 제외 ──
+    "아메리카노","에스프레소","콜드브루","드립커피","핸드드립",
+    "원두","로스팅","커피원두","스페셜티","싱글오리진",
 ]
 
 INCLUDE_KW = [
@@ -421,106 +424,147 @@ def render_blog_charts(blog_df):
     with col3:
         if not df_recent.empty:
             df_recent = df_recent.copy()
-            df_recent["월"] = df_recent["날짜"].dt.strftime("%Y-%m")
 
-            # ── 실제 데이터 있는 월만 사용 (빈 달 제거)
-            keywords_list = df_recent["키워드"].unique().tolist()
-            monthly = df_recent.groupby(["월","키워드"]).agg(
-                게시글수=("제목","count"),
-                평균점수=("관련성점수","mean")
-            ).reset_index()
-
-            # 실제 수집 기간 계산
+            # ── 실제 수집 기간
             actual_min = df_recent["날짜"].min()
             actual_max = df_recent["날짜"].max()
-            period_str = (f"{actual_min.strftime('%Y.%m')} ~ "
-                          f"{actual_max.strftime('%Y.%m')}")
+            period_str = (f"{actual_min.strftime('%Y.%m.%d')} ~ "
+                          f"{actual_max.strftime('%Y.%m.%d')}")
+            keywords_list = df_recent["키워드"].unique().tolist()
 
-            # 월을 "YYYY-MM" 정렬 후 "M월" 표시로 변환
-            monthly = monthly.sort_values("월")
-            # 연도가 바뀌는 경우 "1월(26)" 식으로 표시
-            def fmt_month(ym):
-                dt = pd.to_datetime(ym)
-                if dt.year != now.year:
-                    return f"{dt.month}월({str(dt.year)[2:]})"
-                return f"{dt.month}월"
-            month_order = sorted(monthly["월"].unique())
-            month_label  = {m: fmt_month(m) for m in month_order}
-            monthly["월표시"] = monthly["월"].map(month_label)
+            # ── 탭: 주차별 / 일별 선택
+            tab_week, tab_day = st.tabs(["📅 주차별 (최근 2개월)", "📆 일별 (최근 30일)"])
 
-            fig3 = go.Figure()
-            for i, kw in enumerate(keywords_list):
-                df_kw = monthly[monthly["키워드"] == kw].copy()
-                # 없는 달은 건너뜀 (0 채우지 않음 → 선 끊김 대신 실제만 표시)
-                color = COLORS[i % len(COLORS)]
-                fig3.add_trace(go.Scatter(
-                    x=df_kw["월표시"],
-                    y=df_kw["게시글수"],
-                    mode="lines+markers+text",
-                    name=kw,
-                    line=dict(width=2.5, color=color),
-                    marker=dict(size=10, color=color,
-                                line=dict(width=1.5, color="white")),
-                    text=df_kw["게시글수"],
-                    textposition="top center",
-                    textfont=dict(size=12, color=color),
-                    hovertemplate=(
-                        f"<b>{kw}</b><br>"
-                        "월: %{x}<br>"
-                        "게시글수: %{y}건<br>"
-                        "평균점수: %{customdata:.1f}점<extra></extra>"
+            # ── 주차별 탭 ──────────────────────────
+            with tab_week:
+                two_months_ago = now - timedelta(days=60)
+                df_w = df_recent[df_recent["날짜"] >= two_months_ago].copy()
+
+                # 주차 컬럼 생성
+                df_w["주차키"] = df_w["날짜"].dt.to_period("W").apply(
+                    lambda p: p.start_time
+                )
+                df_w["주차표시"] = df_w["날짜"].apply(
+                    lambda d: f"{d.month}/{d.day}주"
+                    if d.weekday() == 0
+                    else d - timedelta(days=d.weekday())
+                )
+                # 실제 월요일 기준으로 통일
+                df_w["주차표시"] = df_w["주차키"].apply(
+                    lambda d: f"{d.month}/{d.day}"
+                )
+
+                # 2개월 전체 주 목록 생성
+                all_weeks = pd.date_range(
+                    start=two_months_ago - timedelta(days=two_months_ago.weekday()),
+                    end=now, freq="W-MON"
+                )
+                week_labels = [f"{w.month}/{w.day}" for w in all_weeks]
+                full_week_idx = pd.MultiIndex.from_product(
+                    [week_labels, keywords_list], names=["주차표시","키워드"]
+                )
+                weekly_raw = df_w.groupby(["주차표시","키워드"]).agg(
+                    게시글수=("제목","count"),
+                    평균점수=("관련성점수","mean")
+                )
+                weekly = weekly_raw.reindex(full_week_idx, fill_value=0).reset_index()
+                weekly.loc[weekly["게시글수"]==0, "평균점수"] = None
+
+                fig_w = go.Figure()
+                for i, kw in enumerate(keywords_list):
+                    df_kw = weekly[weekly["키워드"]==kw]
+                    color = COLORS[i % len(COLORS)]
+                    fig_w.add_trace(go.Bar(
+                        x=df_kw["주차표시"],
+                        y=df_kw["게시글수"],
+                        name=kw,
+                        marker_color=color,
+                        opacity=0.85,
+                        hovertemplate=(
+                            f"<b>{kw}</b><br>주시작: %{{x}}<br>"
+                            "게시글수: %{y}건<extra></extra>"
+                        ),
+                    ))
+                fig_w.update_layout(
+                    title=dict(text="주차별 언급량 (최근 2개월)", font=dict(size=13)),
+                    barmode="group",
+                    height=380,
+                    xaxis=dict(title="주 시작일(월/일)", tickfont=dict(size=11),
+                               tickangle=-45, showgrid=False),
+                    yaxis=dict(title="게시글 수", rangemode="tozero",
+                               showgrid=True, gridcolor="rgba(200,200,200,0.25)"),
+                    legend=dict(orientation="h", y=-0.28, x=0.5,
+                                xanchor="center", font=dict(size=10),
+                                bgcolor="rgba(0,0,0,0)"),
+                    hovermode="x unified",
+                    margin=dict(l=10,r=10,t=45,b=90),
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    paper_bgcolor="rgba(0,0,0,0)",
+                )
+                st.plotly_chart(fig_w, use_container_width=True)
+                if df_w.empty:
+                    st.info("최근 2개월 데이터가 없습니다.")
+
+            # ── 일별 탭 ──────────────────────────
+            with tab_day:
+                thirty_ago = now - timedelta(days=30)
+                df_d = df_recent[df_recent["날짜"] >= thirty_ago].copy()
+                df_d["일표시"] = df_d["날짜"].dt.strftime("%m/%d")
+
+                # 30일 전체 날짜 목록
+                all_days = pd.date_range(start=thirty_ago, end=now, freq="D")
+                day_labels = [d.strftime("%m/%d") for d in all_days]
+                full_day_idx = pd.MultiIndex.from_product(
+                    [day_labels, keywords_list], names=["일표시","키워드"]
+                )
+                daily_raw = df_d.groupby(["일표시","키워드"]).agg(
+                    게시글수=("제목","count"),
+                ).rename(columns={"게시글수":"게시글수"})
+                daily = daily_raw.reindex(full_day_idx, fill_value=0).reset_index()
+
+                fig_d = go.Figure()
+                for i, kw in enumerate(keywords_list):
+                    df_kw = daily[daily["키워드"]==kw]
+                    color = COLORS[i % len(COLORS)]
+                    fig_d.add_trace(go.Bar(
+                        x=df_kw["일표시"],
+                        y=df_kw["게시글수"],
+                        name=kw,
+                        marker_color=color,
+                        opacity=0.85,
+                        hovertemplate=f"<b>{kw}</b><br>날짜: %{{x}}<br>게시글수: %{{y}}건<extra></extra>",
+                    ))
+                fig_d.update_layout(
+                    title=dict(text="일별 언급량 (최근 30일)", font=dict(size=13)),
+                    barmode="stack",
+                    height=380,
+                    xaxis=dict(
+                        title="날짜",
+                        tickmode="array",
+                        tickvals=day_labels[::3],   # 3일 간격으로 표시
+                        ticktext=day_labels[::3],
+                        tickangle=-45,
+                        tickfont=dict(size=10),
+                        showgrid=False,
                     ),
-                    customdata=df_kw["평균점수"],
-                    connectgaps=False,
-                ))
+                    yaxis=dict(title="게시글 수", rangemode="tozero",
+                               showgrid=True, gridcolor="rgba(200,200,200,0.25)"),
+                    legend=dict(orientation="h", y=-0.28, x=0.5,
+                                xanchor="center", font=dict(size=10),
+                                bgcolor="rgba(0,0,0,0)"),
+                    hovermode="x unified",
+                    margin=dict(l=10,r=10,t=45,b=90),
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    paper_bgcolor="rgba(0,0,0,0)",
+                )
+                st.plotly_chart(fig_d, use_container_width=True)
+                if df_d.empty:
+                    st.info("최근 30일 데이터가 없습니다.")
 
-            fig3.update_layout(
-                title=dict(
-                    text=(f"수집 데이터 기간별 월별 언급량  "
-                          f"<span style='font-size:12px;color:#888'>({period_str})</span>"),
-                    font=dict(size=14),
-                    x=0, xanchor="left",
-                    pad=dict(t=10)
-                ),
-                height=440,
-                xaxis=dict(
-                    title="",
-                    categoryorder="array",
-                    categoryarray=[month_label[m] for m in month_order],
-                    tickfont=dict(size=13),
-                    showgrid=True,
-                    gridcolor="rgba(200,200,200,0.25)",
-                    tickangle=0,
-                ),
-                yaxis=dict(
-                    title="게시글 수",
-                    showgrid=True,
-                    gridcolor="rgba(200,200,200,0.25)",
-                    rangemode="tozero",
-                    tickfont=dict(size=12),
-                ),
-                legend=dict(
-                    title="",
-                    orientation="h",
-                    yanchor="top",
-                    y=-0.18,          # 차트 아래로 내림 → 제목과 겹침 없음
-                    xanchor="center",
-                    x=0.5,
-                    font=dict(size=11),
-                    bgcolor="rgba(0,0,0,0)",
-                ),
-                hovermode="x unified",
-                margin=dict(l=10, r=10, t=55, b=80),  # 하단 범례 공간 확보
-                plot_bgcolor="rgba(0,0,0,0)",
-                paper_bgcolor="rgba(0,0,0,0)",
-            )
-            # 데이터 수집 안내 메시지
             st.caption(
-                f"📌 네이버 API는 최신순 최대 100건만 반환해요. "
-                f"실제 수집 기간: **{period_str}** "
-                f"(총 {len(df_recent)}건)"
+                f"📌 네이버 API 실제 수집 기간: **{period_str}** (총 {len(df_recent)}건) "
+                f"— 데이터 밀도가 낮은 구간은 0으로 표시됩니다."
             )
-            st.plotly_chart(fig3, use_container_width=True)
         else:
             st.info("수집된 날짜 데이터가 없습니다.")
 
@@ -1148,55 +1192,244 @@ if btn:
                     mime="application/json"
                 )
 
-    # ── PPT 생성 ──────────────────────────────────────
+    # ── 리포트 출력 ──────────────────────────────────
     if not blog_df.empty or not shop_df.empty:
-        # session_state에 데이터 저장 (버튼 재클릭 후에도 유지)
         st.session_state["blog_df_ppt"] = blog_df
         st.session_state["shop_df_ppt"] = shop_df
 
     st.divider()
-    st.subheader("📊 분석 결과 PPT 다운로드")
-    st.caption("수집된 블로그·쇼핑 데이터를 BCG/Deloitte 컨설팅 스타일 PPT로 생성합니다. (python-pptx 자동 생성)")
+    st.subheader("📤 분석 결과 리포트 다운로드")
+    st.caption("수집된 블로그·쇼핑 데이터를 PPT 또는 HTML 리포트로 생성합니다.")
 
-    col_ppt1, col_ppt2, col_ppt3 = st.columns([1.2, 1.5, 4])
-    with col_ppt1:
-        ppt_btn = st.button("📥 PPT 생성하기", use_container_width=True, type="primary")
-    with col_ppt2:
-        # 이미 생성된 PPT가 있으면 바로 다운로드 버튼 표시
+    _blog = st.session_state.get("blog_df_ppt", pd.DataFrame())
+    _shop = st.session_state.get("shop_df_ppt", pd.DataFrame())
+    claude_res = st.session_state.get("claude_result", None)
+
+    col_r1, col_r2, col_r3 = st.columns([1, 1, 3])
+
+    # ── PPT 버튼
+    with col_r1:
+        ppt_btn = st.button("📥 PPT 생성", use_container_width=True, type="primary")
+    # ── HTML 버튼
+    with col_r2:
+        html_btn = st.button("🌐 HTML 생성", use_container_width=True)
+
+    # ── 기존 캐시 다운로드 버튼 (버튼 누른 후 사라지지 않게)
+    c1, c2 = st.columns(2)
+    with c1:
         if "ppt_bytes_cache" in st.session_state:
             st.download_button(
-                label="⬇️ 바로 다운로드",
+                "⬇️ PPT 다운로드",
                 data=st.session_state["ppt_bytes_cache"],
-                file_name=st.session_state.get("ppt_fname", "report.pptx"),
+                file_name=st.session_state.get("ppt_fname","report.pptx"),
                 mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
                 use_container_width=True,
             )
+    with c2:
+        if "html_cache" in st.session_state:
+            st.download_button(
+                "⬇️ HTML 다운로드",
+                data=st.session_state["html_cache"],
+                file_name=st.session_state.get("html_fname","report.html"),
+                mime="text/html",
+                use_container_width=True,
+            )
 
-    if ppt_btn:
-        _blog = st.session_state.get("blog_df_ppt", pd.DataFrame())
-        _shop = st.session_state.get("shop_df_ppt", pd.DataFrame())
-        if _blog.empty and _shop.empty:
-            st.warning("⚠️ 먼저 분석 시작 버튼을 눌러 데이터를 수집해주세요.")
-        else:
-            try:
-                from ppt_gen import build_ppt
-                claude_res = st.session_state.get("claude_result", None)
-                with st.spinner("PPT 생성 중... (10~20초)"):
-                    ppt_bytes = build_ppt(_blog, _shop, claude_res)
-                fname = f"NPD_트렌드분석_{datetime.today().strftime('%Y%m%d')}.pptx"
-                # session_state에 저장 → 페이지 재실행 후에도 유지
-                st.session_state["ppt_bytes_cache"] = ppt_bytes
-                st.session_state["ppt_fname"] = fname
-                st.success(f"✅ PPT 생성 완료! 아래 버튼으로 다운로드하세요.")
-                st.download_button(
-                    label="⬇️ PPT 다운로드",
-                    data=ppt_bytes,
-                    file_name=fname,
-                    mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                    type="primary",
-                    use_container_width=False,
-                )
-            except ImportError:
-                st.error("python-pptx 미설치 — requirements.txt에 python-pptx 추가 후 재배포해주세요.")
-            except Exception as e:
-                st.error(f"PPT 생성 오류: {e}")
+    if _blog.empty and _shop.empty and (ppt_btn or html_btn):
+        st.warning("⚠️ 먼저 🚀 분석 시작을 눌러 데이터를 수집해주세요.")
+
+    # ── PPT 생성 처리
+    if ppt_btn and (not _blog.empty or not _shop.empty):
+        try:
+            from ppt_gen import build_ppt
+            with st.spinner("PPT 생성 중..."):
+                ppt_bytes = build_ppt(_blog, _shop, claude_res)
+            fname = f"NPD_트렌드분석_{datetime.today().strftime('%Y%m%d')}.pptx"
+            st.session_state["ppt_bytes_cache"] = ppt_bytes
+            st.session_state["ppt_fname"] = fname
+            st.success("✅ PPT 생성 완료! 위 ⬇️ PPT 다운로드 버튼을 클릭하세요.")
+            st.rerun()
+        except ImportError:
+            st.error("requirements.txt에 python-pptx 추가 후 재배포해주세요.")
+        except Exception as e:
+            st.error(f"PPT 오류: {e}")
+
+    # ── HTML 생성 처리
+    if html_btn and (not _blog.empty or not _shop.empty):
+        with st.spinner("HTML 리포트 생성 중..."):
+            html_str = build_html_report(_blog, _shop, claude_res)
+        fname_h = f"NPD_트렌드분석_{datetime.today().strftime('%Y%m%d')}.html"
+        st.session_state["html_cache"] = html_str.encode("utf-8")
+        st.session_state["html_fname"] = fname_h
+        st.success("✅ HTML 생성 완료! 위 ⬇️ HTML 다운로드 버튼을 클릭하세요.")
+        st.rerun()
+
+
+# ══════════════════════════════════════════════════════
+# ── HTML 리포트 생성 ──────────────────────────────────
+# ══════════════════════════════════════════════════════
+def build_html_report(blog_df, shop_df, claude_result=None):
+    """BCG 스타일 HTML 리포트 생성 → str 반환"""
+    today = datetime.today().strftime("%Y년 %m월 %d일")
+    keywords = ", ".join(blog_df["키워드"].unique()[:6]) if not blog_df.empty else "-"
+
+    # ── 블로그 TOP10 테이블
+    blog_rows = ""
+    if not blog_df.empty:
+        top = blog_df.nlargest(10, "관련성점수")
+        medals = ["🥇","🥈","🥉","④","⑤","⑥","⑦","⑧","⑨","⑩"]
+        for i, (_, r) in enumerate(top.iterrows()):
+            m = medals[i] if i < len(medals) else str(i+1)
+            blog_rows += f"""
+            <tr>
+              <td>{m}</td>
+              <td><span class="score">{int(r.get('관련성점수',0))}</span></td>
+              <td><span class="tag">{r.get('콘텐츠유형','')}</span></td>
+              <td>{r.get('키워드','')}</td>
+              <td><a href="{r.get('URL','#')}" target="_blank">{str(r.get('제목',''))[:50]}</a></td>
+            </tr>"""
+
+    # ── 쇼핑 TOP10 테이블
+    shop_rows = ""
+    if not shop_df.empty:
+        rtd = shop_df[shop_df["상품유형"]=="RTD음료"].head(10)
+        for i, (_, r) in enumerate(rtd.iterrows()):
+            u = f"{int(r['개당가격(원)']):,}원" if r.get('개당가격(원)') else "-"
+            m = f"{int(r['100ml당가격(원)']):,}원" if r.get('100ml당가격(원)') else "-"
+            shop_rows += f"""
+            <tr>
+              <td>{i+1}</td>
+              <td>{r.get('키워드','')}</td>
+              <td><a href="{r.get('URL','#')}" target="_blank">{str(r.get('상품명',''))[:40]}</a></td>
+              <td>{r.get('브랜드','')}</td>
+              <td class="price">{u}</td>
+              <td class="price">{m}</td>
+              <td><span class="tag">{r.get('상품유형','')}</span></td>
+            </tr>"""
+
+    # ── NPD 아이디어 카드
+    npd_cards = ""
+    if claude_result and "npd_ideas" in claude_result:
+        colors = ["#00B4D8","#0096B4","#007A96"]
+        for i, idea in enumerate(claude_result["npd_ideas"][:3]):
+            c = colors[i % 3]
+            npd_cards += f"""
+            <div class="npd-card">
+              <div class="npd-num" style="background:{c}">{i+1}</div>
+              <div class="npd-body">
+                <div class="npd-title">{idea.get('idea','')}</div>
+                <div class="npd-meta">🍹 {idea.get('flavor','')} &nbsp;|&nbsp; 🏷️ {idea.get('concept','')} &nbsp;|&nbsp; 💰 {idea.get('price_range','')}</div>
+                <div class="npd-reason">{idea.get('reason','')}</div>
+              </div>
+            </div>"""
+
+    html = f"""<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI NPD SUITE — 음료 트렌드 분석 리포트</title>
+<style>
+  *{{box-sizing:border-box;margin:0;padding:0}}
+  body{{font-family:'Malgun Gothic','Apple SD Gothic Neo',sans-serif;
+        background:#f0f4f8;color:#1a2535;font-size:14px}}
+  .cover{{background:linear-gradient(135deg,#1E3A5F 0%,#0f1f35 100%);
+           color:#fff;padding:60px 80px;position:relative;overflow:hidden}}
+  .cover::before{{content:'';position:absolute;right:-80px;top:-80px;
+                   width:400px;height:400px;border-radius:50%;
+                   background:rgba(0,180,216,0.08)}}
+  .cover-badge{{display:inline-block;background:#00B4D8;color:#fff;
+                 font-size:11px;font-weight:700;letter-spacing:2px;
+                 padding:4px 12px;border-radius:20px;margin-bottom:16px}}
+  .cover h1{{font-size:36px;font-weight:700;line-height:1.3;margin-bottom:12px}}
+  .cover-sub{{color:#b0c4d8;font-size:15px;margin-bottom:32px}}
+  .cover-meta{{display:flex;gap:40px}}
+  .cover-meta-item label{{display:block;color:#b0c4d8;font-size:11px;
+                            letter-spacing:1px;margin-bottom:4px}}
+  .cover-meta-item span{{font-size:18px;font-weight:600;color:#00B4D8}}
+  .container{{max-width:1100px;margin:0 auto;padding:40px 24px}}
+  .section{{background:#fff;border-radius:12px;margin-bottom:24px;
+             box-shadow:0 2px 12px rgba(0,0,0,0.06);overflow:hidden}}
+  .section-header{{background:#1E3A5F;color:#fff;padding:16px 24px;
+                    display:flex;align-items:center;gap:10px}}
+  .section-header h2{{font-size:16px;font-weight:600}}
+  .section-header .icon{{font-size:18px}}
+  .section-body{{padding:24px}}
+  table{{width:100%;border-collapse:collapse;font-size:13px}}
+  th{{background:#f5f7fa;color:#1E3A5F;font-weight:600;padding:10px 12px;
+      text-align:left;border-bottom:2px solid #e2e8f0}}
+  td{{padding:9px 12px;border-bottom:1px solid #f0f4f8;vertical-align:middle}}
+  tr:hover td{{background:#f8fbff}}
+  a{{color:#00B4D8;text-decoration:none}}
+  a:hover{{text-decoration:underline}}
+  .score{{display:inline-block;background:#1E3A5F;color:#00B4D8;
+           font-weight:700;padding:2px 8px;border-radius:6px;font-size:13px}}
+  .tag{{display:inline-block;background:#e8f4f8;color:#00B4D8;
+         font-size:11px;padding:2px 8px;border-radius:10px;font-weight:600}}
+  .price{{color:#1E3A5F;font-weight:600}}
+  .npd-grid{{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}}
+  .npd-card{{border:1px solid #e2e8f0;border-radius:10px;overflow:hidden}}
+  .npd-num{{background:#00B4D8;color:#fff;font-size:22px;font-weight:700;
+             text-align:center;padding:16px}}
+  .npd-body{{padding:16px}}
+  .npd-title{{font-size:15px;font-weight:700;color:#1E3A5F;margin-bottom:8px}}
+  .npd-meta{{font-size:12px;color:#666;margin-bottom:8px;line-height:1.6}}
+  .npd-reason{{font-size:13px;color:#444;line-height:1.6;
+                background:#f8fbff;border-radius:6px;padding:8px}}
+  .footer{{text-align:center;color:#888;font-size:12px;padding:32px;}}
+  @media(max-width:768px){{
+    .cover{{padding:32px 24px}}
+    .cover h1{{font-size:24px}}
+    .npd-grid{{grid-template-columns:1fr}}
+    .cover-meta{{flex-wrap:wrap;gap:20px}}
+  }}
+</style>
+</head>
+<body>
+<div class="cover">
+  <div class="cover-badge">AI NPD SUITE</div>
+  <h1>네이버 음료 트렌드<br>분석 리포트</h1>
+  <div class="cover-sub">블로그 + 쇼핑 데이터 기반 실시간 시장 인텔리전스</div>
+  <div class="cover-meta">
+    <div class="cover-meta-item"><label>분석 키워드</label><span>{keywords}</span></div>
+    <div class="cover-meta-item"><label>블로그 수집</label><span>{len(blog_df):,}건</span></div>
+    <div class="cover-meta-item"><label>쇼핑 수집</label><span>{len(shop_df):,}개</span></div>
+    <div class="cover-meta-item"><label>생성일</label><span>{today}</span></div>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="section">
+    <div class="section-header"><span class="icon">📝</span><h2>블로그 트렌드 — 관련성 점수 TOP 10</h2></div>
+    <div class="section-body">
+      <table>
+        <thead><tr><th>순위</th><th>점수</th><th>유형</th><th>키워드</th><th>제목</th></tr></thead>
+        <tbody>{blog_rows}</tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-header"><span class="icon">🛒</span><h2>쇼핑 트렌드 — RTD음료 TOP 10</h2></div>
+    <div class="section-body">
+      <table>
+        <thead><tr><th>순위</th><th>키워드</th><th>상품명</th><th>브랜드</th><th>개당가격</th><th>100ml당</th><th>유형</th></tr></thead>
+        <tbody>{shop_rows}</tbody>
+      </table>
+    </div>
+  </div>
+
+  {"" if not npd_cards else f'''
+  <div class="section">
+    <div class="section-header"><span class="icon">💡</span><h2>NPD 인사이트 — Claude AI 신제품 아이디어</h2></div>
+    <div class="section-body">
+      <div class="npd-grid">{npd_cards}</div>
+    </div>
+  </div>'''}
+
+</div>
+<div class="footer">AI NPD SUITE &nbsp;|&nbsp; Powered by Naver API · Anthropic Claude &nbsp;|&nbsp; {today}</div>
+</body>
+</html>"""
+    return html
