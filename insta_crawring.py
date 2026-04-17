@@ -222,6 +222,50 @@ SCORE_RULES = [
     (["음료","에이드","라떼","스무디","주스","탄산"],      10, "음료직접"),
 ]
 
+# ── 플레이버 상수 ─────────────────────────────────────
+FLAVOR_KW = {
+    "레몬":       ["레몬","lemon"],
+    "자몽":       ["자몽","grapefruit"],
+    "유자":       ["유자","yuzu"],
+    "라임":       ["라임","lime"],
+    "복숭아":     ["복숭아","피치","peach"],
+    "딸기":       ["딸기","스트로베리","strawberry"],
+    "망고":       ["망고","mango"],
+    "파인애플":   ["파인애플","pineapple"],
+    "블루베리":   ["블루베리","blueberry"],
+    "사과":       ["사과","청사과","apple"],
+    "포도":       ["포도","grape","머스캣"],
+    "히비스커스": ["히비스커스","hibiscus"],
+    "콤부차":     ["콤부차","kombucha"],
+    "녹차":       ["녹차","그린티","matcha","말차"],
+    "얼그레이":   ["얼그레이","earl grey"],
+    "루이보스":   ["루이보스","rooibos"],
+    "보리차":     ["보리차"],
+    "생강":       ["생강","진저","ginger"],
+    "민트":       ["민트","페퍼민트","mint"],
+    "초콜릿":     ["초콜릿","코코아","카카오","chocolate"],
+    "바닐라":     ["바닐라","vanilla"],
+    "커피":       ["커피","아메리카노","라떼","콜드브루","espresso"],
+}
+
+FLAVOR_SCORE = {
+    "레몬": 15, "자몽": 15, "유자": 20, "라임": 15, "복숭아": 12,
+    "딸기": 12, "망고": 12, "파인애플": 10, "블루베리": 10, "사과": 8,
+    "포도": 8, "히비스커스": 18, "콤부차": 20, "녹차": 12, "얼그레이": 12,
+    "루이보스": 15, "보리차": 8, "생강": 12, "민트": 10,
+    "초콜릿": 8, "바닐라": 8, "커피": 5,
+}
+
+def extract_flavors(text):
+    """텍스트에서 플레이버 추출 → [(플레이버, 점수), ...]"""
+    text_lower = text.lower()
+    found = []
+    for flavor, kw_list in FLAVOR_KW.items():
+        if any(kw in text_lower for kw in kw_list):
+            found.append((flavor, FLAVOR_SCORE.get(flavor, 10)))
+    return found
+
+
 def score_blog_item(title, summary):
     """관련성 점수 계산. 제외 조건 해당 시 -999 반환"""
     text = (title + " " + summary).lower()
@@ -229,14 +273,14 @@ def score_blog_item(title, summary):
     # 제외 키워드 체크
     for kw in EXCLUDE_KW:
         if kw in text:
-            return -999, "제외"
+            return -999, "제외", ""
 
-    # 포함 키워드 체크 (하나도 없으면 낮은 점수)
+    # 포함 키워드 체크
     has_include = any(kw in text for kw in INCLUDE_KW)
     if not has_include:
-        return 0, "기타"
+        return 0, "기타", ""
 
-    # 점수 계산
+    # 관련성 점수
     score = 0
     tags = []
     for kw_list, pts, tag in SCORE_RULES:
@@ -244,7 +288,13 @@ def score_blog_item(title, summary):
             score += pts
             tags.append(tag)
 
-    return score, "/".join(tags) if tags else "일반"
+    # 플레이버 보너스 점수
+    flavors = extract_flavors(text)
+    flavor_bonus = sum(s for _, s in flavors)
+    score += flavor_bonus
+    flavor_str = "/".join(f for f, _ in flavors[:3])
+
+    return score, "/".join(tags) if tags else "일반", flavor_str
 
 
 def search_blog(keywords, client_id, client_secret, display=100):
@@ -259,7 +309,7 @@ def search_blog(keywords, client_id, client_secret, display=100):
                 dt = None
             title   = clean_html(item.get("title", ""))
             summary = clean_html(item.get("description", ""))[:150]
-            score, tag = score_blog_item(title, summary)
+            score, tag, flavor = score_blog_item(title, summary)
 
             if score == -999:          # 노이즈 제외
                 continue
@@ -270,6 +320,7 @@ def search_blog(keywords, client_id, client_secret, display=100):
                 "요약": summary[:100],
                 "관련성점수": score,
                 "콘텐츠유형": tag,
+                "플레이버": flavor,
                 "날짜": dt,
                 "날짜_원본": date_str,
                 "URL": item.get("link", ""),
@@ -289,6 +340,8 @@ def search_shop(keywords, client_id, client_secret, display=100):
             price = int(item.get("lprice", 0) or 0)
             title = clean_html(item.get("title", ""))
             pkg = parse_package(title, price)
+            shop_flavor = "/".join(f for f, _ in extract_flavors(title)[:3])
+            flavor_score = sum(s for _, s in extract_flavors(title))
             all_rows.append({
                 "키워드": kw,
                 "상품명": title,
@@ -298,6 +351,8 @@ def search_shop(keywords, client_id, client_secret, display=100):
                 "용량(ml)": pkg["용량(ml)"],
                 "개수": pkg["개수"],
                 "상품유형": pkg["상품유형"],
+                "플레이버": shop_flavor,
+                "플레이버점수": flavor_score,
                 "카테고리": item.get("category2", "") or item.get("category1", ""),
                 "브랜드": item.get("brand", ""),
                 "쇼핑몰": item.get("mallName", ""),
@@ -414,6 +469,40 @@ def render_blog_charts(blog_df):
                            yaxis_title="", coloraxis_showscale=False, **LB)
         st.plotly_chart(fig4, use_container_width=True)
 
+    # ━━ Row 4: 블로그 플레이버 랭킹 ━━
+    blog_flavors = blog_df[blog_df["플레이버"] != ""]["플레이버"].str.split("/").explode()
+    if not blog_flavors.empty:
+        fc = blog_flavors.value_counts().reset_index()
+        fc.columns = ["플레이버","언급수"]
+        fc = fc[fc["플레이버"].str.strip() != ""].head(15)
+        fc["점수합계"] = fc["플레이버"].map(
+            lambda f: FLAVOR_SCORE.get(f, 10) * fc.loc[fc["플레이버"]==f, "언급수"].values[0]
+        )
+        fc = fc.sort_values("점수합계", ascending=True)
+        col_f1, col_f2 = st.columns(2)
+        with col_f1:
+            fig_fl = px.bar(fc, x="언급수", y="플레이버", orientation="h",
+                            color="언급수", color_continuous_scale="Teal",
+                            text="언급수",
+                            title="🍹 블로그 플레이버 언급 순위")
+            fig_fl.update_traces(textposition="outside")
+            fig_fl.update_layout(height=420, showlegend=False,
+                                 coloraxis_showscale=False,
+                                 xaxis_title="언급 수", yaxis_title="", **LB)
+            st.plotly_chart(fig_fl, use_container_width=True)
+        with col_f2:
+            fig_fs = px.bar(fc.sort_values("점수합계", ascending=True),
+                            x="점수합계", y="플레이버", orientation="h",
+                            color="점수합계", color_continuous_scale="Oranges",
+                            text="점수합계",
+                            title="⭐ 블로그 플레이버 가중 점수 순위",
+                            hover_data={"언급수": True})
+            fig_fs.update_traces(textposition="outside")
+            fig_fs.update_layout(height=420, showlegend=False,
+                                 coloraxis_showscale=False,
+                                 xaxis_title="가중 점수 합계", yaxis_title="", **LB)
+            st.plotly_chart(fig_fs, use_container_width=True)
+
 
 # ── 쇼핑 차트 ────────────────────────────────────────
 def render_shop_charts(shop_df):
@@ -449,25 +538,31 @@ def render_shop_charts(shop_df):
         st.plotly_chart(fig_pie, use_container_width=True)
 
     with col2:
-        # 키워드 × 가격대 히트맵 (RTD만, 개당가격 기준)
-        if not rtd.empty:
-            bins   = [0, 500, 1000, 2000, 3000, 5000, 10000, 99999]
-            labels = ["~500원","501~1천","1~2천","2~3천","3~5천","5~1만","1만원+"]
-            rtd["가격대"] = pd.cut(rtd["개당가격(원)"], bins=bins, labels=labels)
-            hmap = rtd.groupby(["키워드","가격대"], observed=True).size().unstack(fill_value=0)
+        # 키워드 × 100ml당 가격대 히트맵 (RTD만)
+        rtd_ml_valid = rtd[rtd["100ml당가격(원)"].notna() & (rtd["100ml당가격(원)"] > 0)]
+        if not rtd_ml_valid.empty:
+            bins_ml   = [0, 50, 100, 150, 200, 300, 500, 9999]
+            labels_ml = ["~50원","51~100","101~150","151~200","201~300","301~500","500원+"]
+            rtd_ml_valid = rtd_ml_valid.copy()
+            rtd_ml_valid["100ml가격대"] = pd.cut(
+                rtd_ml_valid["100ml당가격(원)"], bins=bins_ml, labels=labels_ml)
+            hmap = rtd_ml_valid.groupby(
+                ["키워드","100ml가격대"], observed=True).size().unstack(fill_value=0)
             fig_hmap = px.imshow(
                 hmap,
                 color_continuous_scale="Blues",
-                title="키워드 × 가격대 분포 히트맵 (RTD만)",
+                title="키워드 × 100ml당 가격대 분포 (RTD만)",
                 aspect="auto",
                 text_auto=True
             )
             fig_hmap.update_layout(height=360,
-                                   xaxis_title="개당 가격대",
+                                   xaxis_title="100ml당 가격대",
                                    yaxis_title="",
                                    coloraxis_showscale=False,
                                    **layout_base)
             st.plotly_chart(fig_hmap, use_container_width=True)
+        elif not rtd.empty:
+            st.info("100ml 가격 계산 가능한 RTD 상품이 없습니다. (용량 미표기)")
         else:
             st.info("RTD음료로 분류된 상품이 없습니다.")
 
@@ -550,6 +645,64 @@ def render_shop_charts(shop_df):
             with st.expander("ℹ️ 가격 분석에서 제외된 상품 유형"):
                 for typ, cnt in excluded.items():
                     st.markdown(f"- **{typ}**: {cnt}개 (가격 왜곡 방지를 위해 100ml 분석에서 제외)")
+
+    # ━━ 쇼핑 플레이버 랭킹 ━━
+    shop_fl_df = shop_df[shop_df["플레이버"] != ""]["플레이버"].str.split("/").explode()
+    if not shop_fl_df.empty:
+        sfc = shop_fl_df.value_counts().reset_index()
+        sfc.columns = ["플레이버","상품수"]
+        sfc = sfc[sfc["플레이버"].str.strip() != ""].head(15)
+
+        # 플레이버별 평균 100ml 가격 (RTD만)
+        rtd_fl = shop_df[(shop_df["상품유형"]=="RTD음료") &
+                         shop_df["100ml당가격(원)"].notna() &
+                         (shop_df["플레이버"]!="")].copy()
+        rtd_fl_exp = rtd_fl.assign(
+            fl=rtd_fl["플레이버"].str.split("/")
+        ).explode("fl")
+        fl_price = rtd_fl_exp.groupby("fl")["100ml당가격(원)"].mean().reset_index()
+        fl_price.columns = ["플레이버","평균100ml가격"]
+
+        sfc = sfc.merge(fl_price, on="플레이버", how="left")
+        sfc["가중점수"] = sfc["플레이버"].map(
+            lambda f: FLAVOR_SCORE.get(f, 10)) * sfc["상품수"]
+        sfc_asc = sfc.sort_values("상품수", ascending=True)
+
+        col_s1, col_s2 = st.columns(2)
+        layout_shop = dict(plot_bgcolor="rgba(0,0,0,0)",
+                           paper_bgcolor="rgba(0,0,0,0)",
+                           margin=dict(l=10, r=10, t=45, b=10))
+        with col_s1:
+            fig_sfl = px.bar(sfc_asc, x="상품수", y="플레이버", orientation="h",
+                             color="상품수", color_continuous_scale="Teal",
+                             text="상품수",
+                             title="🛒 쇼핑 플레이버 상품 수 순위")
+            fig_sfl.update_traces(textposition="outside")
+            fig_sfl.update_layout(height=440, showlegend=False,
+                                  coloraxis_showscale=False,
+                                  xaxis_title="상품 수", yaxis_title="",
+                                  **layout_shop)
+            st.plotly_chart(fig_sfl, use_container_width=True)
+
+        with col_s2:
+            sfc_price = sfc[sfc["평균100ml가격"].notna()].sort_values(
+                "평균100ml가격", ascending=True)
+            if not sfc_price.empty:
+                fig_sp = px.bar(sfc_price, x="평균100ml가격", y="플레이버",
+                                orientation="h",
+                                color="평균100ml가격",
+                                color_continuous_scale="RdYlGn_r",
+                                text=sfc_price["평균100ml가격"].round(0).astype(int),
+                                title="💰 플레이버별 평균 100ml당 가격 (RTD)")
+                fig_sp.update_traces(textposition="outside",
+                                     texttemplate="%{text}원")
+                fig_sp.update_layout(height=440, showlegend=False,
+                                     coloraxis_showscale=False,
+                                     xaxis_title="평균 100ml당 가격(원)",
+                                     yaxis_title="", **layout_shop)
+                st.plotly_chart(fig_sp, use_container_width=True)
+            else:
+                st.info("100ml 가격 계산 가능한 플레이버 데이터가 없습니다.")
 
 
 # ── Claude 분석 카드 렌더링 ──────────────────────────
