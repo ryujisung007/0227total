@@ -1,132 +1,164 @@
 import streamlit as st
 import pandas as pd
-import instaloader
-import time
+import requests
+from datetime import datetime
 from collections import Counter
+import time
 
-st.set_page_config(page_title="AI NPD SUITE - Trend Scraper", layout="wide")
+st.set_page_config(page_title="AI NPD SUITE - 트렌드 분석", layout="wide")
 
-@st.cache_resource
-def get_loader(username: str = "", password: str = ""):
-    L = instaloader.Instaloader(
-        download_pictures=False,
-        download_videos=False,
-        download_video_thumbnails=False,
-        download_geotags=False,
-        download_comments=False,
-        save_metadata=False,
-        quiet=True,
-    )
-    if username and password:
-        try:
-            L.login(username, password)
-            st.session_state["logged_in"] = True
-        except instaloader.exceptions.BadCredentialsException:
-            st.session_state["logged_in"] = False
-            st.error("❌ 로그인 실패: ID/PW를 확인해주세요.")
-        except instaloader.exceptions.TwoFactorAuthRequiredException:
-            st.session_state["logged_in"] = False
-            st.error("❌ 2단계 인증 계정은 사용 불가합니다.")
-    return L
+# ── 네이버 API 호출 ──────────────────────────────────
+def naver_search(keyword, api_type, client_id, client_secret, display=20, sort="date"):
+    """
+    api_type: 'blog' | 'shop'
+    """
+    url = f"https://openapi.naver.com/v1/search/{api_type}.json"
+    headers = {
+        "X-Naver-Client-Id": client_id,
+        "X-Naver-Client-Secret": client_secret,
+    }
+    params = {
+        "query": keyword,
+        "display": display,
+        "sort": sort,
+    }
+    res = requests.get(url, headers=headers, params=params)
+    if res.status_code == 200:
+        return res.json().get("items", [])
+    else:
+        st.error(f"API 오류 {res.status_code}: {res.text}")
+        return []
 
 
-def scrape_hashtag(keyword: str, count: int, loader: instaloader.Instaloader):
-    results = []
-    keyword_clean = keyword.lstrip("#").replace(" ", "").lower()
+def clean_html(text):
+    """네이버 API 결과에서 HTML 태그 제거"""
+    import re
+    return re.sub(r"<[^>]+>", "", text)
 
-    try:
-        hashtag = instaloader.Hashtag.from_name(loader.context, keyword_clean)
-        posts = hashtag.get_posts()
-        progress = st.progress(0, text=f"'{keyword_clean}' 포스트 수집 중...")
 
-        for i, post in enumerate(posts):
-            if i >= count:
-                break
-            results.append({
-                "번호": i + 1,
-                "날짜": post.date_local.strftime("%Y-%m-%d"),
-                "좋아요": post.likes,
-                "댓글수": post.comments,
-                "본문(일부)": (post.caption[:100] + "...") if post.caption else "(캡션 없음)",
-                "해시태그": ", ".join(list(post.caption_hashtags)[:8]) if post.caption_hashtags else "",
-                "게시물 URL": f"https://www.instagram.com/p/{post.shortcode}/",
+def search_blog(keywords, client_id, client_secret, display=20):
+    all_rows = []
+    for kw in keywords:
+        items = naver_search(kw, "blog", client_id, client_secret, display=display)
+        for item in items:
+            all_rows.append({
+                "키워드": kw,
+                "제목": clean_html(item.get("title", "")),
+                "요약": clean_html(item.get("description", ""))[:80],
+                "날짜": item.get("postdate", ""),
+                "URL": item.get("link", ""),
             })
-            progress.progress((i + 1) / count, text=f"{i+1}/{count} 수집 완료")
-            time.sleep(0.8)
-
-        progress.empty()
-
-    except instaloader.exceptions.QueryReturnedNotFoundException:
-        st.error(f"❌ 해시태그 `#{keyword_clean}` 를 찾을 수 없습니다.")
-    except instaloader.exceptions.ConnectionException as e:
-        st.error(f"❌ Instagram 연결 오류 (Rate limit 가능성): {e}")
-    except Exception as e:
-        st.error(f"❌ 예상치 못한 오류: {e}")
-
-    return pd.DataFrame(results)
+        time.sleep(0.3)
+    return pd.DataFrame(all_rows)
 
 
-# ── UI ──────────────────────────────────────────────
-st.title("🍹 AI NPD SUITE — Instagram 트렌드 분석")
-st.caption("인스타그램 해시태그 기반 음료 트렌드 수집기")
+def search_shop(keywords, client_id, client_secret, display=20):
+    all_rows = []
+    for kw in keywords:
+        items = naver_search(kw, "shop", client_id, client_secret, display=display, sort="sim")
+        for item in items:
+            price = item.get("lprice", "0")
+            all_rows.append({
+                "키워드": kw,
+                "상품명": clean_html(item.get("title", "")),
+                "가격(원)": int(price) if price else 0,
+                "카테고리": item.get("category2", "") or item.get("category1", ""),
+                "브랜드": item.get("brand", ""),
+                "쇼핑몰": item.get("mallName", ""),
+                "URL": item.get("link", ""),
+            })
+        time.sleep(0.3)
+    return pd.DataFrame(all_rows)
+
+
+# ── UI ───────────────────────────────────────────────
+st.title("🍹 AI NPD SUITE — 네이버 음료 트렌드 분석")
+st.caption("네이버 블로그 + 쇼핑 API 기반 실시간 트렌드 수집")
 
 with st.sidebar:
-    st.subheader("⚙️ 설정")
-    st.markdown("**🔐 Instagram 계정 (선택)**")
-    st.caption("로그인하면 더 많은 데이터 수집 가능. 빈칸이면 비로그인 모드.")
-    ig_user = st.text_input("Instagram ID", value="", placeholder="선택사항")
-    ig_pw   = st.text_input("Instagram PW", value="", type="password", placeholder="선택사항")
+    st.subheader("🔑 API 키 설정")
+    client_id     = st.text_input("Naver Client ID", type="password")
+    client_secret = st.text_input("Naver Client Secret", type="password")
+
     st.divider()
-    st.markdown("**🔍 수집 조건**")
-    target = st.text_input("분석 키워드 (해시태그)", value="저당음료")
-    limit  = st.slider("수집 개수", min_value=5, max_value=50, value=15, step=5)
-    st.caption("⚠️ 50개 초과 수집 시 Rate limit 위험")
+
+    st.subheader("🔍 분석 키워드")
+    st.caption("콤마(,)로 구분해서 여러 개 입력 가능")
+    raw_keywords = st.text_input("키워드", value="저당음료, 제로음료, 기능성음료")
+    display_count = st.slider("키워드당 수집 개수", 5, 100, 20, step=5)
+
+    st.divider()
+
+    do_blog = st.checkbox("📝 블로그 분석", value=True)
+    do_shop = st.checkbox("🛒 쇼핑 분석", value=True)
+
     btn = st.button("🚀 분석 시작", use_container_width=True, type="primary")
 
 
-# ── 실행 ────────────────────────────────────────────
+# ── 실행 ─────────────────────────────────────────────
 if btn:
-    loader = get_loader(ig_user, ig_pw)
+    if not client_id or not client_secret:
+        st.warning("⚠️ 사이드바에 Naver API 키를 입력해주세요.")
+        st.stop()
 
-    with st.spinner("Instagram 접속 중..."):
-        df = scrape_hashtag(target, limit, loader)
+    keywords = [k.strip() for k in raw_keywords.split(",") if k.strip()]
 
-    if df is not None and not df.empty:
-        st.success(f"✅ {len(df)}개 포스트 수집 완료")
+    # ── 블로그 ──
+    if do_blog:
+        st.subheader("📝 블로그 트렌드")
+        with st.spinner("블로그 수집 중..."):
+            blog_df = search_blog(keywords, client_id, client_secret, display_count)
 
-        col1, col2, col3 = st.columns(3)
-        col1.metric("총 수집", f"{len(df)}개")
-        col2.metric("평균 좋아요", f"{df['좋아요'].mean():.0f}")
-        col3.metric("평균 댓글", f"{df['댓글수'].mean():.0f}")
+        if not blog_df.empty:
+            # 키워드별 게시글 수
+            col1, col2 = st.columns([1, 2])
+            with col1:
+                cnt = blog_df["키워드"].value_counts().reset_index()
+                cnt.columns = ["키워드", "게시글수"]
+                st.bar_chart(cnt.set_index("키워드"))
+            with col2:
+                st.dataframe(
+                    blog_df,
+                    use_container_width=True,
+                    column_config={"URL": st.column_config.LinkColumn("링크")}
+                )
 
+            csv = blog_df.to_csv(index=False, encoding="utf-8-sig")
+            st.download_button("⬇️ 블로그 CSV", csv,
+                               file_name=f"blog_trend_{datetime.today().strftime('%Y%m%d')}.csv",
+                               mime="text/csv")
+        else:
+            st.warning("블로그 데이터 없음")
+
+    # ── 쇼핑 ──
+    if do_shop:
         st.divider()
+        st.subheader("🛒 쇼핑 트렌드")
+        with st.spinner("쇼핑 데이터 수집 중..."):
+            shop_df = search_shop(keywords, client_id, client_secret, display_count)
 
-        all_tags = []
-        for tags in df["해시태그"].dropna():
-            all_tags.extend([t.strip() for t in tags.split(",") if t.strip()])
+        if not shop_df.empty:
+            col1, col2, col3 = st.columns(3)
+            col1.metric("총 상품 수", f"{len(shop_df)}개")
+            col2.metric("평균 가격", f"{shop_df['가격(원)'].mean():,.0f}원")
+            col3.metric("최저 가격", f"{shop_df['가격(원)'].min():,.0f}원")
 
-        if all_tags:
-            tag_counts = Counter(all_tags).most_common(15)
-            tag_df = pd.DataFrame(tag_counts, columns=["해시태그", "빈도"])
-            st.subheader("📊 연관 해시태그 TOP 15")
-            st.bar_chart(tag_df.set_index("해시태그"))
+            st.divider()
 
-        st.subheader("📋 수집 데이터")
-        st.dataframe(
-            df,
-            use_container_width=True,
-            column_config={
-                "게시물 URL": st.column_config.LinkColumn("링크"),
-                "좋아요": st.column_config.NumberColumn(format="%d ❤️"),
-            }
-        )
+            # 키워드별 평균가
+            avg_price = shop_df.groupby("키워드")["가격(원)"].mean().reset_index()
+            avg_price.columns = ["키워드", "평균가격"]
+            st.bar_chart(avg_price.set_index("키워드"))
 
-        csv = df.to_csv(index=False, encoding="utf-8-sig")
-        st.download_button(
-            "⬇️ CSV 다운로드",
-            data=csv,
-            file_name=f"insta_{target}_{limit}posts.csv",
-            mime="text/csv",
-        )
-    else:
-        st.warning("데이터를 가져오지 못했습니다. 키워드를 확인하거나 잠시 후 재시도해주세요.")
+            st.dataframe(
+                shop_df,
+                use_container_width=True,
+                column_config={"URL": st.column_config.LinkColumn("링크")}
+            )
+
+            csv = shop_df.to_csv(index=False, encoding="utf-8-sig")
+            st.download_button("⬇️ 쇼핑 CSV", csv,
+                               file_name=f"shop_trend_{datetime.today().strftime('%Y%m%d')}.csv",
+                               mime="text/csv")
+        else:
+            st.warning("쇼핑 데이터 없음")
