@@ -765,7 +765,8 @@ if btn:
             m2.metric("평균 개당가격", f"{shop_df['개당가격(원)'].mean():,.0f}원")
             df_ml = shop_df[shop_df["100ml당가격(원)"].notna()]
             m3.metric("평균 100ml당", f"{df_ml['100ml당가격(원)'].mean():,.0f}원" if not df_ml.empty else "-")
-            m4.metric("총 리뷰수", f"{shop_df['리뷰수'].sum():,}개")
+            rtd_cnt = len(shop_df[shop_df["상품유형"] == "RTD음료"])
+            m4.metric("RTD음료 수", f"{rtd_cnt}개")
             render_shop_charts(shop_df)
             with st.expander("📋 쇼핑 원본 데이터 보기"):
                 st.dataframe(shop_df, use_container_width=True,
