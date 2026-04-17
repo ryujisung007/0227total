@@ -966,7 +966,8 @@ def build_html_report(blog_df, shop_df, claude_result=None):
         rtd = shop_df[shop_df["상품유형"]=="RTD음료"].head(10)
         for i, (_, r) in enumerate(rtd.iterrows()):
             u = f"{int(r['개당가격(원)']):,}원" if r.get('개당가격(원)') else "-"
-            m = f"{int(r['100ml당가격(원)']):,}원" if r.get('100ml당가격(원)') else "-"
+            _ml = r.get('100ml당가격(원)')
+            m = f"{int(float(_ml)):,}원" if _ml and str(_ml) not in ('nan','None','') and float(str(_ml)) > 0 else "-"
             shop_rows += f"""
             <tr>
               <td>{i+1}</td>
