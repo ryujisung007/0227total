@@ -422,158 +422,138 @@ def render_blog_charts(blog_df):
     col3, col4 = st.columns([1.4, 1.6])
 
     with col3:
-        if not df_recent.empty:
-            df_recent = df_recent.copy()
+        # ── DataLab 검색어 트렌드 ──────────────────────
+        st.markdown("**📈 검색어 트렌드 (네이버 DataLab)**")
+        keywords_for_dl = blog_df["키워드"].unique().tolist() if not blog_df.empty else []
 
-            # ── 실제 수집 기간
-            actual_min = df_recent["날짜"].min()
-            actual_max = df_recent["날짜"].max()
-            period_str = (f"{actual_min.strftime('%Y.%m.%d')} ~ "
-                          f"{actual_max.strftime('%Y.%m.%d')}")
-            keywords_list = df_recent["키워드"].unique().tolist()
+        tab_month, tab_week = st.tabs(["📅 월별 (최근 12개월)", "📆 주별 (최근 3개월)"])
 
-            # ── 탭: 주차별 / 일별 선택
-            tab_week, tab_day = st.tabs(["📅 주차별 (최근 2개월)", "📆 일별 (최근 30일)"])
+        def fetch_datalab(keywords_list, time_unit, client_id, client_secret):
+            """네이버 DataLab 검색어 트렌드 API 호출
+            - 키워드 그룹 최대 5개, 각 그룹 키워드 최대 5개
+            - timeUnit: date(일), week(주), month(월)
+            """
+            end_dt   = datetime.now()
+            if time_unit == "month":
+                start_dt = (end_dt.replace(day=1) -
+                            pd.DateOffset(months=11)).to_pydatetime()
+            else:
+                start_dt = end_dt - timedelta(weeks=12)
 
-            # ── 주차별 탭 ──────────────────────────
-            with tab_week:
-                two_months_ago = now - timedelta(days=60)
-                df_w = df_recent[df_recent["날짜"] >= two_months_ago].copy()
+            url = "https://openapi.naver.com/v1/datalab/search"
+            headers = {
+                "X-Naver-Client-Id":     client_id,
+                "X-Naver-Client-Secret": client_secret,
+                "Content-Type":          "application/json",
+            }
+            # 키워드 최대 5그룹
+            groups = []
+            for kw in keywords_list[:5]:
+                groups.append({"groupName": kw, "keywords": [kw]})
 
-                def get_week_label(d):
-                    """날짜 → 'M월 N주' 변환 (해당 월 기준 1~5주)"""
-                    # 해당 월 1일
-                    first_day = d.replace(day=1)
-                    # 1일이 속한 주의 월요일
-                    first_monday_offset = first_day.weekday()
-                    # 이 날짜가 월의 몇 번째 주인지 계산
-                    week_num = (d.day + first_monday_offset - 1) // 7 + 1
-                    return f"{d.month}월 {week_num}주"
+            body = {
+                "startDate": start_dt.strftime("%Y-%m-%d"),
+                "endDate":   end_dt.strftime("%Y-%m-%d"),
+                "timeUnit":  time_unit,
+                "keywordGroups": groups,
+            }
+            try:
+                res = requests.post(url, headers=headers,
+                                    data=json.dumps(body), timeout=15)
+                if res.status_code == 200:
+                    return res.json()
+                else:
+                    return {"error": f"{res.status_code}: {res.text[:200]}"}
+            except Exception as e:
+                return {"error": str(e)}
 
-                df_w["주차표시"] = df_w["날짜"].apply(get_week_label)
+        def render_datalab_chart(data, time_unit):
+            if "error" in data:
+                st.error(f"DataLab API 오류: {data['error']}")
+                st.caption("💡 DataLab API는 블로그 검색 API와 동일한 Client ID/Secret을 사용합니다.")
+                return
+            results = data.get("results", [])
+            if not results:
+                st.info("DataLab 데이터가 없습니다.")
+                return
 
-                # 최근 2개월 전체 주 목록 생성 (M월 1주 ~ M월 5주 순서)
-                all_week_labels = []
-                for days_back in range(60, -1, -1):
-                    d = now - timedelta(days=days_back)
-                    lbl = get_week_label(d)
-                    if lbl not in all_week_labels:
-                        all_week_labels.append(lbl)
-
-                full_week_idx = pd.MultiIndex.from_product(
-                    [all_week_labels, keywords_list], names=["주차표시","키워드"]
-                )
-                weekly_raw = df_w.groupby(["주차표시","키워드"]).agg(
-                    게시글수=("제목","count"),
-                    평균점수=("관련성점수","mean")
-                )
-                weekly = weekly_raw.reindex(full_week_idx, fill_value=0).reset_index()
-                weekly.loc[weekly["게시글수"]==0, "평균점수"] = None
-
-                fig_w = go.Figure()
-                for i, kw in enumerate(keywords_list):
-                    df_kw = weekly[weekly["키워드"]==kw]
-                    color = COLORS[i % len(COLORS)]
-                    fig_w.add_trace(go.Bar(
-                        x=df_kw["주차표시"],
-                        y=df_kw["게시글수"],
-                        name=kw,
-                        marker_color=color,
-                        opacity=0.85,
-                        hovertemplate=(
-                            f"<b>{kw}</b><br>%{{x}}<br>"
-                            "게시글수: %{y}건<extra></extra>"
-                        ),
-                    ))
-                fig_w.update_layout(
-                    title=dict(text="주차별 언급량 (최근 2개월 · M월 N주 기준)",
-                               font=dict(size=13)),
-                    barmode="group",
-                    height=400,
-                    xaxis=dict(
-                        title="",
-                        categoryorder="array",
-                        categoryarray=all_week_labels,
-                        tickfont=dict(size=11),
-                        tickangle=-40,
-                        showgrid=False,
+            fig = go.Figure()
+            for i, r in enumerate(results):
+                kw    = r["title"]
+                color = COLORS[i % len(COLORS)]
+                dates = [d["period"] for d in r["data"]]
+                vals  = [d["ratio"]  for d in r["data"]]
+                fig.add_trace(go.Scatter(
+                    x=dates, y=vals,
+                    mode="lines+markers",
+                    name=kw,
+                    line=dict(width=2.5, color=color),
+                    marker=dict(size=7, color=color,
+                                line=dict(width=1, color="white")),
+                    hovertemplate=(
+                        f"<b>{kw}</b><br>"
+                        "기간: %{x}<br>"
+                        "검색량 지수: %{y:.1f}<extra></extra>"
                     ),
-                    yaxis=dict(title="게시글 수", rangemode="tozero",
-                               showgrid=True, gridcolor="rgba(200,200,200,0.25)"),
-                    legend=dict(orientation="h", y=-0.30, x=0.5,
-                                xanchor="center", font=dict(size=10),
-                                bgcolor="rgba(0,0,0,0)"),
-                    hovermode="x unified",
-                    margin=dict(l=10,r=10,t=45,b=100),
-                    plot_bgcolor="rgba(0,0,0,0)",
-                    paper_bgcolor="rgba(0,0,0,0)",
-                )
-                st.plotly_chart(fig_w, use_container_width=True)
-                if df_w.empty:
-                    st.info("최근 2개월 데이터가 없습니다.")
+                ))
 
-            # ── 일별 탭 ──────────────────────────
-            with tab_day:
-                thirty_ago = now - timedelta(days=30)
-                df_d = df_recent[df_recent["날짜"] >= thirty_ago].copy()
-                df_d["일표시"] = df_d["날짜"].dt.strftime("%m/%d")
-
-                # 30일 전체 날짜 목록
-                all_days = pd.date_range(start=thirty_ago, end=now, freq="D")
-                day_labels = [d.strftime("%m/%d") for d in all_days]
-                full_day_idx = pd.MultiIndex.from_product(
-                    [day_labels, keywords_list], names=["일표시","키워드"]
-                )
-                daily_raw = df_d.groupby(["일표시","키워드"]).agg(
-                    게시글수=("제목","count"),
-                ).rename(columns={"게시글수":"게시글수"})
-                daily = daily_raw.reindex(full_day_idx, fill_value=0).reset_index()
-
-                fig_d = go.Figure()
-                for i, kw in enumerate(keywords_list):
-                    df_kw = daily[daily["키워드"]==kw]
-                    color = COLORS[i % len(COLORS)]
-                    fig_d.add_trace(go.Bar(
-                        x=df_kw["일표시"],
-                        y=df_kw["게시글수"],
-                        name=kw,
-                        marker_color=color,
-                        opacity=0.85,
-                        hovertemplate=f"<b>{kw}</b><br>날짜: %{{x}}<br>게시글수: %{{y}}건<extra></extra>",
-                    ))
-                fig_d.update_layout(
-                    title=dict(text="일별 언급량 (최근 30일)", font=dict(size=13)),
-                    barmode="stack",
-                    height=380,
-                    xaxis=dict(
-                        title="날짜",
-                        tickmode="array",
-                        tickvals=day_labels[::3],   # 3일 간격으로 표시
-                        ticktext=day_labels[::3],
-                        tickangle=-45,
-                        tickfont=dict(size=10),
-                        showgrid=False,
-                    ),
-                    yaxis=dict(title="게시글 수", rangemode="tozero",
-                               showgrid=True, gridcolor="rgba(200,200,200,0.25)"),
-                    legend=dict(orientation="h", y=-0.28, x=0.5,
-                                xanchor="center", font=dict(size=10),
-                                bgcolor="rgba(0,0,0,0)"),
-                    hovermode="x unified",
-                    margin=dict(l=10,r=10,t=45,b=90),
-                    plot_bgcolor="rgba(0,0,0,0)",
-                    paper_bgcolor="rgba(0,0,0,0)",
-                )
-                st.plotly_chart(fig_d, use_container_width=True)
-                if df_d.empty:
-                    st.info("최근 30일 데이터가 없습니다.")
-
-            st.caption(
-                f"📌 네이버 API 실제 수집 기간: **{period_str}** (총 {len(df_recent)}건) "
-                f"— 데이터 밀도가 낮은 구간은 0으로 표시됩니다."
+            unit_label = "월별" if time_unit=="month" else "주별"
+            fig.update_layout(
+                title=dict(
+                    text=f"네이버 {unit_label} 검색량 트렌드 지수 (0~100)",
+                    font=dict(size=13)
+                ),
+                height=420,
+                xaxis=dict(
+                    title="",
+                    tickfont=dict(size=11),
+                    tickangle=-40,
+                    showgrid=True,
+                    gridcolor="rgba(200,200,200,0.2)",
+                ),
+                yaxis=dict(
+                    title="검색량 지수",
+                    range=[0, 105],
+                    showgrid=True,
+                    gridcolor="rgba(200,200,200,0.2)",
+                ),
+                legend=dict(
+                    orientation="h", y=-0.25, x=0.5,
+                    xanchor="center", font=dict(size=10),
+                    bgcolor="rgba(0,0,0,0)",
+                ),
+                hovermode="x unified",
+                margin=dict(l=10, r=10, t=45, b=90),
+                plot_bgcolor="rgba(0,0,0,0)",
+                paper_bgcolor="rgba(0,0,0,0)",
             )
+            st.plotly_chart(fig, use_container_width=True)
+            st.caption(
+                "📌 검색량 지수: 해당 기간 최고값을 100으로 한 상대 지수. "
+                "실제 검색량이 아닌 트렌드 방향을 나타냅니다."
+            )
+
+        if keywords_for_dl and client_id and client_secret:
+            with tab_month:
+                cache_key = f"dl_month_{'_'.join(keywords_for_dl[:5])}"
+                if cache_key not in st.session_state:
+                    with st.spinner("DataLab 월별 트렌드 조회 중..."):
+                        st.session_state[cache_key] = fetch_datalab(
+                            keywords_for_dl, "month", client_id, client_secret)
+                render_datalab_chart(st.session_state[cache_key], "month")
+
+            with tab_week:
+                cache_key_w = f"dl_week_{'_'.join(keywords_for_dl[:5])}"
+                if cache_key_w not in st.session_state:
+                    with st.spinner("DataLab 주별 트렌드 조회 중..."):
+                        st.session_state[cache_key_w] = fetch_datalab(
+                            keywords_for_dl, "week", client_id, client_secret)
+                render_datalab_chart(st.session_state[cache_key_w], "week")
         else:
-            st.info("수집된 날짜 데이터가 없습니다.")
+            with tab_month:
+                st.info("🚀 분석 시작 후 DataLab 트렌드가 표시됩니다.")
+            with tab_week:
+                st.info("🚀 분석 시작 후 DataLab 트렌드가 표시됩니다.")
 
     with col4:
         # 관련성점수 TOP15 게시글 테이블
