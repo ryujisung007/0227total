@@ -387,17 +387,43 @@ def get_gemini_conditions(api_key, categories, client_id="", client_secret=""):
         }
     }
     try:
-        res   = requests.post(url, json=payload, timeout=40)
-        data  = res.json()
-        parts = data.get("candidates",[{}])[0].get("content",{}).get("parts",[])
-        if not parts:
-            st.warning("Gemini 응답이 비어있습니다. (토큰 부족 가능성)")
+        res  = requests.post(url, json=payload, timeout=40)
+        data = res.json()
+
+        # ── 상세 디버그 출력 (오류 원인 파악용)
+        st.caption(f"🔍 Gemini 응답 상태: HTTP {res.status_code}")
+        if "error" in data:
+            st.error(f"Gemini API 오류: {data['error'].get('message','알 수 없음')}")
             return None
-        raw  = parts[0]["text"]
+
+        candidates = data.get("candidates", [])
+        if not candidates:
+            st.error(f"candidates 없음. 전체 응답: {str(data)[:300]}")
+            return None
+
+        candidate = candidates[0]
+        finish_reason = candidate.get("finishReason", "")
+        if finish_reason not in ("STOP", ""):
+            st.error(f"비정상 종료: finishReason={finish_reason}. "
+                     f"MAX_TOKENS면 프롬프트가 너무 긴 것.")
+            st.caption(f"전체 응답: {str(data)[:400]}")
+            return None
+
+        parts = candidate.get("content", {}).get("parts", [])
+        if not parts:
+            st.error(f"parts 없음. candidate: {str(candidate)[:300]}")
+            return None
+
+        raw    = parts[0].get("text", "")
+        if not raw.strip():
+            st.error("텍스트 응답이 비어있음.")
+            return None
+
         result = _safe_json_parse(raw)
         if result is None:
-            st.error(f"JSON 파싱 실패. 응답 원문: {raw[:200]}")
+            st.error("JSON 파싱 실패. 응답 원문: " + raw[:400])
             return None
+
         result["_dl_used"]     = dl_summary != "검색 지표 없음"
         result["_news_used"]   = news_summary != "뉴스 없음"
         result["_google_used"] = google_summary is not None
