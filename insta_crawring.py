@@ -219,75 +219,7 @@ def get_naver_news_trends(categories, client_id, client_secret):
 
 
 
-# 카테고리별 글로벌 구글 트렌드 검색 키워드
-CATEGORY_GLOBAL_KW = {
-    "탄산음료":   ["zero sugar soda","sparkling water","carbonated drink"],
-    "차(Tea)":    ["bottled tea","RTD tea","cold brew tea"],
-    "과일주스":   ["fruit juice trend","NFC juice","cold pressed juice"],
-    "에너지음료": ["energy drink trend","functional energy","nootropic drink"],
-    "유제품음료": ["protein drink","dairy beverage","plant milk"],
-    "기능성음료": ["functional beverage","health drink","wellness drink"],
-    "RTD커피":    ["RTD coffee","cold brew","canned coffee trend"],
-    "발효음료":   ["kombucha trend","probiotic drink","fermented beverage"],
-    "스포츠음료": ["sports drink trend","electrolyte drink","hydration"],
-    "식물성음료": ["oat milk","plant based drink","almond milk trend"],
-}
 
-
-def get_google_trends(categories):
-    """
-    pytrends로 글로벌 구글 트렌드 조회.
-    실패 시 None 반환 (호출부에서 폴백 처리)
-    """
-    try:
-        from pytrends.request import TrendReq
-        
-
-        # 카테고리별 대표 글로벌 키워드 수집 (최대 5개)
-        kw_list = []
-        for cat in categories[:3]:
-            kw_list.extend(CATEGORY_GLOBAL_KW.get(cat, [])[:1])
-        kw_list = list(dict.fromkeys(kw_list))[:5]
-        if not kw_list:
-            return None
-
-        pt = TrendReq(hl="en-US", tz=0, timeout=(8, 20), retries=1,
-                      backoff_factor=0.5)
-        # 글로벌 Food & Drink 카테고리(71), 최근 3개월
-        pt.build_payload(kw_list, cat=71,
-                         timeframe="today 3-m", geo="", gprop="")
-        df = pt.interest_over_time()
-        if df.empty:
-            return None
-
-        lines = []
-        for kw in kw_list:
-            if kw not in df.columns:
-                continue
-            series  = df[kw].dropna()
-            avg     = series.tail(4).mean()
-            first4  = series.head(4).mean()
-            direction = (
-                "↑급상승" if avg > first4 * 1.3
-                else "↑상승" if avg > first4
-                else "→유지"
-            )
-            lines.append(f"  - {kw}: 최근4주 평균지수 {avg:.1f} ({direction})")
-
-        # 연관 검색어 (상위 5개)
-        related = pt.related_queries()
-        rising_lines = []
-        for kw in kw_list[:2]:
-            rising = related.get(kw, {}).get("rising")
-            if rising is not None and not rising.empty:
-                for _, row in rising.head(3).iterrows():
-                    rising_lines.append(f"  - 급상승 연관어: {row['query']}")
-
-        all_lines = lines + rising_lines
-        return "\n".join(all_lines) if all_lines else None
-
-    except Exception:
-        return None  # 실패 시 조용히 None 반환
 
 
 def _clean_for_prompt(text):
@@ -335,27 +267,15 @@ def _safe_json_parse(raw_text):
 
 
 def get_gemini_conditions(api_key, categories, client_id="", client_secret=""):
-    """DataLab + 뉴스 + 구글 트렌드(가능시) 기반 트렌드·타겟 추천"""
-    dl_summary     = "검색 지표 없음"
-    news_summary   = "뉴스 없음"
-    google_summary = None
+    """DataLab + 뉴스 기반 트렌드·타겟 추천"""
+    dl_summary   = "검색 지표 없음"
+    news_summary = "뉴스 없음"
 
     if client_id and client_secret:
         dl_raw       = get_datalab_for_categories(categories, client_id, client_secret)
-        dl_summary   = _clean_for_prompt(dl_raw)[:600]   # 600자 제한
+        dl_summary   = _clean_for_prompt(dl_raw)[:600]
         news_raw     = get_naver_news_trends(categories, client_id, client_secret)
-        news_summary = _clean_for_prompt(news_raw)[:500]  # 500자 제한
-
-    google_raw     = get_google_trends(categories)
-    google_summary = (_clean_for_prompt(google_raw)[:400]   # 400자 제한
-                      if google_raw else None)
-
-    # 프롬프트 조립
-    if google_summary:
-        google_block = "[3. 구글 트렌드 글로벌 Food and Drink 카테고리]\n" + google_summary
-    else:
-        google_block = "[3. 구글 트렌드] 조회 불가 - 네이버 데이터만 사용"
-
+        news_summary = _clean_for_prompt(news_raw)[:500]
 
     cat_str    = ", ".join(categories)
     # gemini-2.5-pro는 thinking 토큰 소모 후 응답 토큰 부족 → flash 사용
@@ -367,10 +287,9 @@ def get_gemini_conditions(api_key, categories, client_id="", client_secret=""):
         "아래 데이터를 분석하여 트렌드 방향과 타겟 소비자를 추천해주세요.\n\n"
         "[1. 음료 카테고리]\n" + cat_str + "\n\n"
         "[2. 네이버 DataLab 3개월 주별 검색량]\n" + dl_summary + "\n\n"
-        + google_block + "\n\n"
-        "[4. 네이버 뉴스 헤드라인]\n" + news_summary + "\n\n"
+        "[3. 네이버 뉴스 헤드라인]\n" + news_summary + "\n\n"
         "분석 지침:\n"
-        "- 구글 트렌드 급상승은 글로벌 선도 지표\n"
+        
         "- DataLab 상승은 한국 소비자 관심 지표\n"
         "- 뉴스에서 신제품 및 시장 변화 반영\n\n"
         "반드시 아래 JSON 형식으로만 응답. 설명 없이 JSON만 출력.\n"
@@ -426,7 +345,6 @@ def get_gemini_conditions(api_key, categories, client_id="", client_secret=""):
 
         result["_dl_used"]     = dl_summary != "검색 지표 없음"
         result["_news_used"]   = news_summary != "뉴스 없음"
-        result["_google_used"] = google_summary is not None
         return result
     except Exception as e:
         st.error(f"Gemini 조건 생성 오류: {e}")
@@ -1436,86 +1354,134 @@ if st.session_state["show_intro"]:
             border:1px solid #d0d8f0;border-radius:16px;padding:28px 32px;margin-bottom:16px">
 
 <h2 style="margin:0 0 6px;color:#1a237e;font-size:22px">🍹 AI NPD SUITE — 음료 트렌드 분석기</h2>
-<p style="color:#555;font-size:13px;margin:0 0 24px">
-  네이버 블로그 + 쇼핑 데이터 기반 실시간 음료 시장 인텔리전스 플랫폼
+<p style="color:#555;font-size:13px;margin:0 0 6px">
+  네이버 블로그 + 쇼핑 + DataLab + 뉴스 + AI 기반 실시간 음료 시장 인텔리전스 플랫폼
 </p>
+<p style="color:#888;font-size:11px;margin:0 0 24px">Claude와 바이브 코딩으로 개발 · Streamlit Cloud 배포</p>
 
-<hr style="border:none;border-top:1px solid #dde3f5;margin:0 0 24px">
+<hr style="border:none;border-top:1px solid #dde3f5;margin:0 0 20px">
 
-<h3 style="color:#1565c0;font-size:15px;margin:0 0 12px">🛠️ 바이브 코딩으로 만든 개발 과정</h3>
-<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:24px">
-  <div style="background:#fff;border-radius:12px;padding:14px;border:1px solid #e3e8f5">
-    <div style="font-size:22px;margin-bottom:6px">①</div>
-    <div style="font-weight:600;font-size:13px;color:#1a237e;margin-bottom:4px">Instagram 크롤러</div>
-    <div style="font-size:12px;color:#666">Selenium 기반 시도<br>→ Instagram 봇 차단<br>→ instaloader 교체<br>→ 최종 실패 확인</div>
-  </div>
-  <div style="background:#fff;border-radius:12px;padding:14px;border:1px solid #e3e8f5">
-    <div style="font-size:22px;margin-bottom:6px">②</div>
-    <div style="font-weight:600;font-size:13px;color:#1a237e;margin-bottom:4px">네이버 API 전환</div>
-    <div style="font-size:12px;color:#666">블로그 + 쇼핑 API<br>→ Streamlit Cloud 배포<br>→ requirements.txt<br>→ Secrets 관리</div>
-  </div>
-  <div style="background:#fff;border-radius:12px;padding:14px;border:1px solid #e3e8f5">
-    <div style="font-size:22px;margin-bottom:6px">③</div>
-    <div style="font-weight:600;font-size:13px;color:#1a237e;margin-bottom:4px">AI 기능 추가</div>
-    <div style="font-size:12px;color:#666">Gemini 키워드 추천<br>→ 조건별 멀티셀렉트<br>→ Claude 심층분석<br>→ JSON 구조화 응답</div>
-  </div>
-  <div style="background:#fff;border-radius:12px;padding:14px;border:1px solid #e3e8f5">
-    <div style="font-size:22px;margin-bottom:6px">④</div>
-    <div style="font-weight:600;font-size:13px;color:#1a237e;margin-bottom:4px">데이터 품질 개선</div>
-    <div style="font-size:12px;color:#666">노이즈 필터링 추가<br>→ 관련성 점수 체계<br>→ 가격 이상값 제거<br>→ Plotly 시각화</div>
-  </div>
-</div>
+<h3 style="color:#1565c0;font-size:15px;margin:0 0 14px">📋 개발 로그 (바이브 코딩 히스토리)</h3>
 
-<hr style="border:none;border-top:1px solid #dde3f5;margin:0 0 24px">
+<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:24px">
 
-<h3 style="color:#1565c0;font-size:15px;margin:0 0 12px">⚙️ 주요 기능</h3>
-<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:24px">
-  <div style="background:#e8f5e9;border-radius:12px;padding:14px">
-    <div style="font-weight:600;font-size:13px;color:#1b5e20;margin-bottom:6px">📝 블로그 트렌드 분석</div>
-    <ul style="margin:0;padding-left:16px;font-size:12px;color:#333;line-height:1.8">
-      <li>노이즈 자동 필터링<br><span style="color:#888">(여행·의료·부동산 제외)</span></li>
-      <li>관련성 점수 자동 산정<br><span style="color:#888">(신제품/카페/트렌드/후기)</span></li>
-      <li>최근 6개월 월별 추이</li>
-      <li>콘텐츠 유형 파이차트</li>
-      <li>TOP 15 게시글 순위</li>
-    </ul>
+  <div style="background:#fff;border-radius:10px;padding:14px;border-left:4px solid #e53935">
+    <div style="font-size:11px;color:#e53935;font-weight:700;margin-bottom:4px">PHASE 1 · Instagram 크롤러 시도 → 실패</div>
+    <div style="font-size:12px;color:#555;line-height:1.7">
+      Selenium + BeautifulSoup으로 Instagram 해시태그 크롤링 시도<br>
+      → ChromeDriver 경로 오류, webdriver_manager 미설치<br>
+      → instaloader 교체 → Instagram 403 차단 (login_required)<br>
+      → <b>로컬 로그인도 Rate limit</b> → Instagram 크롤링 포기
+    </div>
   </div>
-  <div style="background:#fff3e0;border-radius:12px;padding:14px">
-    <div style="font-weight:600;font-size:13px;color:#bf360c;margin-bottom:6px">🛒 쇼핑 트렌드 분석</div>
-    <ul style="margin:0;padding-left:16px;font-size:12px;color:#333;line-height:1.8">
-      <li>상품유형 자동 분류<br><span style="color:#888">(RTD/농축/건강기능/대용량)</span></li>
-      <li>개당·100ml당 가격 계산</li>
-      <li>가격 이상값 자동 제거<br><span style="color:#888">(100ml 30~600원 범위)</span></li>
-      <li>브랜드 포지셔닝 맵</li>
-      <li>키워드×가격대 히트맵</li>
-    </ul>
+
+  <div style="background:#fff;border-radius:10px;padding:14px;border-left:4px solid #1e88e5">
+    <div style="font-size:11px;color:#1e88e5;font-weight:700;margin-bottom:4px">PHASE 2 · 네이버 API로 전환 · 배포</div>
+    <div style="font-size:12px;color:#555;line-height:1.7">
+      네이버 블로그 + 쇼핑 검색 API 채택<br>
+      → Streamlit Cloud 배포 (requirements.txt, Secrets 관리)<br>
+      → packages.txt 충돌(libgconf), pywin32 오류 해결<br>
+      → <b>API 키 st.secrets로 자동 주입</b>
+    </div>
   </div>
-  <div style="background:#e3f2fd;border-radius:12px;padding:14px">
-    <div style="font-weight:600;font-size:13px;color:#0d47a1;margin-bottom:6px">🤖 AI 분석</div>
-    <ul style="margin:0;padding-left:16px;font-size:12px;color:#333;line-height:1.8">
-      <li>Gemini 조건별 키워드 추천<br><span style="color:#888">(카테고리/트렌드/타겟/시즌)</span></li>
-      <li>Claude 심층 분석 리포트</li>
-      <li>플레이버 랭킹 자동 추출</li>
-      <li>NPD 아이디어 3선 제안</li>
-      <li>JSON 구조화 카드 출력</li>
-    </ul>
+
+  <div style="background:#fff;border-radius:10px;padding:14px;border-left:4px solid #43a047">
+    <div style="font-size:11px;color:#43a047;font-weight:700;margin-bottom:4px">PHASE 3 · 데이터 품질 개선</div>
+    <div style="font-size:12px;color:#555;line-height:1.7">
+      노이즈 필터링 (여행·의료·커피·전자담배 등 자동 제외)<br>
+      → 관련성 점수 체계 (신제품+30 / 카페메뉴+25 / 트렌드+20 등)<br>
+      → 쇼핑 상품유형 자동분류 (RTD/농축/건강기능/대용량)<br>
+      → <b>100ml당 가격 IQR 이상값 자동 제거</b>
+    </div>
   </div>
+
+  <div style="background:#fff;border-radius:10px;padding:14px;border-left:4px solid #fb8c00">
+    <div style="font-size:11px;color:#fb8c00;font-weight:700;margin-bottom:4px">PHASE 4 · 시각화 고도화 (Plotly)</div>
+    <div style="font-size:12px;color:#555;line-height:1.7">
+      st.bar_chart → Plotly 전환 (인터랙티브 호버·줌)<br>
+      → 블로그 관련성점수 가로바 + 콘텐츠유형 파이차트<br>
+      → 쇼핑 브랜드 포지셔닝 맵 (가격×인기순위×버블)<br>
+      → <b>키워드×콘텐츠유형 영향력 지수 히트맵</b>
+    </div>
+  </div>
+
+  <div style="background:#fff;border-radius:10px;padding:14px;border-left:4px solid #8e24aa">
+    <div style="font-size:11px;color:#8e24aa;font-weight:700;margin-bottom:4px">PHASE 5 · AI 기능 추가 (Gemini + Claude)</div>
+    <div style="font-size:12px;color:#555;line-height:1.7">
+      Gemini 2.5 Pro → 키워드 10개 추천 (조건별 멀티셀렉트)<br>
+      → 2단계 AI 조건 생성: 카테고리→트렌드·타겟→키워드<br>
+      → Claude Sonnet → 심층 분석 리포트 (JSON 구조화)<br>
+      → <b>NPD 아이디어 3선 카드 렌더링</b>
+    </div>
+  </div>
+
+  <div style="background:#fff;border-radius:10px;padding:14px;border-left:4px solid #00897b">
+    <div style="font-size:11px;color:#00897b;font-weight:700;margin-bottom:4px">PHASE 6 · DataLab 실검색 지표 연동</div>
+    <div style="font-size:12px;color:#555;line-height:1.7">
+      네이버 DataLab 검색어 트렌드 API 연동<br>
+      → 월별(3·6개월) / 주별(3·6개월) 탭 전환<br>
+      → 카테고리별 대표 키워드 자동 조회 → Gemini 프롬프트 주입<br>
+      → <b>네이버 뉴스 헤드라인도 함께 분석에 반영</b>
+    </div>
+  </div>
+
+  <div style="background:#fff;border-radius:10px;padding:14px;border-left:4px solid #00acc1">
+    <div style="font-size:11px;color:#00acc1;font-weight:700;margin-bottom:4px">PHASE 7 · PPT + HTML 리포트 출력</div>
+    <div style="font-size:12px;color:#555;line-height:1.7">
+      python-pptx로 BCG/Deloitte 스타일 PPT 자동 생성 (6슬라이드)<br>
+      → HTML 리포트 (네이비 디자인, 링크 클릭 가능)<br>
+      → session_state 캐시로 버튼 클릭 후에도 다운로드 유지<br>
+      → <b>PPT + HTML 동시 생성·다운로드 지원</b>
+    </div>
+  </div>
+
+  <div style="background:#fff;border-radius:10px;padding:14px;border-left:4px solid #f4511e">
+    <div style="font-size:11px;color:#f4511e;font-weight:700;margin-bottom:4px">PHASE 8 · 버그픽스 · 안정화</div>
+    <div style="font-size:12px;color:#555;line-height:1.7">
+      DataLab 라디오 버튼 클릭 시 화면 꺼짐 → if btn 블록 밖으로 이동<br>
+      → fetch_datalab_range 내부함수→최상위함수 이동<br>
+      → 구글 트렌드(pytrends) 403 차단 확인 → 제거<br>
+      → <b>Gemini 2.0-flash 지원종료 → 2.5-flash 교체</b>
+    </div>
+  </div>
+
 </div>
 
 <hr style="border:none;border-top:1px solid #dde3f5;margin:0 0 16px">
 
-<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
-  <div style="background:#fafafa;border-radius:8px;padding:12px;border:1px solid #eee">
-    <div style="font-size:11px;color:#888;margin-bottom:4px">사용 API</div>
-    <div style="font-size:12px;font-weight:500">Naver 검색 API<br>Google Gemini 2.5 Pro<br>Anthropic Claude Sonnet</div>
+<h3 style="color:#1565c0;font-size:15px;margin:0 0 12px">⚙️ 현재 기능 구성</h3>
+<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:20px">
+  <div style="background:#e8f5e9;border-radius:10px;padding:12px">
+    <div style="font-weight:700;font-size:12px;color:#1b5e20;margin-bottom:6px">📝 블로그 트렌드</div>
+    <div style="font-size:11px;color:#333;line-height:1.8">노이즈 자동 필터링<br>관련성 점수 체계<br>콘텐츠유형 영향력 히트맵<br>플레이버 가중 점수 랭킹<br>TOP 15 게시글 테이블</div>
   </div>
-  <div style="background:#fafafa;border-radius:8px;padding:12px;border:1px solid #eee">
-    <div style="font-size:11px;color:#888;margin-bottom:4px">개발 방식</div>
-    <div style="font-size:12px;font-weight:500">바이브 코딩<br>(Claude와 대화형 개발)<br>Streamlit Cloud 배포</div>
+  <div style="background:#fff3e0;border-radius:10px;padding:12px">
+    <div style="font-weight:700;font-size:12px;color:#bf360c;margin-bottom:6px">🛒 쇼핑 트렌드</div>
+    <div style="font-size:11px;color:#333;line-height:1.8">상품유형 자동분류<br>IQR 이상값 제거<br>개당·100ml당 가격<br>브랜드 포지셔닝 맵<br>플레이버별 가격 분석</div>
   </div>
-  <div style="background:#fafafa;border-radius:8px;padding:12px;border:1px solid #eee">
-    <div style="font-size:11px;color:#888;margin-bottom:4px">활용 목적</div>
-    <div style="font-size:12px;font-weight:500">음료 NPD 시장조사<br>플레이버 트렌드 분석<br>경쟁 제품 가격 인텔리전스</div>
+  <div style="background:#e3f2fd;border-radius:10px;padding:12px">
+    <div style="font-weight:700;font-size:12px;color:#0d47a1;margin-bottom:6px">🤖 AI · 리포트</div>
+    <div style="font-size:11px;color:#333;line-height:1.8">DataLab+뉴스→Gemini 트렌드 추천<br>DataLab 월별·주별 차트<br>Claude 심층 분석 카드<br>NPD 아이디어 3선<br>PPT + HTML 다운로드</div>
+  </div>
+</div>
+
+<hr style="border:none;border-top:1px solid #dde3f5;margin:0 0 14px">
+<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">
+  <div style="background:#fafafa;border-radius:8px;padding:10px;border:1px solid #eee">
+    <div style="font-size:10px;color:#888;margin-bottom:3px">검색 API</div>
+    <div style="font-size:11px;font-weight:600">Naver 블로그·쇼핑<br>DataLab·뉴스</div>
+  </div>
+  <div style="background:#fafafa;border-radius:8px;padding:10px;border:1px solid #eee">
+    <div style="font-size:10px;color:#888;margin-bottom:3px">AI 모델</div>
+    <div style="font-size:11px;font-weight:600">Gemini 2.5 Flash<br>Claude Sonnet 4</div>
+  </div>
+  <div style="background:#fafafa;border-radius:8px;padding:10px;border:1px solid #eee">
+    <div style="font-size:10px;color:#888;margin-bottom:3px">개발 방식</div>
+    <div style="font-size:11px;font-weight:600">Claude 바이브 코딩<br>Streamlit Cloud</div>
+  </div>
+  <div style="background:#fafafa;border-radius:8px;padding:10px;border:1px solid #eee">
+    <div style="font-size:10px;color:#888;margin-bottom:3px">출력 형식</div>
+    <div style="font-size:11px;font-weight:600">PPT (BCG스타일)<br>HTML 리포트</div>
   </div>
 </div>
 
@@ -1561,7 +1527,7 @@ with st.sidebar:
             elif not gkey:
                 st.error("GOOGLE_API_KEY가 Secrets에 없습니다.")
             else:
-                with st.spinner("DataLab + 뉴스 + 구글 트렌드 수집 중..."):
+                with st.spinner("DataLab 지표 + 뉴스 분석 중..."):
                     cond = get_gemini_conditions(
                         gkey, sel_categories, client_id, client_secret)
                 if cond:
@@ -1571,7 +1537,6 @@ with st.sidebar:
                     src = []
                     if cond.get("_dl_used"):     src.append("네이버 DataLab")
                     if cond.get("_news_used"):   src.append("네이버 뉴스")
-                    if cond.get("_google_used"): src.append("구글 트렌드 🌐")
                     src_str = " + ".join(src) if src else "Gemini 학습 데이터"
                     st.success(f"✅ 추천 완료!  데이터 소스: {src_str}")
 
