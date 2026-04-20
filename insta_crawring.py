@@ -341,13 +341,14 @@ def get_gemini_conditions(api_key, categories, client_id="", client_secret=""):
     google_summary = None
 
     if client_id and client_secret:
-        dl_summary   = _clean_for_prompt(
-            get_datalab_for_categories(categories, client_id, client_secret))
-        news_summary = _clean_for_prompt(
-            get_naver_news_trends(categories, client_id, client_secret))
+        dl_raw       = get_datalab_for_categories(categories, client_id, client_secret)
+        dl_summary   = _clean_for_prompt(dl_raw)[:600]   # 600자 제한
+        news_raw     = get_naver_news_trends(categories, client_id, client_secret)
+        news_summary = _clean_for_prompt(news_raw)[:500]  # 500자 제한
 
     google_raw     = get_google_trends(categories)
-    google_summary = _clean_for_prompt(google_raw) if google_raw else None
+    google_summary = (_clean_for_prompt(google_raw)[:400]   # 400자 제한
+                      if google_raw else None)
 
     # 프롬프트 조립
     if google_summary:
@@ -381,9 +382,8 @@ def get_gemini_conditions(api_key, categories, client_id="", client_secret=""):
     payload = {
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
         "generationConfig": {
-            "maxOutputTokens": 2048,
+            "maxOutputTokens": 4096,
             "temperature": 0.5,
-            # responseMimeType 제거 — 2.5-pro에서 빈 응답 유발
         }
     }
     try:
