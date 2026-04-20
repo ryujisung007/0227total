@@ -1343,10 +1343,30 @@ st.caption("네이버 블로그 + 쇼핑 API · Gemini 키워드 추천 · Claud
 if "show_intro" not in st.session_state:
     st.session_state["show_intro"] = False
 
-col_btn, _ = st.columns([1, 6])
+col_btn, col_ppt_intro, _ = st.columns([1.2, 1.5, 4])
 with col_btn:
     if st.button("📖 앱 소개 · 개발 과정"):
         st.session_state["show_intro"] = not st.session_state["show_intro"]
+with col_ppt_intro:
+    if st.button("📥 소개 PPT 생성", type="primary"):
+        try:
+            from ppt_gen import build_intro_ppt
+            with st.spinner("소개 PPT 생성 중..."):
+                intro_bytes = build_intro_ppt()
+            fname_i = f"AI_NPD_SUITE_소개_{datetime.today().strftime('%Y%m%d')}.pptx"
+            st.session_state["intro_ppt_bytes"] = intro_bytes
+            st.session_state["intro_ppt_fname"] = fname_i
+            st.rerun()
+        except Exception as e:
+            st.error(f"PPT 생성 오류: {e}")
+
+if "intro_ppt_bytes" in st.session_state:
+    st.download_button(
+        "⬇️ 소개 PPT 다운로드",
+        data=st.session_state["intro_ppt_bytes"],
+        file_name=st.session_state.get("intro_ppt_fname", "intro.pptx"),
+        mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    )
 
 if st.session_state["show_intro"]:
     st.markdown("""
