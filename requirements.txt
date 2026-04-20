@@ -10,3 +10,8 @@ matplotlib
 google-genai
 python-pptx
 pytrends
+io
+stats
+pairwise_tukeyhsd
+matplotlib.pyplot
+seaborn
