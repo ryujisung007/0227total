@@ -1647,10 +1647,9 @@ if btn:
     blog_df = pd.DataFrame()
     shop_df = pd.DataFrame()
     # session_state 초기화 (새 분석 시작 시)
-    st.session_state.pop("blog_df_ppt", None)
-    st.session_state.pop("shop_df_ppt", None)
-    st.session_state.pop("ppt_bytes_cache", None)
-    st.session_state.pop("html_cache", None)
+    for _k in ["blog_df_ppt","shop_df_ppt","ppt_bytes_cache","html_cache",
+               "blog_csv","shop_csv","blog_csv_name","shop_csv_name"]:
+        st.session_state.pop(_k, None)
 
     # ── 블로그 ──
     if do_blog:
@@ -1677,10 +1676,10 @@ if btn:
                                  "관련성점수": st.column_config.ProgressColumn(
                                      "점수", min_value=0, max_value=100, format="%d"),
                              })
-            csv = blog_df.drop(columns=["날짜"]).to_csv(index=False, encoding="utf-8-sig")
-            st.download_button("⬇️ 블로그 CSV", csv,
-                               file_name=f"blog_{datetime.today().strftime('%Y%m%d')}.csv",
-                               mime="text/csv")
+            # CSV를 session_state에 저장 (다운로드 버튼은 블록 밖에서 표시)
+            _blog_csv = blog_df.drop(columns=["날짜"]).to_csv(index=False, encoding="utf-8-sig")
+            st.session_state["blog_csv"] = _blog_csv.encode("utf-8-sig")
+            st.session_state["blog_csv_name"] = f"blog_{datetime.today().strftime('%Y%m%d')}.csv"
         else:
             st.warning("블로그 데이터 없음 — 키워드를 더 구체적으로 입력해보세요.")
 
@@ -1710,10 +1709,9 @@ if btn:
             with st.expander("📋 쇼핑 원본 데이터 보기"):
                 st.dataframe(shop_df, use_container_width=True,
                              column_config={"URL": st.column_config.LinkColumn("링크")})
-            csv = shop_df.to_csv(index=False, encoding="utf-8-sig")
-            st.download_button("⬇️ 쇼핑 CSV", csv,
-                               file_name=f"shop_{datetime.today().strftime('%Y%m%d')}.csv",
-                               mime="text/csv")
+            _shop_csv = shop_df.to_csv(index=False, encoding="utf-8-sig")
+            st.session_state["shop_csv"] = _shop_csv.encode("utf-8-sig")
+            st.session_state["shop_csv_name"] = f"shop_{datetime.today().strftime('%Y%m%d')}.csv"
         else:
             st.warning("쇼핑 데이터 없음")
 
@@ -1740,6 +1738,30 @@ if btn:
                 )
 
 
+
+
+# ══════════════════════════════════════════════════════
+# ── CSV 다운로드 (if btn 밖 — 버튼 클릭 후에도 유지) ────
+# ══════════════════════════════════════════════════════
+_csv_cols = st.columns(2)
+with _csv_cols[0]:
+    if "blog_csv" in st.session_state:
+        st.download_button(
+            "⬇️ 블로그 CSV 다운로드",
+            data=st.session_state["blog_csv"],
+            file_name=st.session_state.get("blog_csv_name", "blog.csv"),
+            mime="text/csv; charset=utf-8-sig",
+            use_container_width=True,
+        )
+with _csv_cols[1]:
+    if "shop_csv" in st.session_state:
+        st.download_button(
+            "⬇️ 쇼핑 CSV 다운로드",
+            data=st.session_state["shop_csv"],
+            file_name=st.session_state.get("shop_csv_name", "shop.csv"),
+            mime="text/csv; charset=utf-8-sig",
+            use_container_width=True,
+        )
 
 
 # ══════════════════════════════════════════════════════
