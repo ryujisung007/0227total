@@ -357,8 +357,9 @@ def get_gemini_conditions(api_key, categories, client_id="", client_secret=""):
 
 
     cat_str    = ", ".join(categories)
+    # gemini-2.5-pro는 thinking 토큰 소모 후 응답 토큰 부족 → flash 사용
     url = (f"https://generativelanguage.googleapis.com/v1/models/"
-           f"gemini-2.5-pro:generateContent?key={api_key}")
+           f"gemini-2.0-flash:generateContent?key={api_key}")
 
     prompt = (
         "당신은 한국 음료 시장 트렌드 전문가입니다.\n"
@@ -380,9 +381,9 @@ def get_gemini_conditions(api_key, categories, client_id="", client_secret=""):
     payload = {
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
         "generationConfig": {
-            "maxOutputTokens": 1024,   # 짧게 — JSON만 받으므로 충분
+            "maxOutputTokens": 2048,
             "temperature": 0.5,
-            "responseMimeType": "application/json",  # JSON 모드 강제
+            # responseMimeType 제거 — 2.5-pro에서 빈 응답 유발
         }
     }
     try:
@@ -804,46 +805,8 @@ def render_blog_charts(blog_df, client_id="", client_secret=""):
     col3, col4 = st.columns([1.4, 1.6])
 
     with col3:
-        # ── DataLab 검색어 트렌드 ──────────────────────
-        st.markdown("**📈 검색어 트렌드 (네이버 DataLab)**")
-        keywords_for_dl = blog_df["키워드"].unique().tolist() if not blog_df.empty else []
-
-        tab_month, tab_week = st.tabs(["📅 월별 (최근 12개월)", "📆 주별 (최근 3개월)"])
-
-        if keywords_for_dl and client_id and client_secret:
-            import hashlib as _hl
-            _kw_hash = _hl.md5("_".join(keywords_for_dl).encode()).hexdigest()[:8]
-
-            with tab_month:
-                period_opt = st.radio("기간", ["3개월","6개월"],
-                                      horizontal=True, key="dl_month_period")
-                months_m = 3 if period_opt == "3개월" else 6
-                ck_m = f"dl_month_{months_m}_{_kw_hash}"
-                if ck_m not in st.session_state:
-                    with st.spinner(f"DataLab 월별 {months_m}개월 조회 중..."):
-                        st.session_state[ck_m] = fetch_datalab_range(
-                            keywords_for_dl, "month", months_m,
-                            client_id, client_secret)
-                if ck_m in st.session_state:
-                    render_datalab_chart(st.session_state[ck_m], "month")
-
-            with tab_week:
-                period_opt_w = st.radio("기간", ["3개월","6개월"],
-                                        horizontal=True, key="dl_week_period")
-                months_w = 3 if period_opt_w == "3개월" else 6
-                ck_w = f"dl_week_{months_w}_{_kw_hash}"
-                if ck_w not in st.session_state:
-                    with st.spinner(f"DataLab 주별 {months_w}개월 조회 중..."):
-                        st.session_state[ck_w] = fetch_datalab_range(
-                            keywords_for_dl, "week", months_w,
-                            client_id, client_secret)
-                if ck_w in st.session_state:
-                    render_datalab_chart(st.session_state[ck_w], "week")
-        else:
-            with tab_month:
-                st.info("🚀 분석 시작 후 DataLab 트렌드가 표시됩니다.")
-            with tab_week:
-                st.info("🚀 분석 시작 후 DataLab 트렌드가 표시됩니다.")
+        # DataLab 트렌드는 if btn 블록 밖 별도 섹션에서 렌더링됩니다.
+        st.info("📈 아래 검색어 트렌드 섹션에서 DataLab 추이를 확인하세요.")
 
 
     with col4:
@@ -1786,6 +1749,53 @@ if btn:
                 )
 
 
+
+
+# ══════════════════════════════════════════════════════
+# ── DataLab 검색어 트렌드 (if btn 밖 — 라디오 버튼 유지) ─
+# ══════════════════════════════════════════════════════
+if "blog_df_ppt" in st.session_state and not st.session_state["blog_df_ppt"].empty:
+    st.divider()
+    st.subheader("📈 검색어 트렌드 (네이버 DataLab)")
+    st.caption("분석 키워드의 네이버 실검색량 추이 — 기간 변경 시 자동 재조회")
+
+    _dl_blog    = st.session_state["blog_df_ppt"]
+    _dl_kws     = _dl_blog["키워드"].unique().tolist()
+    _dl_cid     = st.secrets.get("NAVER_CLIENT_ID", "")
+    _dl_csec    = st.secrets.get("NAVER_CLIENT_SECRET", "")
+
+    import hashlib as _hl
+    _kw_hash = _hl.md5("_".join(_dl_kws).encode()).hexdigest()[:8]
+
+    tab_month, tab_week = st.tabs(["📅 월별 (최근 12개월)", "📆 주별 (최근 3개월)"])
+
+    with tab_month:
+        period_m = st.radio("기간", ["3개월","6개월"],
+                            horizontal=True, key="dl_month_period")
+        months_m = 3 if period_m == "3개월" else 6
+        ck_m = f"dl_month_{months_m}_{_kw_hash}"
+        if ck_m not in st.session_state and _dl_cid and _dl_csec:
+            with st.spinner(f"DataLab 월별 {months_m}개월 조회 중..."):
+                st.session_state[ck_m] = fetch_datalab_range(
+                    _dl_kws, "month", months_m, _dl_cid, _dl_csec)
+        if ck_m in st.session_state:
+            render_datalab_chart(st.session_state[ck_m], "month")
+        elif not _dl_cid:
+            st.warning("Naver API 키를 Secrets에 등록해주세요.")
+
+    with tab_week:
+        period_w = st.radio("기간", ["3개월","6개월"],
+                            horizontal=True, key="dl_week_period")
+        months_w = 3 if period_w == "3개월" else 6
+        ck_w = f"dl_week_{months_w}_{_kw_hash}"
+        if ck_w not in st.session_state and _dl_cid and _dl_csec:
+            with st.spinner(f"DataLab 주별 {months_w}개월 조회 중..."):
+                st.session_state[ck_w] = fetch_datalab_range(
+                    _dl_kws, "week", months_w, _dl_cid, _dl_csec)
+        if ck_w in st.session_state:
+            render_datalab_chart(st.session_state[ck_w], "week")
+        elif not _dl_cid:
+            st.warning("Naver API 키를 Secrets에 등록해주세요.")
 
 
 # ══════════════════════════════════════════════════════
