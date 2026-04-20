@@ -359,7 +359,7 @@ def get_gemini_conditions(api_key, categories, client_id="", client_secret=""):
     cat_str    = ", ".join(categories)
     # gemini-2.5-pro는 thinking 토큰 소모 후 응답 토큰 부족 → flash 사용
     url = (f"https://generativelanguage.googleapis.com/v1/models/"
-           f"gemini-2.0-flash:generateContent?key={api_key}")
+           f"gemini-2.5-flash:generateContent?key={api_key}")
 
     prompt = (
         "당신은 한국 음료 시장 트렌드 전문가입니다.\n"
