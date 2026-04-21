@@ -328,6 +328,131 @@ def df_to_csv_download(df, filename, label, key=None, help_text=None):
         mime="text/csv", key=key, help=help_text, use_container_width=True)
 
 
+# ============================================================================
+# 🛡 방어적 코딩 헬퍼 (AI 응답 유효성 검증)
+# ============================================================================
+
+def safe_str(value, default=""):
+    """None/비문자열을 안전하게 문자열로"""
+    if value is None:
+        return default
+    return str(value)
+
+
+def safe_first_word(text, default="?"):
+    """공백 기준 첫 단어 추출 (빈 문자열/None 안전)"""
+    s = safe_str(text).strip()
+    if not s:
+        return default
+    parts = s.split()
+    return parts[0] if parts else default
+
+
+def safe_get(d, key, default=None, expected_type=None):
+    """dict에서 안전하게 값 가져오기 (타입 검증 포함)
+    
+    Args:
+        d: dict 또는 None
+        key: 키
+        default: 기본값
+        expected_type: 기대 타입 (예: int, float, str, dict, list)
+    """
+    if not isinstance(d, dict):
+        return default
+    val = d.get(key, default)
+    if expected_type is not None and not isinstance(val, expected_type):
+        # 타입 변환 시도
+        try:
+            if expected_type == int:
+                return int(float(val)) if val is not None else default
+            elif expected_type == float:
+                return float(val) if val is not None else default
+            elif expected_type == str:
+                return str(val) if val is not None else default
+        except (ValueError, TypeError):
+            return default
+        return default
+    return val
+
+
+def safe_score(value, min_val=1, max_val=7, default=None):
+    """점수 값을 안전하게 정수로 변환 + 범위 체크"""
+    if value is None:
+        return default
+    try:
+        v = int(float(value))
+        if v < min_val or v > max_val:
+            return default
+        return v
+    except (ValueError, TypeError):
+        return default
+
+
+def validate_ai_evaluation(eval_item, attr_list, panel_idx=0):
+    """AI가 반환한 1인 평가 데이터를 정제·검증
+    
+    Args:
+        eval_item: AI 응답의 평가 1개
+        attr_list: 기대되는 항목 리스트
+        panel_idx: 순번 (panel_id 누락 시 자동 할당용)
+    
+    Returns:
+        검증된 dict (누락 필드는 기본값으로 채움)
+    """
+    if not isinstance(eval_item, dict):
+        return None
+    
+    validated = {
+        'panel_id': safe_str(eval_item.get('panel_id'), f'P{panel_idx+1:02d}'),
+        'panel_name': safe_str(eval_item.get('panel_name'), f'Panel {panel_idx+1}'),
+        'target_fit': safe_str(eval_item.get('target_fit'), 'N/A'),
+        'sensory_experience': safe_str(eval_item.get('sensory_experience'), ''),
+        'concept_impression': safe_str(eval_item.get('concept_impression'), ''),
+        'comment': safe_str(eval_item.get('comment'), '(코멘트 없음)'),
+        'reasoning': safe_str(eval_item.get('reasoning'), ''),
+    }
+    
+    # scores 정제
+    raw_scores = eval_item.get('scores', {})
+    if not isinstance(raw_scores, dict):
+        raw_scores = {}
+    validated_scores = {}
+    for attr in attr_list:
+        val = safe_score(raw_scores.get(attr))
+        if val is not None:
+            validated_scores[attr] = val
+    validated['scores'] = validated_scores
+    
+    return validated
+
+
+def validate_ai_evaluations_batch(evaluations, attr_list):
+    """AI 평가 리스트 일괄 검증
+    
+    Returns:
+        (유효한 평가 리스트, 경고 메시지 리스트)
+    """
+    if not isinstance(evaluations, list):
+        return [], [f"⚠️ 평가 데이터가 리스트가 아닙니다 ({type(evaluations).__name__})"]
+    
+    validated = []
+    warnings = []
+    for i, e in enumerate(evaluations):
+        v = validate_ai_evaluation(e, attr_list, panel_idx=i)
+        if v is None:
+            warnings.append(f"⚠️ {i+1}번째 평가 데이터 형식 오류 (스킵됨)")
+            continue
+        # 점수 누락 체크
+        missing_attrs = [a for a in attr_list if a not in v['scores']]
+        if missing_attrs:
+            warnings.append(
+                f"⚠️ {v['panel_id']} {v['panel_name']}: "
+                f"{len(missing_attrs)}개 항목 누락 ({', '.join(missing_attrs[:3])}...)"
+            )
+        validated.append(v)
+    return validated, warnings
+
+
 def teaching_box(title, content, always_open=False):
     """교재 콘텐츠 박스 (강의 모드에서 자동 펼침)"""
     expanded = st.session_state.teaching_mode or always_open
@@ -4453,27 +4578,44 @@ with tabs[3]:
                             timeout=300
                         )
                         if eval_result and 'evaluations' in eval_result:
-                            st.session_state.current_evaluations = {
-                                'mode': 'recipe',
-                                'product_name': recipe_product_name,
-                                'evaluations': eval_result['evaluations'],
-                                'recipe_parse': parsed,
-                                'flavor_profile': flavor,
-                                'timestamp': datetime.datetime.now().strftime('%H:%M'),
-                                'n_panels': n_panels,
-                                'personas_used': selected_personas,
-                                'category': effective_category,
-                                'market_context': ctx_short,
-                                'input_data': {
-                                    'recipe': recipe_text,
-                                    'process': process_text
-                                }
-                            }
-                            st.success(
-                                f"✅ {len(eval_result['evaluations'])}명 평가 완료"
+                            # 🛡 AI 응답 검증 & 정제
+                            recipe_attrs = ['전반적만족도', '구입의향', '색상', 
+                                            '전반적맛', '풍미', '단맛', '쓴맛',
+                                            '전반적식감', '끝맛여운']
+                            validated_evals, warnings = validate_ai_evaluations_batch(
+                                eval_result['evaluations'], recipe_attrs
                             )
+                            
+                            if warnings:
+                                with st.expander(f"⚠️ AI 응답 경고 ({len(warnings)}건)",
+                                                expanded=False):
+                                    for w in warnings:
+                                        st.caption(w)
+                            
+                            if not validated_evals:
+                                st.error("❌ 유효한 평가 데이터가 없습니다. 다시 시도해주세요.")
+                            else:
+                                st.session_state.current_evaluations = {
+                                    'mode': 'recipe',
+                                    'product_name': recipe_product_name,
+                                    'evaluations': validated_evals,
+                                    'recipe_parse': parsed,
+                                    'flavor_profile': flavor,
+                                    'timestamp': datetime.datetime.now().strftime('%H:%M'),
+                                    'n_panels': n_panels,
+                                    'personas_used': selected_personas,
+                                    'category': effective_category,
+                                    'market_context': ctx_short,
+                                    'input_data': {
+                                        'recipe': recipe_text,
+                                        'process': process_text
+                                    }
+                                }
+                                st.success(
+                                    f"✅ {len(validated_evals)}명 평가 완료"
+                                )
                         else:
-                            st.error(f"파싱 실패: {raw[:500]}")
+                            st.error(f"파싱 실패: {safe_str(raw)[:500]}")
     
     # ═══════════════════════════════════════════════════════════════════════
     # 💭 컨셉 모드
@@ -4692,29 +4834,46 @@ with tabs[3]:
                             timeout=300
                         )
                         if eval_result and 'evaluations' in eval_result:
-                            st.session_state.current_evaluations = {
-                                'mode': 'concept',
-                                'product_name': concept_name,
-                                'evaluations': eval_result['evaluations'],
-                                'concept_parse': parsed_c,
-                                'concept_profile': perc,
-                                'timestamp': datetime.datetime.now().strftime('%H:%M'),
-                                'n_panels': n_panels,
-                                'personas_used': selected_personas,
-                                'input_data': {
-                                    'name': concept_name,
-                                    'target': concept_target,
-                                    'selling_points': concept_selling_points,
-                                    'price': concept_price,
-                                    'channel': concept_channel,
-                                    'positioning': concept_positioning
-                                }
-                            }
-                            st.success(
-                                f"✅ {len(eval_result['evaluations'])}명 컨셉 평가 완료"
+                            # 🛡 AI 응답 검증
+                            concept_attrs = ['컨셉매력도', '구입의향', '타겟적합성', 
+                                              '차별화인식', '신뢰도', '가격수용도',
+                                              '건강이미지', '프리미엄인식']
+                            validated_evals, warnings = validate_ai_evaluations_batch(
+                                eval_result['evaluations'], concept_attrs
                             )
+                            
+                            if warnings:
+                                with st.expander(f"⚠️ AI 응답 경고 ({len(warnings)}건)",
+                                                expanded=False):
+                                    for w in warnings:
+                                        st.caption(w)
+                            
+                            if not validated_evals:
+                                st.error("❌ 유효한 평가 데이터가 없습니다. 다시 시도해주세요.")
+                            else:
+                                st.session_state.current_evaluations = {
+                                    'mode': 'concept',
+                                    'product_name': concept_name,
+                                    'evaluations': validated_evals,
+                                    'concept_parse': parsed_c,
+                                    'concept_profile': perc,
+                                    'timestamp': datetime.datetime.now().strftime('%H:%M'),
+                                    'n_panels': n_panels,
+                                    'personas_used': selected_personas,
+                                    'input_data': {
+                                        'name': concept_name,
+                                        'target': concept_target,
+                                        'selling_points': concept_selling_points,
+                                        'price': concept_price,
+                                        'channel': concept_channel,
+                                        'positioning': concept_positioning
+                                    }
+                                }
+                                st.success(
+                                    f"✅ {len(validated_evals)}명 컨셉 평가 완료"
+                                )
                         else:
-                            st.error(f"파싱 실패: {raw[:500]}")
+                            st.error(f"파싱 실패: {safe_str(raw)[:500]}")
     # ═══════════════════════════════════════════════════════════════════════
     # 공통 결과 분석 & 시각화 (배합비/컨셉 모두)
     # ═══════════════════════════════════════════════════════════════════════
@@ -4864,13 +5023,26 @@ with tabs[3]:
                         timeout=300
                     )
                     if new_eval and 'evaluations' in new_eval:
-                        st.session_state.current_evaluations['evaluations'] = \
-                            new_eval['evaluations']
-                        st.session_state.current_evaluations['timestamp'] = \
-                            datetime.datetime.now().strftime('%H:%M')
-                        st.rerun()
+                        # 🛡 AI 응답 검증
+                        retry_attrs = (
+                            ['전반적만족도', '구입의향', '색상', '전반적맛', '풍미',
+                             '단맛', '쓴맛', '전반적식감', '끝맛여운'] if mode == 'recipe'
+                            else ['컨셉매력도', '구입의향', '타겟적합성', '차별화인식',
+                                  '신뢰도', '가격수용도', '건강이미지', '프리미엄인식']
+                        )
+                        validated_evals, warnings = validate_ai_evaluations_batch(
+                            new_eval['evaluations'], retry_attrs
+                        )
+                        if validated_evals:
+                            st.session_state.current_evaluations['evaluations'] = \
+                                validated_evals
+                            st.session_state.current_evaluations['timestamp'] = \
+                                datetime.datetime.now().strftime('%H:%M')
+                            st.rerun()
+                        else:
+                            st.error("❌ 재평가 결과에 유효한 데이터가 없습니다.")
                     else:
-                        st.error(f"❌ 재평가 실패: {raw[:400]}")
+                        st.error(f"❌ 재평가 실패: {safe_str(raw)[:400]}")
         
         # 합격 기준 상세 (Hedonic)
         st.markdown("#### 🎯 Hedonic 합격 기준 (≥ 5.0)")
@@ -4983,14 +5155,18 @@ with tabs[3]:
             if mode == 'recipe' and jar_evaluations:
                 st.markdown("#### 📏 JAR 편차 분석 (최적값 대비)")
                 
-                jar_names_list = list(jar_evaluations.keys())
-                jar_scores = [jar_evaluations[n]['score'] for n in jar_names_list]
-                jar_optimals = [jar_evaluations[n]['optimal'] for n in jar_names_list]
-                jar_tols = [jar_evaluations[n]['tolerance'] for n in jar_names_list]
-                jar_devs = [jar_evaluations[n]['score'] - jar_evaluations[n]['optimal'] 
-                            for n in jar_names_list]
-                jar_within_list = [jar_evaluations[n]['within_tolerance'] 
-                                    for n in jar_names_list]
+                try:
+                    jar_names_list = list(jar_evaluations.keys())
+                    jar_scores = [jar_evaluations[n]['score'] for n in jar_names_list]
+                    jar_optimals = [jar_evaluations[n]['optimal'] for n in jar_names_list]
+                    jar_tols = [jar_evaluations[n]['tolerance'] for n in jar_names_list]
+                    jar_devs = [jar_evaluations[n]['score'] - jar_evaluations[n]['optimal'] 
+                                for n in jar_names_list]
+                    jar_within_list = [jar_evaluations[n]['within_tolerance'] 
+                                        for n in jar_names_list]
+                except Exception as ex:
+                    st.warning(f"JAR 데이터 처리 오류: {ex}")
+                    jar_names_list = []
                 
                 fig_jar = go.Figure()
                 # 실제 점수 막대
@@ -5086,15 +5262,21 @@ with tabs[3]:
             st.caption("각 가상 패널의 평가 점수와 코멘트, 추론 근거")
             
             for e in evaluations:
-                pid = e.get('panel_id', '')
-                pname = e.get('panel_name', '')
-                comment = e.get('comment', '')
-                reasoning = e.get('reasoning', '')
-                scores = e.get('scores', {})
+                if not isinstance(e, dict):
+                    continue
+                pid = safe_str(e.get('panel_id'), '?')
+                pname = safe_str(e.get('panel_name'), '(이름 없음)')
+                comment = safe_str(e.get('comment'), '(코멘트 없음)')
+                reasoning = safe_str(e.get('reasoning'), '')
+                scores = e.get('scores', {}) if isinstance(e.get('scores'), dict) else {}
+                target_fit = safe_str(e.get('target_fit'), '')
                 
-                # 이 패널의 평균
-                p_avg = np.mean([scores.get(a, 0) for a in attr_list 
-                                if isinstance(scores.get(a), (int, float))])
+                # 이 패널의 평균 (안전하게)
+                valid_scores = [
+                    scores.get(a) for a in attr_list
+                    if isinstance(scores.get(a), (int, float))
+                ]
+                p_avg = np.mean(valid_scores) if valid_scores else 0
                 
                 # 색상 결정
                 if p_avg >= 5.5:
@@ -5106,61 +5288,77 @@ with tabs[3]:
                 else:
                     badge_color = "#ef4444"
                 
-                with st.expander(
-                    f"{pid} · {pname} — 평균 {p_avg:.1f}점",
-                    expanded=False
-                ):
-                    st.markdown(
-                        f"**💬 코멘트:** {comment}"
-                    )
-                    st.caption(f"📐 추론: {reasoning}")
+                expander_title = f"{pid} · {pname} — 평균 {p_avg:.1f}점"
+                if target_fit and target_fit != 'N/A':
+                    expander_title += f"  ({target_fit})"
+                
+                with st.expander(expander_title, expanded=False):
+                    st.markdown(f"**💬 코멘트:** {comment}")
+                    if reasoning:
+                        st.caption(f"📐 추론: {reasoning}")
                     
-                    # 점수 표시
+                    # 점수 표시 (안전하게)
                     score_cols = st.columns(len(attr_list))
                     for i, a in enumerate(attr_list):
                         with score_cols[i]:
-                            v = scores.get(a, 0)
+                            v = scores.get(a)
                             if isinstance(v, (int, float)):
                                 st.metric(a, f"{v}")
         
         with ai_tab3:
             # 점수 분포 히트맵
-            st.caption(f"{len(evaluations)}명 × 8항목 점수 히트맵")
+            st.caption(f"{len(evaluations)}명 × {len(attr_list)}항목 점수 히트맵")
             
-            score_matrix = []
-            panel_labels = []
-            for e in evaluations:
-                scores = e.get('scores', {})
-                row = [scores.get(a, None) for a in attr_list]
-                score_matrix.append(row)
-                panel_labels.append(f"{e.get('panel_id', '')} {e.get('panel_name', '').split()[0]}")
-            
-            score_np = np.array(score_matrix, dtype=float)
-            
-            fig_heatmap = go.Figure(data=go.Heatmap(
-                z=score_np,
-                x=attr_list,
-                y=panel_labels,
-                colorscale=[
-                    [0.0, '#7f1d1d'],
-                    [0.3, '#ef4444'],
-                    [0.5, '#f59e0b'],
-                    [0.7, '#3b82f6'],
-                    [1.0, '#10b981']
-                ],
-                zmin=1, zmax=7,
-                text=score_np,
-                texttemplate="%{text:.0f}",
-                textfont={"size": 10},
-                colorbar=dict(title="점수", tickfont=dict(color='#e2e8f0'))
-            ))
-            fig_heatmap.update_layout(
-                title=f"{eval_data['product_name']} — 패널별 점수 히트맵",
-                height=600,
-                xaxis=dict(tickangle=-35)
-            )
-            apply_plotly_theme(fig_heatmap)
-            st.plotly_chart(fig_heatmap, use_container_width=True)
+            try:
+                score_matrix = []
+                panel_labels = []
+                for e in evaluations:
+                    scores = e.get('scores', {}) if isinstance(e, dict) else {}
+                    # None은 NaN으로 (히트맵에서 공란 표시됨)
+                    row = []
+                    for a in attr_list:
+                        val = scores.get(a)
+                        row.append(float(val) if isinstance(val, (int, float)) else np.nan)
+                    score_matrix.append(row)
+                    pid = safe_str(e.get('panel_id'), '?') if isinstance(e, dict) else '?'
+                    pname = safe_str(e.get('panel_name'), '') if isinstance(e, dict) else ''
+                    first_word = safe_first_word(pname, default=pid)
+                    panel_labels.append(f"{pid} {first_word}")
+                
+                if not score_matrix:
+                    st.warning("표시할 점수 데이터가 없습니다.")
+                else:
+                    score_np = np.array(score_matrix, dtype=float)
+                    
+                    fig_heatmap = go.Figure(data=go.Heatmap(
+                        z=score_np,
+                        x=attr_list,
+                        y=panel_labels,
+                        colorscale=[
+                            [0.0, '#7f1d1d'],
+                            [0.3, '#ef4444'],
+                            [0.5, '#f59e0b'],
+                            [0.7, '#3b82f6'],
+                            [1.0, '#10b981']
+                        ],
+                        zmin=1, zmax=7,
+                        text=score_np,
+                        texttemplate="%{text:.0f}",
+                        textfont={"size": 10},
+                        colorbar=dict(title="점수")
+                    ))
+                    fig_heatmap.update_layout(
+                        title=f"{eval_data['product_name']} — 패널별 점수 히트맵",
+                        height=600,
+                        xaxis=dict(tickangle=-35)
+                    )
+                    apply_plotly_theme(fig_heatmap)
+                    st.plotly_chart(fig_heatmap, use_container_width=True)
+            except Exception as ex:
+                st.error(f"히트맵 생성 오류: {ex}")
+                with st.expander("상세 오류"):
+                    import traceback
+                    st.code(traceback.format_exc())
             
             # 분포 통계
             st.markdown("#### 📈 점수 분포 통계")
