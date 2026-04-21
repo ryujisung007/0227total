@@ -1414,7 +1414,478 @@ CATEGORY_STANDARD_PROFILES = {
 }
 
 
-def get_category_standard(category):
+# ============================================================================
+# 🧪 이화학 계산 엔진 (Beverage DB 기반)
+# ============================================================================
+# 엑셀 '음료개발_데이터베이스_v4-1'의 174개 원료 + 321개 시장제품 활용
+# Claude의 '추측' 대신 결정론적 계산으로 정확한 이화학값 확보
+# ============================================================================
+
+@st.cache_data
+def load_beverage_db():
+    """앱 내장 음료 DB 로드 (JSON)"""
+    import os
+    # 여러 가능한 경로 시도 (로컬/배포/repo 내 다양한 위치)
+    candidate_paths = [
+        'beverage_db.json',
+        './beverage_db.json',
+        os.path.join(os.path.dirname(__file__), 'beverage_db.json') if '__file__' in globals() else None,
+    ]
+    for path in candidate_paths:
+        if path and os.path.exists(path):
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception:
+                continue
+    # 파일 없으면 빈 DB (Claude 추론으로 fallback)
+    return {'ingredients': [], 'market_products': [], 'beverage_specs': []}
+
+
+def find_ingredient(name_query, ingredients_db):
+    """원료 이름으로 DB에서 매칭 (퍼지 검색)
+    
+    Args:
+        name_query: 사용자가 입력한 원료명 (예: "설탕", "오렌지주스")
+        ingredients_db: load_beverage_db()['ingredients']
+    
+    Returns:
+        매칭된 원료 dict 또는 None
+    """
+    if not name_query or not ingredients_db:
+        return None
+    
+    q = str(name_query).strip().replace(' ', '').lower()
+    if not q:
+        return None
+    
+    # 1차: 완전 일치 또는 부분 일치 (원료명)
+    for ing in ingredients_db:
+        ing_name = str(ing.get('name', '')).replace(' ', '').lower()
+        if not ing_name:
+            continue
+        if q == ing_name or q in ing_name or ing_name in q:
+            return ing
+    
+    # 2차: 소분류·대분류 매칭
+    for ing in ingredients_db:
+        sub = str(ing.get('category_sub', '')).replace(' ', '').lower()
+        main = str(ing.get('category_main', '')).replace(' ', '').lower()
+        if sub and (q in sub or sub in q):
+            return ing
+        if main and (q in main or main in q):
+            return ing
+    
+    # 3차: 키워드 기반 매핑 (자주 쓰는 용어)
+    keyword_map = {
+        '설탕': '백설탕', '사탕무당': '백설탕',
+        '과당': '고과당', 'hfcs': '고과당',
+        '물': '정제수', '정제수': '정제수',
+        '산미료': '구연산', '시트르산': '구연산',
+        '탄산': '정제수', 'co2': '정제수',
+        '우유': '전지유',
+        '소금': '정제염',
+    }
+    for kw, mapped in keyword_map.items():
+        if kw in q:
+            for ing in ingredients_db:
+                if mapped in str(ing.get('name', '')):
+                    return ing
+    
+    return None
+
+
+def calculate_physical_from_recipe(recipe_ingredients, db=None):
+    """배합비 리스트 → 결정론적 이화학 계산
+    
+    Args:
+        recipe_ingredients: [{'ingredient': 원료명, 'ratio_pct': 비율}]
+        db: beverage DB (None이면 자동 로드)
+    
+    Returns:
+        {
+            'calculated_brix': float,  # 계산된 Brix
+            'calculated_ph': float,    # 추정 pH
+            'calculated_acidity_pct': float,
+            'calculated_sweetness_index': float,  # 설탕 대비 감미
+            'sugar_acid_ratio': float,
+            'total_matched_ratio': float,  # 매칭된 원료 비율 합
+            'unmatched_ingredients': [],   # 매칭 실패 원료
+            'matched_details': [],         # 매칭 결과 상세
+            'confidence': 'high' / 'medium' / 'low',
+        }
+    """
+    if db is None:
+        db = load_beverage_db()
+    ingredients_db = db.get('ingredients', [])
+    
+    if not ingredients_db:
+        return {
+            'calculated_brix': None,
+            'calculated_ph': None,
+            'calculated_acidity_pct': None,
+            'calculated_sweetness_index': None,
+            'sugar_acid_ratio': None,
+            'total_matched_ratio': 0,
+            'unmatched_ingredients': [i.get('ingredient') for i in recipe_ingredients],
+            'matched_details': [],
+            'confidence': 'low',
+            'error': 'DB 미로드'
+        }
+    
+    brix_sum = 0.0
+    ph_delta_sum = 0.0  # pH 3.5 기준 변화량 합
+    acidity_sum = 0.0
+    sweetness_sum = 0.0
+    matched_ratio = 0.0
+    unmatched = []
+    matched = []
+    
+    for item in recipe_ingredients:
+        name = item.get('ingredient', '')
+        ratio = item.get('ratio_pct', 0)
+        try:
+            ratio = float(ratio)
+        except (ValueError, TypeError):
+            continue
+        
+        if ratio <= 0:
+            continue
+        
+        found = find_ingredient(name, ingredients_db)
+        if found:
+            brix_per = found.get('brix_per_1pct') or 0
+            ph_delta = found.get('ph_delta_per_1pct') or 0
+            acidity_per = found.get('acidity_per_1pct') or 0
+            sweet_per = found.get('sweetness_per_1pct') or 0
+            
+            try:
+                brix_sum += ratio * float(brix_per or 0)
+                ph_delta_sum += ratio * float(ph_delta or 0)
+                acidity_sum += ratio * float(acidity_per or 0)
+                sweetness_sum += ratio * float(sweet_per or 0)
+            except (ValueError, TypeError):
+                pass
+            
+            matched_ratio += ratio
+            matched.append({
+                'input_name': name,
+                'matched_name': found.get('name'),
+                'ratio': ratio,
+                'brix_contribution': ratio * float(brix_per or 0),
+                'source_brix': found.get('brix'),
+            })
+        else:
+            unmatched.append(name)
+    
+    # 최종 이화학값
+    calc_brix = round(brix_sum, 2) if matched_ratio > 0 else None
+    # pH: 기본 3.5에서 산/염기 영향 반영
+    calc_ph = round(3.5 + ph_delta_sum, 2) if matched_ratio > 0 else None
+    # pH 범위 제한
+    if calc_ph is not None:
+        calc_ph = max(2.0, min(9.0, calc_ph))
+    calc_acidity = round(acidity_sum, 3) if matched_ratio > 0 else None
+    calc_sweetness = round(sweetness_sum, 2) if matched_ratio > 0 else None
+    
+    # 당산비 (산도 0이면 무한대 방지)
+    sugar_acid_ratio = None
+    if calc_brix and calc_acidity and calc_acidity > 0.01:
+        sugar_acid_ratio = round(calc_brix / calc_acidity, 1)
+    
+    # 신뢰도: 매칭 비율 기반
+    if matched_ratio >= 90:
+        confidence = 'high'
+    elif matched_ratio >= 70:
+        confidence = 'medium'
+    else:
+        confidence = 'low'
+    
+    return {
+        'calculated_brix': calc_brix,
+        'calculated_ph': calc_ph,
+        'calculated_acidity_pct': calc_acidity,
+        'calculated_sweetness_index': calc_sweetness,
+        'sugar_acid_ratio': sugar_acid_ratio,
+        'total_matched_ratio': round(matched_ratio, 1),
+        'unmatched_ingredients': unmatched,
+        'matched_details': matched,
+        'confidence': confidence,
+    }
+
+
+# ============================================================================
+# 🧠 심리물리학 기반 인식 강도 변환 공식
+# ============================================================================
+# 실제 이화학값 (Brix, pH 등) → 페르소나가 "느끼는" 1~7 강도
+# 카테고리·온도·탄산·지방 등 마스킹 효과 반영
+# ============================================================================
+
+def perceived_sweetness_intensity(brix, category='음료', has_co2=False,
+                                     acidity_pct=0, fat_pct=0):
+    """지각 단맛 강도 (1~7 리커트)
+    
+    Stevens' power law + 카테고리 보정
+    - 참조: 설탕 10% 용액 = 단맛 강도 4 (음료 기준)
+    """
+    if brix is None or brix <= 0:
+        return None
+    
+    # 기본 변환: Brix 10 = 강도 4 (Stevens exponent ≈ 1.3)
+    base = 4.0 * ((brix / 10.0) ** 0.8)
+    
+    # 카테고리 보정
+    if category == '빙과':
+        # 저온(-14°C) 효과로 단맛 인식 약 25~30% 하락
+        base *= 0.72
+    elif category == '유제품':
+        # 유지방이 단맛 부드럽게 → 약간 상승
+        if fat_pct >= 3:
+            base *= 1.05
+    elif category == '주류':
+        # 알코올이 단맛 약간 마스킹
+        base *= 0.85
+    
+    # 탄산 보정 (청량감이 단맛 완화)
+    if has_co2:
+        base *= 0.88
+    
+    # 산미와의 상호작용 (산이 강하면 단맛 약간 상승 — 대비 효과)
+    if acidity_pct > 0.3:
+        base *= (1 + min(acidity_pct * 0.1, 0.15))
+    
+    return round(max(1.0, min(7.0, base)), 1)
+
+
+def perceived_sourness_intensity(ph, acidity_pct=0, category='음료', brix=0):
+    """지각 산미 강도 (1~7 리커트)
+    
+    pH는 로그 스케일이므로 비선형 변환
+    - 참조: pH 3.0 = 산미 강도 5 (음료 기준)
+    """
+    if ph is None:
+        return None
+    
+    # pH → base 강도 (pH 2.5=강도 7, pH 3.5=강도 4, pH 5.0=강도 1)
+    if ph >= 6.0:
+        base = 1.0
+    elif ph >= 5.0:
+        base = 1.0 + (6.0 - ph) * 1.0
+    elif ph >= 3.0:
+        base = 2.0 + (5.0 - ph) * 1.5
+    else:
+        base = 5.0 + (3.0 - ph) * 2.0
+    
+    # 산도(%) 보정 (pH만으로 못 잡는 유기산 함량 반영)
+    if acidity_pct > 0:
+        base += min(acidity_pct * 0.8, 1.5)
+    
+    # 단맛에 의한 마스킹 (당이 산미 완화)
+    if brix > 0:
+        masking = min(brix * 0.04, 1.5)
+        base -= masking
+    
+    # 카테고리 보정
+    if category == '빙과':
+        # 저온은 산미를 약간 완화
+        base *= 0.9
+    elif category == '유제품':
+        # 유지방이 산미 부드럽게
+        base *= 0.85
+    
+    return round(max(1.0, min(7.0, base)), 1)
+
+
+def perceived_bitterness_intensity(category='음료', has_caffeine=False,
+                                     has_polyphenol=False, alcohol_pct=0):
+    """지각 쓴맛 강도 (1~7)
+    
+    커피·차·맥주 등 쓴맛 유발 요소 기반 추정
+    """
+    base = 1.0
+    
+    if has_caffeine:
+        base += 2.5
+    if has_polyphenol:
+        base += 1.5
+    if alcohol_pct > 0:
+        base += min(alcohol_pct * 0.3, 2.0)
+    
+    if category == '주류':
+        base = max(base, 3.0)  # 주류는 최소 3
+    
+    return round(max(1.0, min(7.0, base)), 1)
+
+
+def perceived_body_intensity(brix, fat_pct=0, protein_pct=0, category='음료'):
+    """지각 바디감·점도 (1~7)"""
+    base = 2.0
+    
+    if brix:
+        base += min(brix * 0.12, 2.5)  # 고형분 기여
+    if fat_pct:
+        base += min(fat_pct * 0.3, 2.0)
+    if protein_pct:
+        base += min(protein_pct * 0.25, 1.5)
+    
+    if category == '빙과':
+        base += 1.5  # 빙과는 기본적으로 바디감 강함
+    elif category == '유제품':
+        base += 1.0
+    
+    return round(max(1.0, min(7.0, base)), 1)
+
+
+def perceived_coolness_intensity(category='음료', has_co2=False,
+                                   serving_temp_c=5):
+    """지각 청량감 (1~7)"""
+    base = 3.0
+    
+    if category == '빙과':
+        base = 6.0  # 빙과는 기본 청량감 높음
+    elif category == '음료':
+        base = 3.5
+    
+    if has_co2:
+        base += 1.5
+    
+    # 온도 영향 (찬 것이 청량감 ↑)
+    if serving_temp_c <= 0:
+        base += 1.0
+    elif serving_temp_c <= 10:
+        base += 0.5
+    
+    return round(max(1.0, min(7.0, base)), 1)
+
+
+def generate_qda_profile(physical, category='음료', has_co2=False,
+                           has_caffeine=False, has_polyphenol=False,
+                           alcohol_pct=0, fat_pct=0, protein_pct=0,
+                           serving_temp_c=5):
+    """이화학값 + 카테고리 → 전문 패널 QDA 프로파일
+    
+    Args:
+        physical: calculate_physical_from_recipe 결과
+    
+    Returns:
+        15~20개 속성별 1~7 강도 dict
+    """
+    brix = physical.get('calculated_brix') or 0
+    ph = physical.get('calculated_ph') or 7.0
+    acidity = physical.get('calculated_acidity_pct') or 0
+    
+    profile = {
+        # 기본 5가지 맛 강도 (QDA 핵심)
+        '단맛 강도': perceived_sweetness_intensity(
+            brix, category, has_co2, acidity, fat_pct),
+        '신맛 강도': perceived_sourness_intensity(
+            ph, acidity, category, brix),
+        '쓴맛 강도': perceived_bitterness_intensity(
+            category, has_caffeine, has_polyphenol, alcohol_pct),
+        '짠맛 강도': 1.0,  # 음료·빙과는 기본 낮음
+        '감칠맛 강도': 1.5,
+        
+        # 텍스처·바디
+        '바디감': perceived_body_intensity(brix, fat_pct, protein_pct, category),
+        '청량감': perceived_coolness_intensity(category, has_co2, serving_temp_c),
+        
+        # 여운
+        '끝맛 여운 길이': round(min(7, 2 + (brix * 0.08) + (fat_pct * 0.2)), 1),
+        '끝맛 깔끔함': round(max(1, 7 - (brix * 0.15) - (fat_pct * 0.25)), 1),
+    }
+    
+    # 카테고리별 고유 속성 추가
+    if category == '음료':
+        profile.update({
+            '탄산 강도': 5.5 if has_co2 else 1.0,
+            '과일향 강도': round(min(7, 3 + (acidity * 3)), 1),
+            '뒷맛 깔끔함': profile['끝맛 깔끔함'],
+        })
+    elif category == '빙과':
+        profile.update({
+            '크리미함': round(min(7, 3 + fat_pct * 0.4), 1),
+            '입안 녹음성': round(min(7, 5 + (8 - brix) * 0.1), 1),
+            '공기감(오버런)': 5.0,  # 일반 아이스크림 기준
+            '차가움': round(min(7, 6 + (-serving_temp_c) * 0.05), 1),
+        })
+    elif category == '유제품':
+        profile.update({
+            '유지방 풍미': round(min(7, 2 + fat_pct * 0.6), 1),
+            '발효 향': 1.5,  # 요거트가 아니면 낮음
+            '크리미함': round(min(7, 2 + fat_pct * 0.5), 1),
+        })
+    elif category == '주류':
+        profile.update({
+            '알코올감': round(min(7, 2 + alcohol_pct * 0.4), 1),
+            '드라이감': round(max(1, 7 - brix * 0.3), 1),
+        })
+    
+    # 반올림 + None 제거
+    return {k: v for k, v in profile.items() if v is not None}
+
+
+def format_qda_profile_for_prompt(qda):
+    """QDA 프로파일을 프롬프트용 텍스트로"""
+    if not qda:
+        return "(QDA 프로파일 미생성)"
+    lines = []
+    for attr, val in qda.items():
+        lines.append(f"  • {attr}: {val}/7")
+    return "\n".join(lines)
+
+
+def find_similar_market_products(physical, category, db=None, top_n=3):
+    """시장제품DB에서 유사 제품 찾기
+    
+    이화학값(Brix, pH, 산도) 거리 기반 매칭
+    """
+    if db is None:
+        db = load_beverage_db()
+    products = db.get('market_products', [])
+    if not products:
+        return []
+    
+    target_brix = physical.get('calculated_brix')
+    target_ph = physical.get('calculated_ph')
+    target_acidity = physical.get('calculated_acidity_pct')
+    
+    if target_brix is None:
+        return []
+    
+    # 카테고리 매칭 후보
+    candidates = []
+    for p in products:
+        p_main = str(p.get('category_main', ''))
+        p_sub = str(p.get('category_sub', ''))
+        # 카테고리 대분류 매칭 (완화)
+        if category == '음료' and '음료' not in p_main and '음료' not in p_sub:
+            if '과일' not in p_main and '탄산' not in p_main and '차' not in p_main:
+                continue
+        
+        p_brix = p.get('brix')
+        p_ph = p.get('ph')
+        p_acidity = p.get('acidity_pct')
+        if p_brix is None:
+            continue
+        
+        # 거리 계산 (Brix 비중 높게)
+        try:
+            p_brix = float(p_brix)
+            dist = abs(target_brix - p_brix) * 2.0
+            if target_ph and p_ph:
+                dist += abs(target_ph - float(p_ph)) * 3.0
+            if target_acidity and p_acidity:
+                dist += abs(target_acidity - float(p_acidity)) * 5.0
+            candidates.append((dist, p))
+        except (ValueError, TypeError):
+            continue
+    
+    # 거리 정렬 → 상위 N개
+    candidates.sort(key=lambda x: x[0])
+    return [c[1] for c in candidates[:top_n]]
+
+
+
     """카테고리 표준 프로파일 반환"""
     return CATEGORY_STANDARD_PROFILES.get(
         category, CATEGORY_STANDARD_PROFILES['기타']
@@ -2649,33 +3120,104 @@ def prompt_stage0_recipe(recipe_text, process_text=""):
 """
 
 
-def prompt_stage1_flavor(normalized_recipe_json, category="음료"):
-    """Stage 1: 배합비 → 맛 프로파일 (감각 몰입형 + 카테고리 표준)"""
+def prompt_stage1_flavor(normalized_recipe_json, category="음료",
+                           calculated_physical=None, qda_profile=None,
+                           similar_products=None):
+    """Stage 1: 배합비 → 맛 프로파일 (계산된 이화학 + QDA 기반)
+    
+    Args:
+        calculated_physical: calculate_physical_from_recipe() 결과
+        qda_profile: generate_qda_profile() 결과
+        similar_products: 시장 유사 제품 리스트
+    """
     category_guideline = format_category_guideline_for_prompt(category)
+    
+    # 계산된 이화학값 블록
+    physical_block = ""
+    if calculated_physical and calculated_physical.get('calculated_brix') is not None:
+        brix = calculated_physical['calculated_brix']
+        ph = calculated_physical.get('calculated_ph', '?')
+        acidity = calculated_physical.get('calculated_acidity_pct', '?')
+        sa_ratio = calculated_physical.get('sugar_acid_ratio', '?')
+        matched_pct = calculated_physical.get('total_matched_ratio', 0)
+        confidence = calculated_physical.get('confidence', 'low')
+        
+        physical_block = f"""
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+**📊 결정론적 이화학 계산 결과 (DB 기반, 신뢰도: {confidence})**
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+⚠️ 아래 값은 Claude 추정이 아닌 **원료 DB 기반 계산값**입니다.
+이 값을 그대로 사용하고, 이를 **해석**하는 역할만 하세요.
+
+- **Brix (가용성 고형분)**: {brix}°  ← 정확한 계산값
+- **pH (수소이온농도)**: {ph}
+- **산도 (citric acid 환산)**: {acidity}%
+- **당산비 (Brix/산도)**: {sa_ratio}
+- **DB 매칭된 원료 비율**: {matched_pct}%
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
+    
+    # QDA 프로파일 블록 (심리물리학 공식으로 계산된 인식 강도)
+    qda_block = ""
+    if qda_profile:
+        qda_text = format_qda_profile_for_prompt(qda_profile)
+        qda_block = f"""
+**🧪 QDA 전문 패널 인식 프로파일 (심리물리학 공식 기반)**
+
+이 값들은 위 이화학값에 {category} 카테고리 보정을 적용해 계산된
+**훈련된 전문 패널이 실제로 인지하는 강도**입니다.
+
+{qda_text}
+
+이 QDA 프로파일을 맛 해석의 **근거 데이터**로 사용하세요.
+추정하지 말고 이 값을 그대로 인용하세요.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
+    
+    # 유사 시장 제품 블록
+    similar_block = ""
+    if similar_products:
+        lines = []
+        for p in similar_products[:3]:
+            lines.append(
+                f"  • {p.get('name', '?')} ({p.get('maker', '?')}): "
+                f"Brix {p.get('brix', '?')}, pH {p.get('ph', '?')}, "
+                f"산도 {p.get('acidity_pct', '?')}%"
+            )
+        similar_block = f"""
+**🔍 이화학 프로파일이 유사한 시장 제품 (참조)**
+
+{chr(10).join(lines)}
+
+이 제품들의 관능 특성과 비교하여 평가하세요.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
     
     return f"""당신은 20년 경력의 {category} 카테고리 전문 관능 평가자입니다. 
 이 카테고리의 시장 제품들의 물성과 관능 특성에 대해 깊은 감각 기억과 표준 지식을 가지고 있습니다.
 
 {category_guideline}
+{physical_block}
+{qda_block}
+{similar_block}
 
-다음 배합의 {category} 제품을 실제로 시음했다고 상상해보세요:
+다음 배합의 {category} 제품입니다:
 
 ```json
 {json.dumps(normalized_recipe_json, ensure_ascii=False, indent=2)}
 ```
 
-**중요**: 이 제품의 강도를 평가할 때 반드시 **{category} 카테고리 표준**을 기준으로 판단하세요.
-같은 Brix 25도 탄산음료라면 '매우 단맛'이지만, 아이스크림이라면 '정상 단맛'입니다.
-카테고리 특성상 당연한 강도를 '과함'으로 오판하지 마세요.
+**⭐ 중요 원칙**:
+1. 위의 **결정론적 이화학값 + QDA 프로파일**을 그대로 인용하세요.
+2. Claude의 추측으로 값을 바꾸지 마세요. 계산값이 진실입니다.
+3. 당신의 역할은 **해석과 서술**입니다 — 수치를 감각 경험으로 번역.
 
-다음 단계로 사고하세요:
-1. 제품을 컵에 따랐을 때 — 색, 점도, 향이 어떤가?
-2. 첫 한 모금을 입에 넣었을 때 — 혀 앞쪽에서 무엇을 느끼나?
-3. 혀 전체로 퍼질 때 — 단맛/산미/쓴맛의 밸런스가 {category} 카테고리 표준 대비 어떠한가?
-4. 삼킨 후 — 끝맛과 여운은 어떤가?
-5. 전체적인 인상과 예상 강점/약점은?
-
-다음 JSON 형식으로만 출력하세요:
+이제 페르소나들이 이 제품을 정확히 이해할 수 있도록,
+다음 JSON 형식으로 출력하세요:
 
 ```json
 {{
@@ -2778,6 +3320,14 @@ def prompt_stage2_panel_eval_recipe(product_name, flavor_profile_json, personas,
 ```json
 {flavor_text}
 ```
+
+**⚠️ 중요**: 위 JSON에 `qda_profile` 필드가 있다면, 이는 **심리물리학 공식으로 
+계산된 훈련 패널의 실제 인지 강도**입니다. 페르소나들은 이 QDA 값을 
+**이미 체득한 상태**로 평가에 임합니다. 이 값을 무시하지 말고 기준점으로 사용하세요.
+
+**⚠️ 중요**: `similar_products` 필드가 있다면, 이 제품이 이화학적으로 
+유사한 시장 제품들입니다. 페르소나들은 "아, 이거 델몬트 포도 같은 느낌이네" 
+같은 비교 기억을 가지고 있습니다.
 
 **패널 명단 ({n_panels}명)**:
 ```json
@@ -5024,8 +5574,56 @@ with tabs[3]:
             )
             
             if run_s1:
-                with st.spinner(f"Stage 1: Claude가 {recipe_category} 관점으로 맛을 상상 중..."):
-                    prompt = prompt_stage1_flavor(parsed, category=recipe_category)
+                with st.spinner(f"Stage 1: {recipe_category} 관점으로 이화학 계산 + 맛 추론 중..."):
+                    # 🧪 A. 결정론적 이화학 계산 (DB 기반)
+                    recipe_ingredients_for_calc = parsed.get('normalized_recipe', []) if parsed else []
+                    calculated_physical = calculate_physical_from_recipe(
+                        recipe_ingredients_for_calc
+                    )
+                    
+                    # 🧠 B. QDA 프로파일 생성 (심리물리학 공식)
+                    # 배합비에서 특성 자동 추출
+                    has_co2 = any('탄산' in str(i.get('ingredient', '')) or 
+                                   'co2' in str(i.get('ingredient', '')).lower()
+                                   for i in recipe_ingredients_for_calc)
+                    has_caffeine = any('커피' in str(i.get('ingredient', '')) or
+                                        '카페인' in str(i.get('ingredient', '')) or
+                                        '차' in str(i.get('ingredient', ''))
+                                        for i in recipe_ingredients_for_calc)
+                    has_polyphenol = any('코코아' in str(i.get('ingredient', '')) or
+                                          '녹차' in str(i.get('ingredient', '')) or
+                                          '홍차' in str(i.get('ingredient', ''))
+                                          for i in recipe_ingredients_for_calc)
+                    fat_pct = sum(float(i.get('ratio_pct', 0))
+                                   for i in recipe_ingredients_for_calc
+                                   if any(kw in str(i.get('ingredient', '')) 
+                                          for kw in ['크림', '유지', '버터', '우유'])) * 0.1
+                    
+                    qda_profile = generate_qda_profile(
+                        calculated_physical, category=recipe_category,
+                        has_co2=has_co2, has_caffeine=has_caffeine,
+                        has_polyphenol=has_polyphenol, fat_pct=fat_pct
+                    )
+                    
+                    # 🔍 C. 유사 시장제품 찾기
+                    similar_products = find_similar_market_products(
+                        calculated_physical, recipe_category, top_n=3
+                    )
+                    
+                    # 세션에 저장 (Stage 2에서도 재사용)
+                    st.session_state.stage1_calculated = {
+                        'physical': calculated_physical,
+                        'qda_profile': qda_profile,
+                        'similar_products': similar_products,
+                    }
+                    
+                    # 🤖 D. Claude에게 "해석" 위임
+                    prompt = prompt_stage1_flavor(
+                        parsed, category=recipe_category,
+                        calculated_physical=calculated_physical,
+                        qda_profile=qda_profile,
+                        similar_products=similar_products,
+                    )
                     flavor, raw = call_claude_api_json(
                         prompt, st.session_state.api_key,
                         st.session_state.claude_model,
@@ -5033,8 +5631,39 @@ with tabs[3]:
                         max_tokens=4000
                     )
                     if flavor:
+                        # 계산된 이화학값을 flavor에 강제 덮어쓰기 (Claude가 임의로 바꿔도 원복)
+                        if calculated_physical.get('calculated_brix') is not None:
+                            if 'physical' not in flavor:
+                                flavor['physical'] = {}
+                            flavor['physical']['estimated_brix'] = calculated_physical['calculated_brix']
+                            flavor['physical']['estimated_ph'] = calculated_physical.get('calculated_ph')
+                            flavor['physical']['estimated_acidity_pct'] = calculated_physical.get('calculated_acidity_pct')
+                            flavor['physical']['sweetness_acid_ratio'] = calculated_physical.get('sugar_acid_ratio')
+                        # QDA 프로파일 추가
+                        flavor['qda_profile'] = qda_profile
+                        flavor['similar_products'] = [
+                            {'name': p.get('name'), 'maker': p.get('maker'),
+                             'brix': p.get('brix'), 'ph': p.get('ph')}
+                            for p in similar_products[:3]
+                        ]
+                        flavor['db_confidence'] = calculated_physical.get('confidence', 'low')
+                        flavor['db_matched_pct'] = calculated_physical.get('total_matched_ratio', 0)
+                        
                         st.session_state.current_flavor_profile = flavor
-                        st.success("✅ 맛 프로파일 추론 완료")
+                        
+                        confidence = calculated_physical.get('confidence')
+                        matched_pct = calculated_physical.get('total_matched_ratio', 0)
+                        if confidence == 'high':
+                            st.success(f"✅ 이화학 계산 + QDA 프로파일 완성 (DB 매칭 {matched_pct}%)")
+                        elif confidence == 'medium':
+                            st.info(f"✅ 맛 프로파일 완성 (DB 매칭 {matched_pct}% — 일부 원료 미매칭)")
+                        else:
+                            unmatched = calculated_physical.get('unmatched_ingredients', [])
+                            st.warning(
+                                f"⚠️ DB 매칭률 {matched_pct}%로 낮음. "
+                                f"미매칭 원료: {', '.join(unmatched[:3])}. "
+                                f"결과 정확도가 떨어질 수 있습니다."
+                            )
                     else:
                         st.error(f"파싱 실패: {raw[:500]}")
             
@@ -5042,25 +5671,72 @@ with tabs[3]:
             if st.session_state.current_flavor_profile:
                 flavor = st.session_state.current_flavor_profile
                 
+                # 🆕 DB 신뢰도 배지
+                db_conf = flavor.get('db_confidence', 'low')
+                db_matched = flavor.get('db_matched_pct', 0)
+                if db_conf == 'high':
+                    st.success(f"🧪 이화학값: **DB 계산** (신뢰도 높음, 매칭률 {db_matched}%)")
+                elif db_conf == 'medium':
+                    st.info(f"🧪 이화학값: DB 계산 (매칭률 {db_matched}%)")
+                else:
+                    st.warning(f"🧪 이화학값: DB 매칭률 낮음 ({db_matched}%) — Claude 추정 위주")
+                
                 with st.expander("🍑 추론된 맛 프로파일 보기 (Stage 1)",
                                 expanded=True):
                     # 물리화학
                     if 'physical' in flavor:
                         phys = flavor['physical']
-                        cc1, cc2, cc3 = st.columns(3)
+                        cc1, cc2, cc3, cc4 = st.columns(4)
                         cc1.metric("Brix", f"{phys.get('estimated_brix', 0):.1f}")
                         cc2.metric("pH", f"{phys.get('estimated_ph', 0):.1f}")
                         cc3.metric("산도",
                             f"{phys.get('estimated_acidity_pct', 0):.2f}%")
+                        sa_ratio = phys.get('sweetness_acid_ratio')
+                        cc4.metric("당산비", f"{sa_ratio:.1f}" if sa_ratio else "-")
+                    
+                    # 🆕 QDA 전문 패널 프로파일
+                    if flavor.get('qda_profile'):
+                        st.markdown("#### 🧪 QDA 전문 패널 인식 프로파일")
+                        st.caption("심리물리학 공식 기반, 페르소나들이 '훈련받아 체득한' 인식 강도")
+                        qda = flavor['qda_profile']
+                        
+                        # 3열로 나누어 표시
+                        qda_items = list(qda.items())
+                        n_per_col = (len(qda_items) + 2) // 3
+                        qcol1, qcol2, qcol3 = st.columns(3)
+                        for i, (attr, val) in enumerate(qda_items):
+                            col = [qcol1, qcol2, qcol3][i % 3]
+                            with col:
+                                # 강도별 색상 표시
+                                if val >= 5.5:
+                                    emoji = "🔴"
+                                elif val >= 4.0:
+                                    emoji = "🟡"
+                                elif val >= 2.5:
+                                    emoji = "🟢"
+                                else:
+                                    emoji = "⚪"
+                                st.markdown(f"{emoji} **{attr}**: {val}/7")
+                    
+                    # 🆕 유사 시장 제품
+                    if flavor.get('similar_products'):
+                        st.markdown("#### 🔍 이화학 프로파일 유사 시장 제품")
+                        st.caption("이 배합의 Brix/pH/산도와 가장 가까운 기존 제품")
+                        for p in flavor['similar_products']:
+                            st.caption(
+                                f"• **{p.get('name', '?')}** ({p.get('maker', '?')}): "
+                                f"Brix {p.get('brix', '?')}, pH {p.get('ph', '?')}"
+                            )
                     
                     # 맛
                     if 'taste' in flavor:
                         taste = flavor['taste']
+                        st.markdown("#### 📝 Claude 해석")
                         st.markdown(f"**▸ 첫인상:** {taste.get('first_impression', '')}")
                         st.markdown(f"**▸ 중반:** {taste.get('mid_palate', '')}")
                         st.markdown(f"**▸ 끝맛:** {taste.get('finish', '')}")
                         
-                        st.markdown("**관능 강도**")
+                        st.markdown("**Claude 추정 관능 강도 (1-10)**")
                         intensities = {
                             '단맛': taste.get('sweetness', 0),
                             '산미': taste.get('acidity', 0),
