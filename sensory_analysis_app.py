@@ -1615,14 +1615,335 @@ def calculate_physical_from_recipe(recipe_ingredients, db=None):
 
 
 # ============================================================================
-# 🧠 심리물리학 기반 인식 강도 변환 공식
+# 🍦 빙과 전용 이화학 계산 엔진 (Raoult's Law 기반)
 # ============================================================================
-# 실제 이화학값 (Brix, pH 등) → 페르소나가 "느끼는" 1~7 강도
-# 카테고리·온도·탄산·지방 등 마스킹 효과 반영
+# 원본: 오진양행 테스트배합 엑셀 (실제 R&D 현장 수식 그대로)
+# 계산 항목:
+#   - TS, 상대감미, 유지방, MSNF, 총유고형분
+#   - 비중 (20°C), 오버런 반영 중량
+#   - Fse (당류 빙점강하), Fsa (유염 빙점강하), 예상빙점, FPDF
 # ============================================================================
 
-def perceived_sweetness_intensity(brix, category='음료', has_co2=False,
-                                     acidity_pct=0, fat_pct=0):
+@st.cache_data
+def load_ice_cream_db():
+    """빙과 전용 DB 로드"""
+    import os
+    candidate_paths = [
+        'ice_cream_db.json',
+        './ice_cream_db.json',
+        os.path.join(os.path.dirname(__file__), 'ice_cream_db.json') 
+        if '__file__' in globals() else None,
+    ]
+    for path in candidate_paths:
+        if path and os.path.exists(path):
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception:
+                continue
+    return {'ingredients': {}, 'spec_ranges': {}}
+
+
+def find_ice_cream_ingredient(name_query, ice_cream_db):
+    """빙과 원료 퍼지 검색"""
+    if not name_query:
+        return None, None
+    ing_db = ice_cream_db.get('ingredients', {})
+    if not ing_db:
+        return None, None
+    
+    q = str(name_query).strip().replace(' ', '').lower()
+    
+    # 1차: 완전 일치
+    for name, props in ing_db.items():
+        if q == name.replace(' ', '').lower():
+            return name, props
+    
+    # 2차: 부분 일치
+    for name, props in ing_db.items():
+        ing_name = name.replace(' ', '').lower()
+        if q in ing_name or ing_name in q:
+            return name, props
+    
+    # 3차: 키워드 매핑
+    keyword_map = {
+        '설탕': '백설탕', '정백당': '백설탕',
+        '우유': '원유',
+        '크림': '생크림',
+        '시럽': '물엿(DE42)',
+        '요거트': '플레인요구르트',
+        '요구르트': '플레인요구르트',
+        '물': '정제수',
+        '소금': '정제염',
+        '바닐라': '바닐라빈',
+    }
+    for kw, mapped in keyword_map.items():
+        if kw in q and mapped in ing_db:
+            return mapped, ing_db[mapped]
+    
+    return None, None
+
+
+def calculate_ice_cream_physical(recipe_ingredients, sub_type='아이스크림',
+                                    overrun_pct=70, serving_weight_g=120,
+                                    yield_pct=98):
+    """빙과 전용 이화학 계산 (엑셀 수식 재현)
+    
+    Args:
+        recipe_ingredients: [{'ingredient': 원료명, 'ratio_pct': 비율}]
+        sub_type: 아이스크림/젤라토/샤베트/아이스바
+        overrun_pct: 오버런 % (공기 함량, 일반 아이스크림 70~100)
+        serving_weight_g: 1개당 중량
+    
+    Returns:
+        dict: TS, 상대감미, 유지방, MSNF, 비중, 예상빙점 등 15+ 항목
+    """
+    db = load_ice_cream_db()
+    ing_db = db.get('ingredients', {})
+    spec_ranges = db.get('spec_ranges', {}).get(sub_type, 
+                           db.get('spec_ranges', {}).get('아이스크림', {}))
+    
+    if not ing_db:
+        return {'error': '빙과 DB 미로드', 'confidence': 'low'}
+    
+    # 초기화
+    total_ratio = 0
+    ts_sum = 0          # TS 가중합 (1%당 TS%)
+    rel_sweet_sum = 0   # 상대감미 가중합
+    milk_fat_sum = 0    # 유지방 가중합
+    msnf_sum = 0        # MSNF 가중합
+    fse_sum = 0         # 당류 빙점강하 (Fse)
+    matched = []
+    unmatched = []
+    
+    # 1단계: 각 원료별 기여도 합산
+    for item in recipe_ingredients:
+        name = item.get('ingredient', '')
+        try:
+            ratio = float(item.get('ratio_pct', 0))
+        except (ValueError, TypeError):
+            continue
+        if ratio <= 0:
+            continue
+        
+        found_name, props = find_ice_cream_ingredient(name, db)
+        if not props:
+            unmatched.append(name)
+            continue
+        
+        total_ratio += ratio
+        
+        # TS 기여 (1%당 props['ts_pct']/100 고형분)
+        ts_frac = (props.get('ts_pct') or 0) / 100
+        ts_sum += ratio * ts_frac
+        
+        # 상대감미 기여 (1%당 rel_sweetness %)
+        rel_sweet_frac = (props.get('rel_sweetness') or 0) / 100
+        rel_sweet_sum += ratio * rel_sweet_frac
+        
+        # 유지방 (1%당 milk_fat_pct %)
+        milk_fat_frac = (props.get('milk_fat_pct') or 0) / 100
+        milk_fat_sum += ratio * milk_fat_frac
+        
+        # MSNF
+        msnf_frac = (props.get('msnf_pct') or 0) / 100
+        msnf_sum += ratio * msnf_frac
+        
+        # Fse (당류 빙점강하): 1.86 × 10 / 분자량 × 농도비율
+        mw = props.get('mw_sugar')
+        if mw and mw > 0 and props.get('rel_sweetness'):
+            # 실제 당 기여량 (TS에서 감미 가능한 성분만)
+            sugar_fraction = rel_sweet_frac * ratio  # 설탕 환산 농도
+            if sugar_fraction > 0:
+                fse_contribution = 1.86 * 10 / mw * sugar_fraction
+                fse_sum += fse_contribution
+        
+        matched.append({
+            'input_name': name,
+            'matched_name': found_name,
+            'ratio': ratio,
+            'ts_contribution': ratio * ts_frac,
+            'rel_sweet_contribution': ratio * rel_sweet_frac,
+            'milk_fat_contribution': ratio * milk_fat_frac,
+        })
+    
+    if total_ratio == 0:
+        return {'error': '유효한 원료 없음', 'confidence': 'low',
+                'unmatched_ingredients': unmatched}
+    
+    # 2단계: 최종 지표 계산 (100% 기준)
+    ts_pct = ts_sum  # 이미 %이므로 그대로
+    rel_sweet = rel_sweet_sum  # 상대감미 (설탕 100% 기준)
+    milk_fat_pct = milk_fat_sum
+    msnf_pct = msnf_sum
+    total_milk_solids = milk_fat_pct + msnf_pct  # 총유고형분
+    
+    # 비중 (20°C) — 엑셀 수식: 1/(지방/0.93 + (TS-지방)/1.58 + 수분)
+    # 지방 비중 0.93, 기타고형분 1.58, 물 1.00
+    try:
+        density_20c = 1.0 / (
+            (milk_fat_pct * 0.01 / 0.93) +
+            ((ts_pct - milk_fat_pct) * 0.01 / 1.58) +
+            ((100 - ts_pct) * 0.01)
+        )
+    except ZeroDivisionError:
+        density_20c = 1.0
+    
+    # Fsa (유염 빙점강하) = MSNF × 2.37 / (100 - TS)
+    try:
+        fsa = (msnf_pct * 2.37) / (100 - ts_pct) if ts_pct < 99 else 0
+    except ZeroDivisionError:
+        fsa = 0
+    
+    # 총 빙점강하 Ft (음수 값)
+    ft = -(fse_sum + fsa)
+    predicted_fp_c = ft  # 예상빙점 (°C)
+    
+    # FPDF (빙점강하 인자) ≈ Fse × 14.5
+    fpdf = fse_sum * 14.5
+    
+    # 수율 반영 생산량 (1개당)
+    serving_volume_ml = serving_weight_g / density_20c * (1 + overrun_pct / 100)
+    
+    # 3단계: 정상 범위 판정
+    spec_check = {}
+    metrics_to_check = {
+        'ts_pct': ts_pct,
+        'milk_fat_pct': milk_fat_pct,
+        'msnf_pct': msnf_pct,
+        'rel_sweetness': rel_sweet,
+        'predicted_fp_c': predicted_fp_c,
+        'overrun_pct': overrun_pct,
+        'density_20c': density_20c,
+    }
+    for key, value in metrics_to_check.items():
+        if key in spec_ranges:
+            low, high, desc = spec_ranges[key]
+            in_range = low <= value <= high
+            spec_check[key] = {
+                'value': round(value, 2),
+                'in_range': in_range,
+                'range': f"{low}~{high}",
+                'desc': desc,
+                'status': '✓ 적정' if in_range else (
+                    '⚠ 낮음' if value < low else '⚠ 높음'
+                )
+            }
+    
+    # 매칭률
+    confidence = ('high' if total_ratio >= 90 else
+                  'medium' if total_ratio >= 70 else 'low')
+    
+    return {
+        # 기본 이화학
+        'ts_pct': round(ts_pct, 2),
+        'rel_sweetness': round(rel_sweet, 2),
+        'milk_fat_pct': round(milk_fat_pct, 2),
+        'msnf_pct': round(msnf_pct, 2),
+        'total_milk_solids_pct': round(total_milk_solids, 2),
+        
+        # 물성
+        'density_20c': round(density_20c, 4),
+        'overrun_pct': overrun_pct,
+        'serving_volume_ml': round(serving_volume_ml, 1),
+        
+        # 빙점강하 (Raoult's Law)
+        'fse_sugar': round(fse_sum, 4),
+        'fsa_salt': round(fsa, 4),
+        'predicted_freezing_point_c': round(predicted_fp_c, 2),
+        'fpdf': round(fpdf, 2),
+        
+        # 메타
+        'sub_type': sub_type,
+        'spec_check': spec_check,
+        'confidence': confidence,
+        'total_matched_ratio': round(total_ratio, 1),
+        'matched_details': matched,
+        'unmatched_ingredients': unmatched,
+    }
+
+
+def generate_ice_cream_qda(physical, sub_type='아이스크림'):
+    """빙과 이화학 → QDA 프로파일 (심리물리학 + 전문가 기준)
+    
+    Args:
+        physical: calculate_ice_cream_physical() 결과
+    """
+    if physical.get('error'):
+        return {}
+    
+    ts = physical.get('ts_pct', 30)
+    rel_sweet = physical.get('rel_sweetness', 16)
+    milk_fat = physical.get('milk_fat_pct', 8)
+    msnf = physical.get('msnf_pct', 10)
+    density = physical.get('density_20c', 1.1)
+    overrun = physical.get('overrun_pct', 70)
+    fp = physical.get('predicted_freezing_point_c', -2.5)
+    total_milk_solids = physical.get('total_milk_solids_pct', 18)
+    
+    # 단맛 강도 (1~7): 상대감미 14 = 기준점 6
+    # 빙과는 저온으로 단맛 인식 1.5점 하락, 따라서 실제 rel_sweet 16도 강도 5~6
+    sweet_base = 4.0 + ((rel_sweet - 10) / 4)
+    sweet_intensity = round(max(1, min(7, sweet_base * 0.75)), 1)  # 저온 보정
+    
+    # 크리미함: 유지방 + MSNF 기반
+    creaminess = round(max(1, min(7, 2 + (milk_fat * 0.25) + (msnf * 0.15))), 1)
+    
+    # 바디감: 총고형분 + 비중
+    body = round(max(1, min(7, 1 + (ts - 20) * 0.15 + (density - 1.0) * 15)), 1)
+    
+    # 입안 녹음성: 빙점 기반 (빙점 낮을수록 더 부드러운 결정)
+    # 예상빙점 -2.5 = 적정(5점), -2.0 = 단단(3점), -3.0 = 부드러움(6점)
+    melting = round(max(1, min(7, 4 + (abs(fp) - 2.0) * 2)), 1)
+    
+    # 공기감 (오버런)
+    airiness = round(max(1, min(7, 1 + overrun / 20)), 1)
+    
+    # 차가움 (모든 빙과 공통 높음)
+    coolness = 6.5
+    
+    # 유지방 풍미
+    milk_fat_flavor = round(max(1, min(7, 1.5 + milk_fat * 0.4)), 1)
+    
+    # 경도 예측 (빙점 기반): 빙점 낮으면 부드럽고 오래 녹음, 높으면 단단
+    # -3.0°C → 단단 6점 / -2.0°C → 부드러움 3점
+    hardness = round(max(1, min(7, 3 + (abs(fp) - 2.0) * 3)), 1)
+    
+    # 신맛 (과일 기반 샤베트는 산미 높음)
+    sourness = 2.0
+    if sub_type == '샤베트':
+        sourness = 3.5
+    
+    # 뒷맛 깔끔함: 유지방 많으면 여운 길고, 샤베트는 깔끔
+    aftertaste_clean = round(max(1, min(7, 6 - milk_fat * 0.25)), 1)
+    
+    # 용해 속도: 오버런 높고 고형분 적으면 빠르게 녹음
+    melt_speed = round(max(1, min(7, 4 + overrun / 30 - ts / 20)), 1)
+    
+    qda = {
+        # 맛 강도
+        '단맛 강도': sweet_intensity,
+        '신맛 강도': sourness,
+        '유지방 풍미': milk_fat_flavor,
+        
+        # 텍스처 (빙과 핵심)
+        '크리미함': creaminess,
+        '바디감': body,
+        '입안 녹음성': melting,
+        '공기감(오버런)': airiness,
+        '경도': hardness,
+        '용해 속도': melt_speed,
+        '차가움': coolness,
+        
+        # 여운
+        '뒷맛 깔끔함': aftertaste_clean,
+        '뒷맛 유지방감': round(max(1, min(7, milk_fat * 0.4)), 1),
+    }
+    
+    return qda
+
+
+
     """지각 단맛 강도 (1~7 리커트)
     
     Stevens' power law + 카테고리 보정
@@ -5575,37 +5896,92 @@ with tabs[3]:
             
             if run_s1:
                 with st.spinner(f"Stage 1: {recipe_category} 관점으로 이화학 계산 + 맛 추론 중..."):
-                    # 🧪 A. 결정론적 이화학 계산 (DB 기반)
                     recipe_ingredients_for_calc = parsed.get('normalized_recipe', []) if parsed else []
-                    calculated_physical = calculate_physical_from_recipe(
-                        recipe_ingredients_for_calc
-                    )
                     
-                    # 🧠 B. QDA 프로파일 생성 (심리물리학 공식)
-                    # 배합비에서 특성 자동 추출
-                    has_co2 = any('탄산' in str(i.get('ingredient', '')) or 
-                                   'co2' in str(i.get('ingredient', '')).lower()
-                                   for i in recipe_ingredients_for_calc)
-                    has_caffeine = any('커피' in str(i.get('ingredient', '')) or
-                                        '카페인' in str(i.get('ingredient', '')) or
-                                        '차' in str(i.get('ingredient', ''))
-                                        for i in recipe_ingredients_for_calc)
-                    has_polyphenol = any('코코아' in str(i.get('ingredient', '')) or
-                                          '녹차' in str(i.get('ingredient', '')) or
-                                          '홍차' in str(i.get('ingredient', ''))
-                                          for i in recipe_ingredients_for_calc)
-                    fat_pct = sum(float(i.get('ratio_pct', 0))
-                                   for i in recipe_ingredients_for_calc
-                                   if any(kw in str(i.get('ingredient', '')) 
-                                          for kw in ['크림', '유지', '버터', '우유'])) * 0.1
+                    # 🍦 빙과 자동 분기: 전용 엔진 사용
+                    is_ice_cream = (recipe_category == '빙과')
+                    ice_cream_physical = None
                     
-                    qda_profile = generate_qda_profile(
-                        calculated_physical, category=recipe_category,
-                        has_co2=has_co2, has_caffeine=has_caffeine,
-                        has_polyphenol=has_polyphenol, fat_pct=fat_pct
-                    )
+                    if is_ice_cream:
+                        # ───── 빙과 전용 계산 엔진 ─────
+                        # 세부 타입 추정 (배합에서 추론)
+                        total_fat = sum(float(i.get('ratio_pct', 0)) 
+                                         for i in recipe_ingredients_for_calc
+                                         if any(k in str(i.get('ingredient', ''))
+                                                for k in ['생크림', '버터', '유지방']))
+                        has_fruit = any(k in str(i.get('ingredient', ''))
+                                         for i in recipe_ingredients_for_calc
+                                         for k in ['딸기', '망고', '라즈베리', '파인애플', '키위'])
+                        
+                        if total_fat < 1 and has_fruit:
+                            ice_sub_type = '샤베트'
+                            default_overrun = 35
+                        elif total_fat < 5:
+                            ice_sub_type = '젤라토'
+                            default_overrun = 30
+                        elif total_fat < 10:
+                            ice_sub_type = '젤라토'
+                            default_overrun = 40
+                        else:
+                            ice_sub_type = '아이스크림'
+                            default_overrun = 70
+                        
+                        # 빙과 전용 계산
+                        ice_cream_physical = calculate_ice_cream_physical(
+                            recipe_ingredients_for_calc,
+                            sub_type=ice_sub_type,
+                            overrun_pct=default_overrun
+                        )
+                        
+                        # 음료 DB 형식과 호환되게 변환 (Stage 1 프롬프트용)
+                        calculated_physical = {
+                            'calculated_brix': ice_cream_physical.get('ts_pct'),
+                            'calculated_ph': 6.5,  # 빙과는 pH 중성 부근
+                            'calculated_acidity_pct': 0.1,
+                            'calculated_sweetness_index': ice_cream_physical.get('rel_sweetness'),
+                            'sugar_acid_ratio': None,
+                            'total_matched_ratio': ice_cream_physical.get('total_matched_ratio', 0),
+                            'unmatched_ingredients': ice_cream_physical.get('unmatched_ingredients', []),
+                            'matched_details': ice_cream_physical.get('matched_details', []),
+                            'confidence': ice_cream_physical.get('confidence', 'low'),
+                            # 빙과 전용 필드
+                            'ice_cream_data': ice_cream_physical,
+                        }
+                        
+                        # 빙과 QDA (훨씬 정교한 전문가 수준)
+                        qda_profile = generate_ice_cream_qda(
+                            ice_cream_physical, sub_type=ice_sub_type
+                        )
+                    else:
+                        # ───── 음료/기타 카테고리: 기존 엔진 ─────
+                        calculated_physical = calculate_physical_from_recipe(
+                            recipe_ingredients_for_calc
+                        )
+                        
+                        # 배합비에서 특성 자동 추출
+                        has_co2 = any('탄산' in str(i.get('ingredient', '')) or 
+                                       'co2' in str(i.get('ingredient', '')).lower()
+                                       for i in recipe_ingredients_for_calc)
+                        has_caffeine = any('커피' in str(i.get('ingredient', '')) or
+                                            '카페인' in str(i.get('ingredient', '')) or
+                                            '차' in str(i.get('ingredient', ''))
+                                            for i in recipe_ingredients_for_calc)
+                        has_polyphenol = any('코코아' in str(i.get('ingredient', '')) or
+                                              '녹차' in str(i.get('ingredient', '')) or
+                                              '홍차' in str(i.get('ingredient', ''))
+                                              for i in recipe_ingredients_for_calc)
+                        fat_pct = sum(float(i.get('ratio_pct', 0))
+                                       for i in recipe_ingredients_for_calc
+                                       if any(kw in str(i.get('ingredient', '')) 
+                                              for kw in ['크림', '유지', '버터', '우유'])) * 0.1
+                        
+                        qda_profile = generate_qda_profile(
+                            calculated_physical, category=recipe_category,
+                            has_co2=has_co2, has_caffeine=has_caffeine,
+                            has_polyphenol=has_polyphenol, fat_pct=fat_pct
+                        )
                     
-                    # 🔍 C. 유사 시장제품 찾기
+                    # 🔍 C. 유사 시장제품 찾기 (음료 DB 기반)
                     similar_products = find_similar_market_products(
                         calculated_physical, recipe_category, top_n=3
                     )
@@ -5615,6 +5991,8 @@ with tabs[3]:
                         'physical': calculated_physical,
                         'qda_profile': qda_profile,
                         'similar_products': similar_products,
+                        'is_ice_cream': is_ice_cream,
+                        'ice_cream_physical': ice_cream_physical,
                     }
                     
                     # 🤖 D. Claude에게 "해석" 위임
@@ -5683,8 +6061,86 @@ with tabs[3]:
                 
                 with st.expander("🍑 추론된 맛 프로파일 보기 (Stage 1)",
                                 expanded=True):
-                    # 물리화학
-                    if 'physical' in flavor:
+                    # 🍦 빙과 전용 체크포인트 (우선 표시)
+                    ice_data = st.session_state.get('stage1_calculated', {}).get('ice_cream_physical')
+                    if ice_data and not ice_data.get('error'):
+                        st.markdown(f"### 🍦 빙과 체크포인트 ({ice_data.get('sub_type', '?')})")
+                        st.caption("실제 빙과 R&D 현장의 표준 계산식 기반 (Raoult's Law + 가중평균)")
+                        
+                        # 1행: 기본 조성
+                        ic1, ic2, ic3, ic4 = st.columns(4)
+                        ic1.metric("TS(총고형분)", f"{ice_data.get('ts_pct', 0):.1f}%")
+                        ic2.metric("유지방", f"{ice_data.get('milk_fat_pct', 0):.1f}%")
+                        ic3.metric("MSNF", f"{ice_data.get('msnf_pct', 0):.1f}%")
+                        ic4.metric("총유고형분", f"{ice_data.get('total_milk_solids_pct', 0):.1f}%")
+                        
+                        # 2행: 물성 + 빙점
+                        ic5, ic6, ic7, ic8 = st.columns(4)
+                        ic5.metric("상대감미", f"{ice_data.get('rel_sweetness', 0):.1f}")
+                        ic6.metric("비중(20°C)", f"{ice_data.get('density_20c', 0):.4f}")
+                        ic7.metric("예상빙점", f"{ice_data.get('predicted_freezing_point_c', 0):.2f}°C")
+                        ic8.metric("FPDF", f"{ice_data.get('fpdf', 0):.2f}")
+                        
+                        # 3행: 공정 파라미터
+                        ic9, ic10, ic11 = st.columns(3)
+                        ic9.metric("오버런", f"{ice_data.get('overrun_pct', 70)}%")
+                        ic10.metric("1회분 부피", f"{ice_data.get('serving_volume_ml', 0):.0f} ml")
+                        ic11.metric("세부유형", ice_data.get('sub_type', '?'))
+                        
+                        # 정상 범위 판정
+                        spec_check = ice_data.get('spec_check', {})
+                        if spec_check:
+                            st.markdown("##### 🎯 정상 범위 판정")
+                            spec_rows = []
+                            for key, info in spec_check.items():
+                                key_ko = {
+                                    'ts_pct': 'TS(%)',
+                                    'milk_fat_pct': '유지방(%)',
+                                    'msnf_pct': 'MSNF(%)',
+                                    'rel_sweetness': '상대감미',
+                                    'predicted_fp_c': '예상빙점(°C)',
+                                    'overrun_pct': '오버런(%)',
+                                    'density_20c': '비중',
+                                }.get(key, key)
+                                spec_rows.append({
+                                    '항목': key_ko,
+                                    '실제값': f"{info['value']:.2f}",
+                                    '정상범위': info['range'],
+                                    '판정': info['status'],
+                                    '설명': info['desc'],
+                                })
+                            spec_df = pd.DataFrame(spec_rows)
+                            
+                            # 스타일링 (판정 색상)
+                            def style_status(row):
+                                if '적정' in row['판정']:
+                                    return ['background-color: #dcfce7'] * len(row)
+                                else:
+                                    return ['background-color: #fef3c7'] * len(row)
+                            styled = spec_df.style.apply(style_status, axis=1)
+                            st.dataframe(styled, use_container_width=True, hide_index=True)
+                        
+                        # 매칭 상세
+                        matched = ice_data.get('matched_details', [])
+                        unmatched = ice_data.get('unmatched_ingredients', [])
+                        if matched or unmatched:
+                            with st.expander(f"📋 원료 매칭 상세 ({len(matched)}개 매칭, {len(unmatched)}개 실패)"):
+                                if matched:
+                                    match_df = pd.DataFrame([{
+                                        '입력 원료': m['input_name'],
+                                        'DB 매칭': m['matched_name'],
+                                        '사용%': f"{m['ratio']:.1f}",
+                                        'TS 기여%': f"{m['ts_contribution']:.2f}",
+                                        '유지방 기여%': f"{m['milk_fat_contribution']:.2f}",
+                                    } for m in matched])
+                                    st.dataframe(match_df, use_container_width=True, hide_index=True)
+                                if unmatched:
+                                    st.warning(f"⚠️ 매칭 실패: {', '.join(unmatched)}")
+                        
+                        st.divider()
+                    
+                    # 물리화학 (음료/기타 - 기존 표시)
+                    elif 'physical' in flavor:
                         phys = flavor['physical']
                         cc1, cc2, cc3, cc4 = st.columns(4)
                         cc1.metric("Brix", f"{phys.get('estimated_brix', 0):.1f}")
