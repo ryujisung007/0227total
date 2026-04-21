@@ -520,10 +520,28 @@ def summarize_for_chatbot(eval_data):
             )
         persona_block = "\n".join(persona_summary)
         
+        # 🎯 카테고리 표준 특성 (전문가 지침)
+        cat_std = get_category_standard(category)
+        sensory_std_str = ", ".join([f"{k}={v}" for k, v in cat_std['sensory_std'].items()])
+        market_examples_str = " / ".join(cat_std['market_examples'][:3])
+        
         summary = f"""
+**🎯 이 조사의 카테고리 — {category} (매우 중요!)**
+
+**{category} 카테고리 특성**:
+- 세부 제품군: {', '.join(cat_std['sub_types'])}
+- 물리 표준: {cat_std['physical_std'].get('brix', 'N/A')}
+- 관능 표준: {sensory_std_str}
+- 시장 기준 제품: {market_examples_str}
+
+**{category} 전문가 평가 지침** (답변 시 반드시 준수):
+{cat_std['expert_guideline']}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 **제품 정보**
 - 제품명: {product}
-- 카테고리: {category}
+- 카테고리: **{category}** ← 이 카테고리 기준으로 모든 답변
 - 시장 맥락: {market_ctx}
 - 맛 프로파일: {taste_summary}
 
@@ -5103,7 +5121,11 @@ with tabs[3]:
                         eval_result, raw = call_claude_api_json(
                             prompt, st.session_state.api_key,
                             st.session_state.claude_model,
-                            system_msg="당신은 관능검사 시뮬레이션 엔진입니다.",
+                            system_msg=(
+                                f"당신은 {effective_category} 카테고리 관능검사 "
+                                f"시뮬레이션 엔진입니다. 모든 패널은 {effective_category} "
+                                f"카테고리 표준 훈련을 받은 상태로 평가합니다."
+                            ),
                             max_tokens=dynamic_tokens,
                             timeout=300
                         )
@@ -5549,18 +5571,32 @@ with tabs[3]:
                 
                 with st.spinner(f"다시 평가 중... ({n_retry}명, 최대 5분)"):
                     if mode == 'recipe':
+                        # ✅ 저장된 카테고리·시장 맥락을 재평가에도 전달
+                        retry_category = eval_data.get('category', '음료')
+                        retry_market_ctx = eval_data.get('market_context', '신제품 개발')
                         prompt = prompt_stage2_panel_eval_recipe(
                             eval_data['product_name'],
-                            eval_data['flavor_profile'], personas_for_retry
+                            eval_data['flavor_profile'], personas_for_retry,
+                            market_context=retry_market_ctx,
+                            category=retry_category
+                        )
+                        retry_system_msg = (
+                            f"당신은 {retry_category} 카테고리 관능검사 시뮬레이션 "
+                            f"엔진입니다. 모든 패널은 {retry_category} 카테고리 표준 "
+                            f"훈련을 받은 상태로 평가합니다."
                         )
                     else:
                         prompt = prompt_stage2_panel_eval_concept(
                             eval_data['product_name'],
                             eval_data['concept_profile'], personas_for_retry
                         )
+                        retry_system_msg = (
+                            "당신은 컨셉 평가 시뮬레이션 엔진입니다."
+                        )
                     new_eval, raw = call_claude_api_json(
                         prompt, st.session_state.api_key,
                         st.session_state.claude_model,
+                        system_msg=retry_system_msg,
                         max_tokens=dynamic_tokens,
                         timeout=300
                     )
@@ -6126,12 +6162,17 @@ with tabs[3]:
             chat_container = st.container()
             with chat_container:
                 if not st.session_state.chatbot_history:
-                    # 첫 진입 시 환영 메시지
+                    # 첫 진입 시 환영 메시지 (카테고리 명시)
                     mode_str = ("배합비" if mode == 'recipe' else "컨셉")
+                    cat_str = eval_data.get('category', '')
+                    cat_prefix = f"**{cat_str} 카테고리** " if cat_str and mode == 'recipe' else ""
                     greeting = (
-                        f"안녕하세요! {current_product} {mode_str} 평가 결과에 대해 "
-                        f"궁금한 점이 있으시면 물어보세요. 아래 빠른 질문 버튼을 "
-                        f"이용하시거나 직접 입력해주세요."
+                        f"안녕하세요! {cat_prefix}{current_product} {mode_str} 평가 결과에 "
+                        f"대해 궁금한 점이 있으시면 물어보세요. 아래 빠른 질문 버튼을 "
+                        f"이용하시거나 직접 입력해주세요.\n\n"
+                        f"💡 **카테고리 인식 확인**: 이 조사는 **{cat_str if cat_str else '해당 제품'}** "
+                        f"카테고리 기준으로 진행되었습니다. 답변도 이 카테고리 표준을 "
+                        f"전제로 제공됩니다."
                     )
                     with st.chat_message("assistant"):
                         st.markdown(greeting)
@@ -6218,19 +6259,33 @@ with tabs[3]:
                             "토론 질문 1개를 추가하세요."
                         )
                     
-                    system_msg = f"""당신은 식품 R&D 전문 컨설턴트입니다. 
-소비자 조사 결과(AI 시뮬레이션)를 분석하고 개선을 제안하는 역할입니다.
+                    # 카테고리 정보 추출 (배합비 모드만)
+                    eval_category = eval_data.get('category', '음료')
+                    
+                    system_msg = f"""당신은 **{eval_category} 카테고리 전문 R&D 컨설턴트**입니다.
+이 조사의 제품은 **{eval_category} 카테고리**이므로, 
+{eval_category}의 시장 표준과 특성을 반드시 전제로 답변하세요.
+
+**⚠️ 카테고리 인식 필수 원칙**:
+- 이 제품은 "{eval_category}"입니다. 절대로 다른 카테고리로 착각하지 마세요.
+- 예: 빙과라면 Brix 25는 정상. 이를 "너무 달다"고 오판하지 마세요.
+- 예: 맥주라면 쓴맛 4~5점은 정상. 이를 "쓴맛 줄여라"로 답하지 마세요.
+- 카테고리 표준 특성을 벗어나는 개선 제안은 금지.
 
 {eval_summary}
 
 **답변 원칙**:
-1. 위 데이터에 근거해서만 답변하세요. 데이터에 없는 것은 추측하지 말고 
-   "주어진 결과만으로는 알 수 없습니다"라고 말하세요.
+1. 위 데이터와 {eval_category} 카테고리 표준에 근거해서만 답변하세요.
+   데이터에 없는 것은 추측하지 말고 "주어진 결과만으로는 알 수 없습니다"라고 말하세요.
 2. 페르소나 인터뷰 요청 시 해당 ID의 reasoning과 comment를 참고해 1인칭으로 답하세요.
 3. 답변은 간결하게, 마크다운 사용 가능.
 4. 제품 R&D 실무자가 바로 활용할 수 있는 실질적 조언을 우선.
-5. 이 결과가 AI 시뮬레이션임을 항상 인지하고, 실제 시장 검증이 
-   필요함을 적절히 상기시키세요.{teaching_guide}"""
+5. 개선 제안 시 {eval_category} 카테고리 **표준 범위 내**에서 제안하세요.
+6. 이 결과가 AI 시뮬레이션임을 항상 인지하고, 실제 시장 검증이 
+   필요함을 적절히 상기시키세요.{teaching_guide}
+
+**중요**: 답변 시작 부분에 해당 제품의 카테고리가 {eval_category}임을 인식했다는 것을
+자연스럽게 드러내세요. 예: "빙과 카테고리 제품이니...", "음료 카테고리 기준으로..."."""
                     
                     # API 호출 (Haiku 4.5 고정)
                     with st.spinner("🤔 답변 생성 중..."):
