@@ -1885,7 +1885,7 @@ def find_similar_market_products(physical, category, db=None, top_n=3):
     return [c[1] for c in candidates[:top_n]]
 
 
-
+def get_category_standard(category):
     """카테고리 표준 프로파일 반환"""
     return CATEGORY_STANDARD_PROFILES.get(
         category, CATEGORY_STANDARD_PROFILES['기타']
