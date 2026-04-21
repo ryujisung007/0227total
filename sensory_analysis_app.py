@@ -6,10 +6,9 @@ v3.0 신규:
 - 차이식별: Claude 기반 연습 시나리오 생성
 - 순위법: 3가지 검정법(범위/차이/χ²) 병렬 + 동질군 표시
 - 평점법 신규 탭: 12항목 리커트 7점, 3기준 합격 판정
-- AI 가상 소비자 조사: 배합비 모드 + 컨셉 모드, 20명 페르소나
+- AI 가상 소비자 조사: 배합비 모드 + 컨셉 모드, 패널 5~30명 조정 가능 (기본 20명)
 - 강의 모드 토글: 교재 콘텐츠 자동 펼침
 - 핸드아웃 HTML 자동 생성
-- Sci-Lab 다크 테마 (Tech Blue, 회로/분자 모티프)
 """
 
 import streamlit as st
@@ -76,176 +75,15 @@ if not st.session_state.api_key:
 
 
 # ============================================================================
-# Sci-Lab 다크 테마 CSS (Tech Blue / 회로·분자 모티프)
+# 기본 스타일 (기능에 필요한 최소 CSS만)
 # ============================================================================
 
-SCILAB_THEME = """
+BASE_STYLE = """
 <style>
-/* 기본 다크 배경 */
-.stApp {
-    background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
-    color: #e2e8f0;
-}
-
-/* 타이틀 강조 */
-h1, h2, h3 {
-    color: #38bdf8 !important;
-    font-family: 'Roboto', sans-serif;
-    letter-spacing: 0.5px;
-}
-
-h1 {
-    border-bottom: 2px solid #22d3ee;
-    padding-bottom: 10px;
-    position: relative;
-}
-
-h1::before {
-    content: "◈";
-    color: #22d3ee;
-    margin-right: 10px;
-}
-
-h2::before {
-    content: "▸";
-    color: #22d3ee;
-    margin-right: 8px;
-}
-
-/* 사이드바 */
-[data-testid="stSidebar"] {
-    background: #0f172a;
-    border-right: 1px solid #1e40af;
-}
-
-/* 탭 */
-.stTabs [data-baseweb="tab-list"] {
-    gap: 4px;
-    background: transparent;
-}
-
-.stTabs [data-baseweb="tab"] {
-    background: rgba(30, 64, 175, 0.1);
-    color: #94a3b8;
-    border: 1px solid #1e40af;
-    border-radius: 6px 6px 0 0;
-    font-family: 'Roboto', sans-serif;
-}
-
-.stTabs [aria-selected="true"] {
-    background: rgba(34, 211, 238, 0.15) !important;
-    color: #22d3ee !important;
-    border: 1px solid #22d3ee !important;
-    border-bottom: 2px solid #22d3ee !important;
-}
-
-/* Metric 카드 */
-[data-testid="stMetric"] {
-    background: rgba(15, 23, 42, 0.8);
-    border: 1px solid #1e40af;
-    border-left: 3px solid #22d3ee;
-    padding: 12px;
-    border-radius: 4px;
-}
-
-[data-testid="stMetricValue"] {
-    color: #38bdf8 !important;
-    font-family: 'Roboto Mono', monospace;
-}
-
-[data-testid="stMetricLabel"] {
-    color: #94a3b8 !important;
-}
-
-/* Expander */
-.streamlit-expanderHeader {
-    background: rgba(30, 64, 175, 0.15);
-    border: 1px solid #1e40af;
-    color: #38bdf8 !important;
-}
-
-/* 정보 박스 */
-.stAlert {
-    background: rgba(34, 211, 238, 0.08);
-    border-left: 3px solid #22d3ee;
-    color: #e2e8f0;
-}
-
-/* 성공/경고/오류 색상 조정 */
-[data-baseweb="notification"] {
-    background: rgba(15, 23, 42, 0.9);
-    border-color: #22d3ee;
-}
-
-/* 버튼 */
-.stButton > button {
-    background: linear-gradient(135deg, #0369a1 0%, #0891b2 100%);
-    color: #f0f9ff;
-    border: 1px solid #22d3ee;
-    font-family: 'Roboto', sans-serif;
-    transition: all 0.3s;
-}
-
-.stButton > button:hover {
-    background: linear-gradient(135deg, #0891b2 0%, #22d3ee 100%);
-    box-shadow: 0 0 15px rgba(34, 211, 238, 0.5);
-    transform: translateY(-1px);
-}
-
-/* 주요 버튼 */
-.stButton > button[kind="primary"] {
-    background: linear-gradient(135deg, #22d3ee 0%, #38bdf8 100%);
-    color: #0f172a;
-    font-weight: bold;
-}
-
-/* 입력 필드 */
-.stTextInput > div > div > input,
-.stTextArea > div > div > textarea,
-.stNumberInput > div > div > input,
-.stSelectbox > div > div {
-    background: rgba(15, 23, 42, 0.8) !important;
-    border: 1px solid #1e40af !important;
-    color: #e2e8f0 !important;
-}
-
-/* 데이터프레임 */
-.dataframe {
-    background: rgba(15, 23, 42, 0.6);
-    color: #e2e8f0;
-    border: 1px solid #1e40af;
-}
-
-.dataframe th {
-    background: #1e40af !important;
-    color: #f0f9ff !important;
-}
-
-/* 구분선 */
-hr {
-    border-color: #1e40af !important;
-    border-top: 1px solid #22d3ee !important;
-}
-
-/* 회로 패턴 장식 (페이지 배경) */
-.scilab-decor::before {
-    content: "";
-    position: fixed;
-    top: 0;
-    right: 0;
-    width: 300px;
-    height: 300px;
-    background-image: radial-gradient(circle, #22d3ee 1px, transparent 1px);
-    background-size: 20px 20px;
-    opacity: 0.05;
-    pointer-events: none;
-    z-index: 0;
-}
-
 /* 강의 모드 하이라이트 박스 */
 .teaching-highlight {
-    background: linear-gradient(135deg, rgba(34, 211, 238, 0.1) 0%, rgba(56, 189, 248, 0.05) 100%);
-    border-left: 4px solid #22d3ee;
+    background: #fffbeb;
+    border-left: 4px solid #f59e0b;
     padding: 16px;
     margin: 12px 0;
     border-radius: 6px;
@@ -257,168 +95,125 @@ hr {
     position: absolute;
     top: -10px;
     left: 12px;
-    background: #0f172a;
-    color: #22d3ee;
+    background: #fff;
+    color: #b45309;
     padding: 0 10px;
     font-size: 11px;
     font-weight: bold;
     letter-spacing: 1px;
+    border: 1px solid #f59e0b;
+    border-radius: 3px;
 }
 
 .teaching-highlight h4 {
-    color: #38bdf8 !important;
+    color: #92400e !important;
     margin-top: 8px;
 }
 
 /* 개념 설명 박스 */
 .concept-box {
-    background: rgba(30, 64, 175, 0.1);
-    border: 1px solid #1e40af;
+    background: #f0f9ff;
+    border: 1px solid #bae6fd;
     border-radius: 6px;
     padding: 16px;
     margin: 10px 0;
-    font-family: 'Roboto', sans-serif;
 }
 
 .concept-box strong {
-    color: #22d3ee;
+    color: #0369a1;
 }
 
-/* 코드 블록 */
-code {
-    background: rgba(34, 211, 238, 0.1) !important;
-    color: #22d3ee !important;
-    padding: 2px 6px !important;
-    border-radius: 3px !important;
-    font-family: 'Roboto Mono', monospace !important;
-}
-
-/* 분자 장식 (타이틀 옆) */
-.molecule-decor {
-    display: inline-block;
-    color: #22d3ee;
-    opacity: 0.4;
-    margin-left: 8px;
-    font-size: 0.7em;
-}
-
-/* 성공 합격 뱃지 */
+/* 합격 배지 */
 .pass-badge-full {
-    background: linear-gradient(135deg, #065f46 0%, #10b981 100%);
-    color: #f0fdf4;
+    background: #dcfce7;
+    color: #166534;
     padding: 8px 16px;
     border-radius: 20px;
     display: inline-block;
     font-weight: bold;
-    box-shadow: 0 0 15px rgba(16, 185, 129, 0.3);
+    border: 1px solid #86efac;
 }
 
 .pass-badge-conditional {
-    background: linear-gradient(135deg, #78350f 0%, #f59e0b 100%);
-    color: #fffbeb;
+    background: #fef3c7;
+    color: #92400e;
     padding: 8px 16px;
     border-radius: 20px;
     display: inline-block;
     font-weight: bold;
-    box-shadow: 0 0 15px rgba(245, 158, 11, 0.3);
+    border: 1px solid #fcd34d;
 }
 
 .pass-badge-fail {
-    background: linear-gradient(135deg, #991b1b 0%, #ef4444 100%);
-    color: #fef2f2;
+    background: #fee2e2;
+    color: #991b1b;
     padding: 8px 16px;
     border-radius: 20px;
     display: inline-block;
     font-weight: bold;
-    box-shadow: 0 0 15px rgba(239, 68, 68, 0.3);
+    border: 1px solid #fca5a5;
 }
 
 /* 페르소나 카드 */
 .persona-card {
-    background: rgba(15, 23, 42, 0.7);
-    border: 1px solid #1e40af;
+    background: #f8fafc;
+    border: 1px solid #cbd5e1;
     border-radius: 8px;
     padding: 12px;
     margin: 8px 0;
-    transition: all 0.3s;
+    transition: all 0.2s;
 }
 
 .persona-card:hover {
-    border-color: #22d3ee;
-    box-shadow: 0 0 12px rgba(34, 211, 238, 0.3);
-    transform: translateY(-2px);
+    border-color: #3b82f6;
+    box-shadow: 0 2px 8px rgba(59, 130, 246, 0.15);
 }
 
 .persona-card h4 {
-    color: #22d3ee !important;
+    color: #1e40af !important;
     margin: 0 0 8px 0;
     font-size: 14px;
 }
 
 .persona-card .demo {
-    color: #94a3b8;
+    color: #64748b;
     font-size: 12px;
 }
 
 .persona-card .tag {
     display: inline-block;
-    background: rgba(34, 211, 238, 0.1);
-    color: #22d3ee;
+    background: #dbeafe;
+    color: #1e40af;
     padding: 2px 6px;
     border-radius: 3px;
     font-size: 10px;
     margin: 2px;
 }
-
-/* 고정 폭 글꼴 */
-.mono {
-    font-family: 'Roboto Mono', monospace;
-}
-
-/* 데이터 시각화 강조 */
-.data-viz-container {
-    background: rgba(15, 23, 42, 0.5);
-    border: 1px solid #1e40af;
-    border-radius: 6px;
-    padding: 12px;
-    margin: 10px 0;
-}
 </style>
-<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&family=Roboto+Mono&display=swap" rel="stylesheet">
-<div class="scilab-decor"></div>
 """
 
-st.markdown(SCILAB_THEME, unsafe_allow_html=True)
+st.markdown(BASE_STYLE, unsafe_allow_html=True)
 
 
 # ============================================================================
-# Plotly 공통 테마
+# Plotly 공통 테마 (기본 밝은 배경)
 # ============================================================================
 
 PLOTLY_THEME = {
-    'template': 'plotly_dark',
-    'paper_bgcolor': 'rgba(15, 23, 42, 0.0)',
-    'plot_bgcolor': 'rgba(15, 23, 42, 0.3)',
-    'font': dict(color='#e2e8f0', family='Roboto'),
-    'colorway': ['#22d3ee', '#38bdf8', '#7dd3fc', '#818cf8',
-                  '#a78bfa', '#f472b6', '#fb7185', '#fbbf24'],
+    'template': 'plotly_white',
+    'colorway': ['#3b82f6', '#10b981', '#f59e0b', '#ef4444',
+                  '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16'],
 }
 
 
 def apply_plotly_theme(fig, title=None):
-    """Plotly figure에 Sci-Lab 테마 적용"""
+    """Plotly figure에 기본 테마 적용"""
     fig.update_layout(
-        paper_bgcolor=PLOTLY_THEME['paper_bgcolor'],
-        plot_bgcolor=PLOTLY_THEME['plot_bgcolor'],
-        font=PLOTLY_THEME['font'],
+        template='plotly_white',
         colorway=PLOTLY_THEME['colorway'],
-        title=dict(
-            text=title if title else fig.layout.title.text,
-            font=dict(color='#38bdf8', size=16, family='Roboto')
-        ) if title else fig.layout.title,
-        xaxis=dict(gridcolor='rgba(30, 64, 175, 0.3)', linecolor='#1e40af'),
-        yaxis=dict(gridcolor='rgba(30, 64, 175, 0.3)', linecolor='#1e40af'),
     )
+    if title:
+        fig.update_layout(title=title)
     return fig
 
 
@@ -427,8 +222,13 @@ def apply_plotly_theme(fig, title=None):
 # ============================================================================
 
 def call_claude_api(prompt, api_key, model="claude-sonnet-4-5",
-                    system_msg=None, max_tokens=4000):
-    """Claude API REST 호출"""
+                    system_msg=None, max_tokens=4000, timeout=300, max_retries=2):
+    """Claude API REST 호출 (타임아웃 300초 + 재시도 2회)
+    
+    Args:
+        timeout: 응답 대기 시간 (초, 기본 300 = 5분)
+        max_retries: 타임아웃/네트워크 오류 시 재시도 횟수
+    """
     if not api_key:
         return "⚠️ 사이드바에서 Claude API 키를 입력하세요."
     url = "https://api.anthropic.com/v1/messages"
@@ -447,32 +247,66 @@ def call_claude_api(prompt, api_key, model="claude-sonnet-4-5",
         "model": model, "max_tokens": max_tokens, "system": system_msg,
         "messages": [{"role": "user", "content": prompt}]
     }
-    try:
-        r = requests.post(url, headers=headers, json=payload, timeout=90)
-        r.raise_for_status()
-        return r.json()["content"][0]["text"]
-    except requests.exceptions.HTTPError:
-        return f"❌ API 오류 ({r.status_code}): {r.text[:300]}"
-    except Exception as e:
-        return f"❌ 호출 오류: {str(e)}"
+    
+    last_error = None
+    for attempt in range(max_retries + 1):
+        try:
+            r = requests.post(url, headers=headers, json=payload, timeout=timeout)
+            r.raise_for_status()
+            return r.json()["content"][0]["text"]
+        except requests.exceptions.Timeout as e:
+            last_error = f"⏱️ 타임아웃 (attempt {attempt + 1}/{max_retries + 1})"
+            if attempt < max_retries:
+                # 재시도 시 짧은 대기
+                import time
+                time.sleep(2)
+                continue
+            return (f"❌ 타임아웃 ({timeout}초): Claude가 응답하지 않습니다.\n"
+                    f"• 패널 수를 줄이거나 (권장: 10~15명)\n"
+                    f"• 잠시 후 다시 시도해주세요.\n"
+                    f"상세: {str(e)[:200]}")
+        except requests.exceptions.ConnectionError as e:
+            last_error = f"🌐 연결 오류 (attempt {attempt + 1}/{max_retries + 1})"
+            if attempt < max_retries:
+                import time
+                time.sleep(3)
+                continue
+            return f"❌ 네트워크 연결 실패: {str(e)[:200]}"
+        except requests.exceptions.HTTPError as e:
+            status = r.status_code if 'r' in dir() else 'N/A'
+            if status == 429:  # Rate limit
+                if attempt < max_retries:
+                    import time
+                    time.sleep(10)  # 10초 대기 후 재시도
+                    continue
+                return f"❌ API 사용량 한도 초과 (429). 잠시 후 다시 시도하세요."
+            elif status == 529:  # Overloaded
+                if attempt < max_retries:
+                    import time
+                    time.sleep(5)
+                    continue
+                return f"❌ Anthropic 서버 과부하 (529). 잠시 후 재시도하세요."
+            return f"❌ API 오류 ({status}): {r.text[:300] if 'r' in dir() else str(e)[:200]}"
+        except Exception as e:
+            return f"❌ 호출 오류: {str(e)[:200]}"
+    
+    return f"❌ 재시도 모두 실패: {last_error}"
 
 
 def call_claude_api_json(prompt, api_key, model="claude-sonnet-4-5",
-                          system_msg=None, max_tokens=6000):
-    """Claude API 호출 후 JSON 파싱 시도"""
-    response = call_claude_api(prompt, api_key, model, system_msg, max_tokens)
+                          system_msg=None, max_tokens=6000, timeout=300):
+    """Claude API 호출 후 JSON 파싱 시도 (타임아웃 연장)"""
+    response = call_claude_api(prompt, api_key, model, system_msg, max_tokens, timeout)
     if response.startswith("❌") or response.startswith("⚠️"):
         return None, response
     # JSON 추출 시도
     try:
-        # ```json 블록 제거
         text = response
         if "```json" in text:
             text = text.split("```json")[1].split("```")[0]
         elif "```" in text:
             text = text.split("```")[1].split("```")[0]
         text = text.strip()
-        # 첫 { 부터 마지막 } 까지
         if "{" in text and "}" in text:
             start = text.index("{")
             end = text.rindex("}") + 1
@@ -485,7 +319,7 @@ def call_claude_api_json(prompt, api_key, model="claude-sonnet-4-5",
             return parsed, response
         return None, response
     except Exception as e:
-        return None, f"JSON 파싱 실패: {str(e)}\n원본: {response[:500]}"
+        return None, f"JSON 파싱 실패: {str(e)}\n원본 (처음 500자): {response[:500]}"
 
 
 def df_to_csv_download(df, filename, label, key=None, help_text=None):
@@ -761,10 +595,11 @@ B는 A와 C의 중간적 특성을 보인다."
 주의: 추정치일 뿐이며 실제 측정값과 오차가 존재합니다.<br><br>
 
 <strong>Stage 2: 페르소나 평가</strong><br>
-20명의 가상 패널이 각자의 고유 특성(인구통계/선호/미각/구매성향)을 반영해
-8개 항목에 점수를 부여하고 자연어 코멘트를 작성합니다.<br><br>
+설정된 수의 가상 패널(기본 20명, 5~30명 조정 가능)이 각자의 고유 특성
+(인구통계/선호/미각/구매성향)을 반영해 8개 항목에 점수를 부여하고
+자연어 코멘트를 작성합니다.<br><br>
 
-<strong>총 API 호출: 3회 / 소요 시간 약 30초</strong>
+<strong>총 API 호출: 3회 / 소요 시간 약 30초 (패널 수에 따라 가변)</strong>
 """,
 
     'ai_panel_training': """
@@ -1192,11 +1027,210 @@ PERSONA_PANEL_20 = [
         "bias": "자극에 매우 엄격 (-0.5)",
         "comment_style": "조심스러움, 건강 우선"
     },
+    # ─── 확장 풀 (P21~P30) — 사용자가 20명 초과 지정 시 사용 ───
+    {
+        "id": "P21", "name": "송가영", "age": 23, "gender": "여",
+        "region": "서울 강북구", "occupation": "인플루언서 준비생",
+        "lifestyle": "트렌드 민감, 새 제품 최초 구매",
+        "loves": ["이색 맛", "인증샷 가치", "비주얼"],
+        "hates": ["평범함", "식상함"],
+        "taste_profile": "트렌드 추종, 단맛·비주얼 선호",
+        "purchase": "중 가격대, 트렌드 우선, 충동 구매",
+        "bias": "신선함에 관대 (+0.4)",
+        "comment_style": "감탄사 많음, 감성적, 트렌디"
+    },
+    {
+        "id": "P22", "name": "안지혜", "age": 29, "gender": "여",
+        "region": "경기 고양", "occupation": "간호사",
+        "lifestyle": "교대 근무, 영양 챙김, 피로 회복 음료 애용",
+        "loves": ["비타민류", "전해질", "담백함"],
+        "hates": ["피로 악화 요소", "카페인 과다"],
+        "taste_profile": "기능성 선호, 균형, 과하지 않음",
+        "purchase": "기능성 우선, 검증된 브랜드",
+        "bias": "중립 (0.0)",
+        "comment_style": "실용적, 근무 중 기준"
+    },
+    {
+        "id": "P23", "name": "한소연", "age": 36, "gender": "여",
+        "region": "충북 청주", "occupation": "공무원",
+        "lifestyle": "아이 둘, 가족 간식 구매, 가성비",
+        "loves": ["가족 공용", "대용량", "순함"],
+        "hates": ["자극적", "고가"],
+        "taste_profile": "보편성, 자극 회피, 순함 선호",
+        "purchase": "가격매우민감, 대용량",
+        "bias": "보수적 (-0.2)",
+        "comment_style": "엄마 관점, 실용적"
+    },
+    {
+        "id": "P24", "name": "노수빈", "age": 27, "gender": "여",
+        "region": "대구 달서구", "occupation": "학원 강사",
+        "lifestyle": "저녁 회식 잦음, 주말 카페투어",
+        "loves": ["커피", "디저트", "달달함"],
+        "hates": ["밍밍함", "물 같은 음료"],
+        "taste_profile": "단맛·진한 맛 선호, 강한 풍미",
+        "purchase": "중가격대, 카페 기반 소비",
+        "bias": "관대 (+0.3)",
+        "comment_style": "친근, 구체적 비교"
+    },
+    {
+        "id": "P25", "name": "장미경", "age": 50, "gender": "여",
+        "region": "전북 전주", "occupation": "공방 운영",
+        "lifestyle": "전통 차 애호, 수공예 작업",
+        "loves": ["전통차", "은은함", "깊은 맛"],
+        "hates": ["화학 첨가물", "인공적 달콤함"],
+        "taste_profile": "전통적, 복합 풍미, 천연 선호",
+        "purchase": "고가도 허용, 원산지 확인",
+        "bias": "인공에 엄격 (-0.4)",
+        "comment_style": "수공예가 관점, 섬세함"
+    },
+    {
+        "id": "P26", "name": "이성민", "age": 23, "gender": "남",
+        "region": "서울 동작구", "occupation": "대학생",
+        "lifestyle": "기숙사 생활, 편의점 주 이용",
+        "loves": ["편의점 신제품", "단맛", "탄산"],
+        "hates": ["물 같은", "비싼"],
+        "taste_profile": "단맛·자극 선호, 강한 맛 수용",
+        "purchase": "가격매우민감, 충동 구매",
+        "bias": "관대 (+0.3)",
+        "comment_style": "직설적, MZ 말투"
+    },
+    {
+        "id": "P27", "name": "오승준", "age": 31, "gender": "남",
+        "region": "경기 수원", "occupation": "금융권 회사원",
+        "lifestyle": "싱글, 자취, 외식 많음",
+        "loves": ["깔끔한 맛", "커피", "맥주"],
+        "hates": ["끈적함", "인공 단맛"],
+        "taste_profile": "쓴맛 내성 높음, 드라이 선호",
+        "purchase": "중상 가격, 브랜드 의식",
+        "bias": "단맛 엄격 (-0.3)",
+        "comment_style": "차분, 분석적"
+    },
+    {
+        "id": "P28", "name": "백준호", "age": 36, "gender": "남",
+        "region": "광주 서구", "occupation": "셰프",
+        "lifestyle": "외식업 종사, 미각 훈련됨",
+        "loves": ["복합미", "감칠맛", "재료 균형"],
+        "hates": ["단순함", "불균형"],
+        "taste_profile": "전문적 미각, 매우 섬세함",
+        "purchase": "연구 목적, 원가 분석",
+        "bias": "엄격 전문가 (-0.3)",
+        "comment_style": "전문 용어, 구조적 분석"
+    },
+    {
+        "id": "P29", "name": "조성환", "age": 47, "gender": "남",
+        "region": "경북 포항", "occupation": "중견기업 부장",
+        "lifestyle": "건강 관리 시작, 금주 시도",
+        "loves": ["무알콜 음료", "건강 기능성", "담백"],
+        "hates": ["고칼로리", "자극적"],
+        "taste_profile": "중년 전환기, 건강 우선",
+        "purchase": "건강 기능성 우선",
+        "bias": "엄격 (-0.3)",
+        "comment_style": "진지, 건강 관점"
+    },
+    {
+        "id": "P30", "name": "황기태", "age": 58, "gender": "남",
+        "region": "강원 원주", "occupation": "자영업 (정비소)",
+        "lifestyle": "육체 노동, 수분 보충 중요",
+        "loves": ["시원함", "갈증 해소", "스포츠 음료"],
+        "hates": ["미지근함", "약한 맛"],
+        "taste_profile": "기능성 중시, 강한 맛 수용",
+        "purchase": "가격 중, 기능 우선",
+        "bias": "중립 (0.0)",
+        "comment_style": "실용적, 직설적"
+    },
 ]
 
 
+def select_personas(n_panels):
+    """사용자가 지정한 수만큼 페르소나를 한국 인구 분포를 반영해 선택
+    
+    Args:
+        n_panels: 선택할 패널 수 (5 ~ 30)
+    
+    Returns:
+        선택된 페르소나 리스트
+    """
+    full_pool = PERSONA_PANEL_20
+    
+    if n_panels <= 0:
+        return []
+    
+    # 기본 20명 = P01~P20 반환 (재현성 보장)
+    if n_panels == 20:
+        return full_pool[:20]
+    
+    # 최대 30명 제한
+    n_panels = min(n_panels, len(full_pool))
+    
+    # 그룹별 페르소나 분류 (각 그룹 내에서는 P번호 순)
+    def age_group(p):
+        age = p['age']
+        g = p['gender']
+        if 20 <= age < 30: return f"20대{g}"
+        elif 30 <= age < 40: return f"30대{g}"
+        elif 40 <= age < 50: return f"40대{g}"
+        else: return f"50대+{g}"
+    
+    groups = {}
+    for p in full_pool:
+        grp = age_group(p)
+        groups.setdefault(grp, []).append(p)
+    
+    # 20명 기준 분포 비율
+    group_order = ['20대여', '20대남', '30대여', '30대남',
+                    '40대여', '40대남', '50대+여', '50대+남']
+    base_ratios = {
+        '20대여': 3, '20대남': 2,
+        '30대여': 3, '30대남': 3,
+        '40대여': 3, '40대남': 2,
+        '50대+여': 2, '50대+남': 2,
+    }
+    
+    # 비례 할당
+    allocations = {}
+    for g in group_order:
+        allocations[g] = max(1, round(n_panels * base_ratios[g] / 20))
+    
+    # 합계 보정 (무한루프 방지: 최대 100회만 시도)
+    for _ in range(100):
+        total = sum(allocations.values())
+        if total == n_panels:
+            break
+        if total < n_panels:
+            # 늘릴 때: 그룹에 사용 가능한 페르소나가 남아있는 것 중 우선순위로
+            for g in ['30대여', '30대남', '20대여', '40대여',
+                       '40대남', '20대남', '50대+여', '50대+남']:
+                if allocations[g] < len(groups.get(g, [])):
+                    allocations[g] += 1
+                    break
+            else:
+                break  # 모든 그룹 가득참
+        else:
+            # 줄일 때: 가장 많이 할당된 그룹부터
+            largest = max(allocations, key=lambda k: allocations[k])
+            if allocations[largest] > 1:
+                allocations[largest] -= 1
+            else:
+                # 1 이상인 어떤 것도 줄일 수 없으면 중단
+                break
+    
+    # 선택
+    selected = []
+    for g in group_order:
+        available = groups.get(g, [])
+        n_take = min(allocations.get(g, 0), len(available))
+        selected.extend(available[:n_take])
+    
+    # 여전히 부족하면 남은 페르소나로 보충
+    if len(selected) < n_panels:
+        remaining = [p for p in full_pool if p not in selected]
+        selected.extend(remaining[:n_panels - len(selected)])
+    
+    return selected[:n_panels]
+
+
 # ============================================================================
-# 인쇄용 질문지 HTML (Sci-Lab 스타일)
+# 인쇄용 질문지 HTML
 # ============================================================================
 
 QUESTIONNAIRE_CSS = """
@@ -1872,12 +1906,13 @@ def prompt_stage1_flavor(normalized_recipe_json):
 
 
 def prompt_stage2_panel_eval_recipe(product_name, flavor_profile_json, personas):
-    """Stage 2: 20명 페르소나 배합비 모드 평가"""
+    """Stage 2: N명 페르소나 배합비 모드 평가"""
     persona_text = json.dumps(personas, ensure_ascii=False, indent=1)
     flavor_text = json.dumps(flavor_profile_json, ensure_ascii=False, indent=1)
+    n_panels = len(personas)
     
     return f"""당신은 관능검사 시뮬레이션 엔진입니다. 
-20명의 한국 소비자 패널이 동일한 제품을 시음한 후 각자의 취향으로 평가하는 
+{n_panels}명의 한국 소비자 패널이 동일한 제품을 시음한 후 각자의 취향으로 평가하는 
 상황을 매우 현실적으로 재현해주세요.
 
 **시음 제품**: {product_name}
@@ -1887,7 +1922,7 @@ def prompt_stage2_panel_eval_recipe(product_name, flavor_profile_json, personas)
 {flavor_text}
 ```
 
-**패널 명단 (20명)**:
+**패널 명단 ({n_panels}명)**:
 ```json
 {persona_text}
 ```
@@ -1898,7 +1933,7 @@ def prompt_stage2_panel_eval_recipe(product_name, flavor_profile_json, personas)
    "이 페르소나는 이 점수를 줄 것이다"가 아니라
    "내가 민지라면 이 맛을 어떻게 느낄까?"를 실제로 사고하세요.
 
-2. **다양성 필수**: 20명이 모두 비슷한 점수를 주면 실패입니다.
+2. **다양성 필수**: {n_panels}명이 모두 비슷한 점수를 주면 실패입니다.
    실제 소비자 조사의 점수 분포는:
    - 극호(6-7점): 15-20%
    - 호(5-6점): 30-40%
@@ -1961,7 +1996,7 @@ def prompt_stage2_panel_eval_recipe(product_name, flavor_profile_json, personas)
 }}
 ```
 
-반드시 **20명 전부** 평가하세요. 위 규칙을 엄격히 따르세요.
+반드시 **{n_panels}명 전부** 평가하세요. 위 규칙을 엄격히 따르세요.
 """
 
 
@@ -2082,12 +2117,13 @@ def prompt_stage1_concept_perception(concept_normalized_json):
 
 
 def prompt_stage2_panel_eval_concept(concept_name, perception_json, personas):
-    """Stage 2: 20명 페르소나 컨셉 모드 평가"""
+    """Stage 2: N명 페르소나 컨셉 모드 평가"""
     persona_text = json.dumps(personas, ensure_ascii=False, indent=1)
     perception_text = json.dumps(perception_json, ensure_ascii=False, indent=1)
+    n_panels = len(personas)
     
     return f"""당신은 관능검사·마케팅 리서치 시뮬레이션 엔진입니다. 
-20명의 한국 소비자가 제품 <<컨셉 설명>>을 보고 평가하는 상황을 재현하세요.
+{n_panels}명의 한국 소비자가 제품 <<컨셉 설명>>을 보고 평가하는 상황을 재현하세요.
 (실제 시음이 아닌 <<컨셉 노출>> 상황입니다)
 
 **제품 컨셉**: {concept_name}
@@ -2097,7 +2133,7 @@ def prompt_stage2_panel_eval_concept(concept_name, perception_json, personas):
 {perception_text}
 ```
 
-**패널 명단 (20명)**:
+**패널 명단 ({n_panels}명)**:
 ```json
 {persona_text}
 ```
@@ -2157,7 +2193,7 @@ def prompt_stage2_panel_eval_concept(concept_name, perception_json, personas):
 }}
 ```
 
-반드시 20명 전부 평가. 위 규칙 엄격히 따르기.
+반드시 {n_panels}명 전부 평가. 위 규칙 엄격히 따르기.
 """
 
 
@@ -2294,10 +2330,11 @@ def generate_ai_handout_html(session_data, teaching_notes):
     notes_html = "".join([f"<li>{n}</li>" for n in instructor_notes])
     
     # 워크시트 질문
+    n_eval = len(session_data.get('evaluations', []))
     worksheet_qs = [
         f"이 {mode_label}의 장점과 한계를 각각 3가지씩 나열하시오.",
         "합격 판정 결과가 당신의 예상과 일치하는가? 이유는?",
-        "20명의 패널 중 점수가 가장 낮았던 그룹의 공통점은 무엇인가?",
+        f"{n_eval}명의 패널 중 점수가 가장 낮았던 그룹의 공통점은 무엇인가?",
         "이 결과를 바탕으로 어떤 개선을 제안할 것인가?",
         "실제 조사를 진행한다면 어떤 추가 변수를 고려해야 하는가?",
     ]
@@ -2765,19 +2802,8 @@ with st.sidebar:
 # 메인 타이틀
 # ============================================================================
 
-st.title("🧪 식품 R&D 관능분석 통합 솔루션")
-st.markdown(
-    '<div style="color:#38bdf8; font-family: Roboto Mono, monospace; '
-    'font-size: 13px; letter-spacing: 1px;">'
-    'FULL PACKAGE v3.0 · SCI-LAB EDITION · '
-    'SENSORY ANALYTICS · AI CONSUMER SIMULATION'
-    '</div>', unsafe_allow_html=True)
-
-# 분자 장식
-st.markdown(
-    '<div style="color:#22d3ee; opacity:0.3; font-size:20px; margin:10px 0;">'
-    '◈━━━━━━━━━◉━━━━━━━━━◈━━━━━━━━━◉━━━━━━━━━◈'
-    '</div>', unsafe_allow_html=True)
+st.title("🧪 식품 R&D 관능분석 통합 솔루션 v3.0")
+st.caption("Sensory Analytics · AI Consumer Simulation")
 
 tabs = st.tabs([
     "📊 종합차이(ANOVA)",
@@ -3126,7 +3152,7 @@ with tabs[1]:
                     fig.add_trace(go.Bar(
                         x=['기대(우연)','실제정답자','최소유의'],
                         y=[expected, correct_u, min_c_u],
-                        marker_color=['#64748b', '#22d3ee' if p_val_u < alpha_u else '#f59e0b', '#38bdf8'],
+                        marker_color=['#64748b', '#3b82f6' if p_val_u < alpha_u else '#f59e0b', '#10b981'],
                         text=[f"{expected:.1f}", f"{correct_u}", f"{min_c_u}"],
                         textposition='outside'))
                     fig.update_layout(title="정답자수 비교")
@@ -3138,7 +3164,7 @@ with tabs[1]:
                     colors = ['#ef4444' if ki >= min_c_u else '#475569' for ki in k]
                     fig2 = go.Figure()
                     fig2.add_trace(go.Bar(x=k, y=pmf, marker_color=colors))
-                    fig2.add_vline(x=correct_u, line_dash="dash", line_color="#22d3ee",
+                    fig2.add_vline(x=correct_u, line_dash="dash", line_color="#3b82f6",
                         annotation_text=f"실제({correct_u})")
                     fig2.update_layout(title="이항분포 (빨강=유의영역)")
                     apply_plotly_theme(fig2)
@@ -3291,7 +3317,7 @@ with tabs[2]:
                         c4.metric("z(α/2)", f"{range_info['z_crit']:.3f}")
                         
                         def highlight_range(row):
-                            return ['background-color: #422006' if '✓' in row['유의'] 
+                            return ['background-color: #fef3c7' if '✓' in row['유의'] 
                                     else '' for _ in row]
                         st.dataframe(range_df.style.apply(highlight_range, axis=1),
                                     use_container_width=True)
@@ -3311,7 +3337,7 @@ with tabs[2]:
                         c2.metric("z(α/2)", f"{diff_info['z_crit']:.3f}")
                         
                         def highlight_diff(row):
-                            return ['background-color: #14532d' if '✓' in row['유의차'] 
+                            return ['background-color: #dcfce7' if '✓' in row['유의차'] 
                                     else '' for _ in row]
                         st.dataframe(diff_df.style.apply(highlight_diff, axis=1),
                                     use_container_width=True)
@@ -3369,10 +3395,10 @@ with tabs[2]:
                         
                         # 자유도 강조 박스
                         st.markdown(
-                            f'<div style="background: rgba(34, 211, 238, 0.1); '
-                            f'border-left: 3px solid #22d3ee; padding: 12px; '
+                            f'<div style="background: #fef3c7; '
+                            f'border-left: 3px solid #f59e0b; padding: 12px; '
                             f'margin: 10px 0; border-radius: 4px;">'
-                            f'<strong style="color: #22d3ee;">📌 자유도 기본값</strong><br>'
+                            f'<strong style="color: #b45309;">📌 자유도 기본값</strong><br>'
                             f'시료 수 <code>k = {k}</code> → 자유도 <code>df = k - 1 = {chi2_result["df"]}</code><br>'
                             f'χ²({alpha_r}, df={chi2_result["df"]}) = <strong>{chi2_result["chi2_crit"]:.3f}</strong>'
                             f'</div>',
@@ -3415,8 +3441,8 @@ with tabs[2]:
                                 text=bar_text, textposition='outside',
                                 marker=dict(
                                     color=bar_y,
-                                    colorscale=[[0, '#22d3ee'], [1, '#ef4444']],
-                                    line=dict(color='#38bdf8', width=1)
+                                    colorscale=[[0, '#10b981'], [1, '#ef4444']],
+                                    line=dict(color='#94a3b8', width=1)
                                 )
                             ))
                             # 유의 범위 표시
@@ -3460,7 +3486,7 @@ with tabs[2]:
                                 textposition='outside',
                                 marker=dict(
                                     color=PLOTLY_THEME['colorway'][:len(mr_df)],
-                                    line=dict(color='#38bdf8', width=1)
+                                    line=dict(color='#94a3b8', width=1)
                                 )
                             ))
                             fig_pref.update_layout(
@@ -3613,7 +3639,7 @@ with tabs[3]:
                     st.markdown("### 📊 12항목 평균/SD/SE")
                     
                     def highlight_pass(row):
-                        bg = '#14532d' if '✓' in row['판정'] else '#422006'
+                        bg = '#dcfce7' if '✓' in row['판정'] else '#fef3c7'
                         return [f'background-color: {bg}' for _ in row]
                     
                     st.dataframe(
@@ -3677,7 +3703,7 @@ with tabs[3]:
                     
                     with v1:
                         # 막대그래프 (합격선 5.0)
-                        colors_bar = ['#22d3ee' if m >= 5.0 else '#f59e0b' 
+                        colors_bar = ['#3b82f6' if m >= 5.0 else '#f59e0b' 
                                       for m in stats_df['평균']]
                         # 합격 3기준은 진한 색
                         for i, attr in enumerate(stats_df['항목']):
@@ -3692,11 +3718,11 @@ with tabs[3]:
                             x=stats_df['항목'], y=stats_df['평균'],
                             error_y=dict(type='data', array=stats_df['SE']),
                             marker=dict(color=colors_bar,
-                                       line=dict(color='#38bdf8', width=1)),
+                                       line=dict(color='#94a3b8', width=1)),
                             text=stats_df['평균'].round(2), textposition='outside'
                         ))
                         fig_bar.add_hline(y=5.0, line_dash="dash",
-                            line_color="#22d3ee",
+                            line_color="#3b82f6",
                             annotation_text="합격선 5.0",
                             annotation_position="right")
                         fig_bar.update_layout(
@@ -3715,8 +3741,8 @@ with tabs[3]:
                             r=stats_df['평균'].tolist() + [stats_df['평균'].iloc[0]],
                             theta=stats_df['항목'].tolist() + [stats_df['항목'].iloc[0]],
                             fill='toself', name=product_name,
-                            line=dict(color='#22d3ee', width=2),
-                            fillcolor='rgba(34, 211, 238, 0.25)'
+                            line=dict(color='#3b82f6', width=2),
+                            fillcolor='rgba(59, 130, 246, 0.25)'
                         ))
                         # 합격선 5.0 원
                         fig_radar.add_trace(go.Scatterpolar(
@@ -3731,7 +3757,7 @@ with tabs[3]:
                                 radialaxis=dict(visible=True, range=[0, 7],
                                                gridcolor='rgba(30, 64, 175, 0.3)'),
                                 angularaxis=dict(gridcolor='rgba(30, 64, 175, 0.3)'),
-                                bgcolor='rgba(15, 23, 42, 0.3)'
+                                bgcolor='rgba(248, 250, 252, 0.5)'
                             ),
                             title="품질 프로파일 (Radar Chart)",
                             height=500
@@ -3805,13 +3831,60 @@ with tabs[3]:
     teaching_box("AI는 정말로 '훈련'된 것인가?", TEACHING_CONTENT['ai_panel_training'])
     teaching_box("배합비 모드 vs 컨셉 모드", TEACHING_CONTENT['ai_panel_modes'])
     
+    # 패널 수 선택 (신규)
+    st.markdown("#### 👥 가상 패널 구성")
+    
+    n_col1, n_col2 = st.columns([1, 2])
+    with n_col1:
+        n_panels = st.slider(
+            "패널 수",
+            min_value=5, max_value=30, value=20, step=5,
+            key="t4_n_panels",
+            help="한국 인구 분포를 유지하며 선택됩니다 (기본 20명). "
+                 "패널이 많을수록 API 호출 시간이 늘어납니다."
+        )
+    with n_col2:
+        # 예상 소요 시간 동적 계산
+        est_min = n_panels * 3
+        est_max = n_panels * 8
+        st.caption(
+            f"📊 **{n_panels}명** 평가 진행 (예상 소요: 약 {est_min}~{est_max}초)\n\n"
+            "• 5~10명: 빠른 테스트 (데모용)\n"
+            "• 15~20명: 표준 (권장)\n"
+            "• 25~30명: 정밀 평가 (시간·비용 증가)"
+        )
+        if n_panels >= 25:
+            st.warning(
+                f"⚠️ {n_panels}명은 API 응답에 2~4분 걸릴 수 있습니다. "
+                "타임아웃 발생 시 패널 수를 줄여 재시도하세요.",
+                icon="⏱️"
+            )
+    
+    # 선택된 페르소나 미리 계산 (재사용)
+    selected_personas = select_personas(n_panels)
+    
     # 페르소나 열람 expander
-    with st.expander("👥 20명 가상 패널 프로필 열람", expanded=False):
-        st.caption("각 패널의 인구통계, 선호/혐오, 미각 특성, 구매 성향을 확인하세요")
+    with st.expander(f"👥 선택된 {len(selected_personas)}명 가상 패널 프로필 열람",
+                      expanded=False):
+        st.caption("각 패널의 인구통계, 선호/혐오, 미각 특성, 구매 성향을 확인하세요. "
+                   f"(한국 인구 분포 반영 · 총 {len(selected_personas)}명)")
         
-        for i in range(0, len(PERSONA_PANEL_20), 4):
+        # 분포 요약
+        from collections import Counter
+        dist = Counter()
+        for p in selected_personas:
+            age = p['age']; gender = p['gender']
+            if 20 <= age < 30: key = f"20대 {gender}"
+            elif 30 <= age < 40: key = f"30대 {gender}"
+            elif 40 <= age < 50: key = f"40대 {gender}"
+            else: key = f"50대+ {gender}"
+            dist[key] += 1
+        dist_text = " · ".join([f"{k} {v}명" for k, v in sorted(dist.items())])
+        st.caption(f"**분포:** {dist_text}")
+        
+        for i in range(0, len(selected_personas), 4):
             cols = st.columns(4)
-            for j, p in enumerate(PERSONA_PANEL_20[i:i+4]):
+            for j, p in enumerate(selected_personas[i:i+4]):
                 with cols[j]:
                     tags_html = "".join([
                         f'<span class="tag">{t}</span>' 
@@ -3824,7 +3897,7 @@ with tabs[3]:
                             {p['age']}세 · {p['gender']} · {p['region']}<br>
                             {p['occupation']}
                         </div>
-                        <hr style="border-color: #1e40af; margin: 8px 0;">
+                        <hr style="border-color: #cbd5e1; margin: 8px 0;">
                         <div style="font-size: 11px; color: #94a3b8;">
                             <strong>좋아함:</strong><br>{tags_html}
                         </div>
@@ -4007,7 +4080,7 @@ with tabs[3]:
                 # Stage 2 실행
                 st.markdown("---")
                 run_s2 = st.button(
-                    "👥 Step 3: 20명 패널 평가 실행",
+                    f"👥 Step 3: {n_panels}명 패널 평가 실행",
                     key="t4_run_s2_recipe",
                     type="primary",
                     disabled=not st.session_state.api_key,
@@ -4015,15 +4088,22 @@ with tabs[3]:
                 )
                 
                 if run_s2:
-                    with st.spinner("Stage 2: 20명 페르소나가 평가 중... (약 30초)"):
+                    # 패널 수에 비례해 max_tokens 계산 (1명당 약 400토큰)
+                    dynamic_tokens = max(6000, min(16000, n_panels * 450))
+                    spinner_msg = (
+                        f"Stage 2: {n_panels}명 페르소나가 평가 중... "
+                        f"(예상 {n_panels * 4}~{n_panels * 8}초)"
+                    )
+                    with st.spinner(spinner_msg):
                         prompt = prompt_stage2_panel_eval_recipe(
-                            recipe_product_name, flavor, PERSONA_PANEL_20
+                            recipe_product_name, flavor, selected_personas
                         )
                         eval_result, raw = call_claude_api_json(
                             prompt, st.session_state.api_key,
                             st.session_state.claude_model,
                             system_msg="당신은 관능검사 시뮬레이션 엔진입니다.",
-                            max_tokens=8000
+                            max_tokens=dynamic_tokens,
+                            timeout=300
                         )
                         if eval_result and 'evaluations' in eval_result:
                             st.session_state.current_evaluations = {
@@ -4033,6 +4113,8 @@ with tabs[3]:
                                 'recipe_parse': parsed,
                                 'flavor_profile': flavor,
                                 'timestamp': datetime.datetime.now().strftime('%H:%M'),
+                                'n_panels': n_panels,
+                                'personas_used': selected_personas,
                                 'input_data': {
                                     'recipe': recipe_text,
                                     'process': process_text
@@ -4236,7 +4318,7 @@ with tabs[3]:
                 # Stage 2 실행
                 st.markdown("---")
                 run_c2 = st.button(
-                    "👥 Step 3: 20명 패널 컨셉 평가",
+                    f"👥 Step 3: {n_panels}명 패널 컨셉 평가",
                     key="t4_run_s2_concept",
                     type="primary",
                     disabled=not st.session_state.api_key,
@@ -4244,15 +4326,21 @@ with tabs[3]:
                 )
                 
                 if run_c2:
-                    with st.spinner("Stage 2: 20명이 컨셉을 평가 중..."):
+                    dynamic_tokens = max(6000, min(16000, n_panels * 450))
+                    spinner_msg = (
+                        f"Stage 2: {n_panels}명이 컨셉을 평가 중... "
+                        f"(예상 {n_panels * 4}~{n_panels * 8}초)"
+                    )
+                    with st.spinner(spinner_msg):
                         prompt = prompt_stage2_panel_eval_concept(
-                            concept_name, perc, PERSONA_PANEL_20
+                            concept_name, perc, selected_personas
                         )
                         eval_result, raw = call_claude_api_json(
                             prompt, st.session_state.api_key,
                             st.session_state.claude_model,
                             system_msg="당신은 관능검사·마케팅 리서치 시뮬레이션 엔진입니다.",
-                            max_tokens=8000
+                            max_tokens=dynamic_tokens,
+                            timeout=300
                         )
                         if eval_result and 'evaluations' in eval_result:
                             st.session_state.current_evaluations = {
@@ -4262,6 +4350,8 @@ with tabs[3]:
                                 'concept_parse': parsed_c,
                                 'concept_profile': perc,
                                 'timestamp': datetime.datetime.now().strftime('%H:%M'),
+                                'n_panels': n_panels,
+                                'personas_used': selected_personas,
                                 'input_data': {
                                     'name': concept_name,
                                     'target': concept_target,
@@ -4346,21 +4436,28 @@ with tabs[3]:
                         help="같은 입력으로 다시 시뮬레이션",
                         use_container_width=True):
                 # Stage 2만 다시 실행
-                with st.spinner("다시 평가 중..."):
+                # 저장된 페르소나 우선 사용, 없으면 기본 20명
+                personas_for_retry = eval_data.get('personas_used', 
+                                                    select_personas(20))
+                n_retry = len(personas_for_retry)
+                dynamic_tokens = max(6000, min(16000, n_retry * 450))
+                
+                with st.spinner(f"다시 평가 중... ({n_retry}명, 최대 5분)"):
                     if mode == 'recipe':
                         prompt = prompt_stage2_panel_eval_recipe(
                             eval_data['product_name'],
-                            eval_data['flavor_profile'], PERSONA_PANEL_20
+                            eval_data['flavor_profile'], personas_for_retry
                         )
                     else:
                         prompt = prompt_stage2_panel_eval_concept(
                             eval_data['product_name'],
-                            eval_data['concept_profile'], PERSONA_PANEL_20
+                            eval_data['concept_profile'], personas_for_retry
                         )
                     new_eval, raw = call_claude_api_json(
                         prompt, st.session_state.api_key,
                         st.session_state.claude_model,
-                        max_tokens=8000
+                        max_tokens=dynamic_tokens,
+                        timeout=300
                     )
                     if new_eval and 'evaluations' in new_eval:
                         st.session_state.current_evaluations['evaluations'] = \
@@ -4368,6 +4465,8 @@ with tabs[3]:
                         st.session_state.current_evaluations['timestamp'] = \
                             datetime.datetime.now().strftime('%H:%M')
                         st.rerun()
+                    else:
+                        st.error(f"❌ 재평가 실패: {raw[:400]}")
         
         # 합격 기준 상세
         st.markdown("#### 🎯 합격 기준별 점수")
@@ -4398,18 +4497,18 @@ with tabs[3]:
                     if attr in pass_criteria:
                         colors_b.append('#10b981' if val >= 5.0 else '#ef4444')
                     else:
-                        colors_b.append('#22d3ee' if val >= 5.0 else '#f59e0b')
+                        colors_b.append('#3b82f6' if val >= 5.0 else '#f59e0b')
                 
                 fig_ai_bar = go.Figure()
                 fig_ai_bar.add_trace(go.Bar(
                     x=attrs, y=values,
                     marker=dict(color=colors_b,
-                               line=dict(color='#38bdf8', width=1)),
+                               line=dict(color='#94a3b8', width=1)),
                     text=[f"{v:.2f}" for v in values],
                     textposition='outside'
                 ))
                 fig_ai_bar.add_hline(y=5.0, line_dash="dash",
-                    line_color="#22d3ee",
+                    line_color="#3b82f6",
                     annotation_text="합격선 5.0")
                 fig_ai_bar.update_layout(
                     title="8항목 평균 (진한 색=합격 기준 항목)",
@@ -4426,8 +4525,8 @@ with tabs[3]:
                     r=values + [values[0]],
                     theta=attrs + [attrs[0]],
                     fill='toself', name=eval_data['product_name'],
-                    line=dict(color='#22d3ee', width=2),
-                    fillcolor='rgba(34, 211, 238, 0.25)'
+                    line=dict(color='#3b82f6', width=2),
+                    fillcolor='rgba(59, 130, 246, 0.25)'
                 ))
                 fig_ai_radar.add_trace(go.Scatterpolar(
                     r=[5.0] * (len(attrs) + 1),
@@ -4439,7 +4538,7 @@ with tabs[3]:
                     polar=dict(
                         radialaxis=dict(visible=True, range=[0, 7],
                                        gridcolor='rgba(30, 64, 175, 0.3)'),
-                        bgcolor='rgba(15, 23, 42, 0.3)'
+                        bgcolor='rgba(248, 250, 252, 0.5)'
                     ),
                     title="Radar Profile"
                 )
@@ -4474,7 +4573,7 @@ with tabs[3]:
                 if p_avg >= 5.5:
                     badge_color = "#10b981"
                 elif p_avg >= 4.5:
-                    badge_color = "#22d3ee"
+                    badge_color = "#3b82f6"
                 elif p_avg >= 3.5:
                     badge_color = "#f59e0b"
                 else:
@@ -4499,7 +4598,7 @@ with tabs[3]:
         
         with ai_tab3:
             # 점수 분포 히트맵
-            st.caption("20명 × 8항목 점수 히트맵")
+            st.caption(f"{len(evaluations)}명 × 8항목 점수 히트맵")
             
             score_matrix = []
             panel_labels = []
@@ -4519,7 +4618,7 @@ with tabs[3]:
                     [0.0, '#7f1d1d'],
                     [0.3, '#ef4444'],
                     [0.5, '#f59e0b'],
-                    [0.7, '#22d3ee'],
+                    [0.7, '#3b82f6'],
                     [1.0, '#10b981']
                 ],
                 zmin=1, zmax=7,
@@ -4624,7 +4723,7 @@ with tabs[3]:
                         polar=dict(
                             radialaxis=dict(visible=True, range=[0, 7],
                                            gridcolor='rgba(30, 64, 175, 0.3)'),
-                            bgcolor='rgba(15, 23, 42, 0.3)'
+                            bgcolor='rgba(248, 250, 252, 0.5)'
                         ),
                         title="세션 간 비교 (Radar Overlay)",
                         height=550
@@ -4705,9 +4804,9 @@ with tabs[3]:
         
         # 면책 문구 (하단 상시)
         st.markdown(
-            '<div class="disclaimer" style="background: rgba(239, 68, 68, 0.1); '
+            '<div class="disclaimer" style="background: #fef2f2; '
             'border: 1px solid #ef4444; padding: 12px; border-radius: 6px; '
-            'margin: 20px 0; font-size: 12px; color: #fca5a5;">'
+            'margin: 20px 0; font-size: 12px; color: #991b1b;">'
             '<strong>⚠️ 면책:</strong> 본 AI 시뮬레이션은 교육 및 초기 탐색 목적이며, '
             '실제 소비자 조사를 대체할 수 없습니다. 제품 출시 결정의 유일한 근거로 사용하지 마세요.'
             '</div>',
@@ -4983,10 +5082,10 @@ with tabs[6]:
 st.markdown("---")
 st.markdown(
     '<div style="text-align: center; color: #64748b; font-size: 12px; '
-    'padding: 20px; font-family: Roboto Mono, monospace;">'
-    '◈ Sweet Lab · Natural Lab R&D ◈<br>'
-    '식품 R&D 관능분석 통합 솔루션 v3.0 · Sci-Lab Edition<br>'
-    '<span style="color: #22d3ee;">Powered by Claude AI · Streamlit · Python</span>'
+    'padding: 20px;">'
+    'Sweet Lab · Natural Lab R&D<br>'
+    '식품 R&D 관능분석 통합 솔루션 v3.0<br>'
+    'Powered by Claude AI · Streamlit · Python'
     '</div>',
     unsafe_allow_html=True
 )
