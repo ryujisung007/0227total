@@ -328,6 +328,178 @@ def df_to_csv_download(df, filename, label, key=None, help_text=None):
         mime="text/csv", key=key, help=help_text, use_container_width=True)
 
 
+def call_claude_api_chat(messages, api_key, system_msg=None, 
+                          model="claude-haiku-4-5", max_tokens=1500,
+                          timeout=120, max_retries=1):
+    """대화형 Claude API 호출 (messages 배열 지원, Haiku 4.5 기본)
+    
+    Args:
+        messages: [{"role": "user"|"assistant", "content": "..."}, ...] 형태
+        model: 기본 haiku 4.5 (저비용 대화용)
+        max_tokens: 챗봇 응답은 짧게
+        timeout: 챗봇은 빠른 응답이라 120초면 충분
+    """
+    if not api_key:
+        return "⚠️ API 키가 필요합니다."
+    url = "https://api.anthropic.com/v1/messages"
+    headers = {
+        "x-api-key": api_key,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json"
+    }
+    if system_msg is None:
+        system_msg = "당신은 식품 R&D 전문가입니다. 간결하고 실용적으로 답변하세요."
+    
+    payload = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "system": system_msg,
+        "messages": messages
+    }
+    
+    for attempt in range(max_retries + 1):
+        try:
+            r = requests.post(url, headers=headers, json=payload, timeout=timeout)
+            r.raise_for_status()
+            return r.json()["content"][0]["text"]
+        except requests.exceptions.Timeout:
+            if attempt < max_retries:
+                import time
+                time.sleep(1)
+                continue
+            return "❌ 응답 시간 초과. 다시 시도해주세요."
+        except requests.exceptions.HTTPError:
+            status = r.status_code if 'r' in dir() else 'N/A'
+            if status == 429 and attempt < max_retries:
+                import time
+                time.sleep(5)
+                continue
+            return f"❌ API 오류 ({status})"
+        except Exception as e:
+            return f"❌ 호출 오류: {str(e)[:150]}"
+    return "❌ 재시도 실패"
+
+
+def summarize_for_chatbot(eval_data):
+    """평가 결과를 챗봇용으로 압축 (토큰 절약)
+    
+    전체 데이터를 그대로 넣으면 토큰 과다 사용. 핵심만 요약.
+    페르소나별 점수는 축약하되, 개별 인터뷰 가능하도록 ID/이름 유지.
+    """
+    if not eval_data:
+        return "평가 데이터 없음"
+    
+    mode = eval_data.get('mode', 'recipe')
+    product = eval_data.get('product_name', '제품')
+    evaluations = eval_data.get('evaluations', [])
+    n = len(evaluations)
+    
+    # 배합비 모드
+    if mode == 'recipe':
+        category = eval_data.get('category', '음료')
+        market_ctx = eval_data.get('market_context', '신제품 개발')
+        
+        # 맛 프로파일 요약
+        flavor = eval_data.get('flavor_profile', {})
+        taste = flavor.get('taste', {}) if isinstance(flavor, dict) else {}
+        phys = flavor.get('physical', {}) if isinstance(flavor, dict) else {}
+        
+        taste_summary = (
+            f"Brix {safe_str(phys.get('estimated_brix', '?'))}, "
+            f"pH {safe_str(phys.get('estimated_ph', '?'))}, "
+            f"단맛강도 {safe_str(taste.get('sweetness', '?'))}/10, "
+            f"산미 {safe_str(taste.get('acidity', '?'))}/10, "
+            f"쓴맛 {safe_str(taste.get('bitterness', '?'))}/10"
+        )
+        
+        # 항목별 평균
+        attrs = ['전반적만족도', '구입의향', '색상', '전반적맛', '풍미',
+                 '단맛', '쓴맛', '전반적식감', '끝맛여운']
+        means = {}
+        for a in attrs:
+            vals = [e.get('scores', {}).get(a) for e in evaluations
+                    if isinstance(e, dict) and isinstance(e.get('scores', {}).get(a), (int, float))]
+            if vals:
+                means[a] = sum(vals) / len(vals)
+        
+        mean_str = " · ".join([f"{a} {v:.1f}" for a, v in means.items()])
+        
+        # 타겟 분포
+        target_dist = {}
+        for e in evaluations:
+            if isinstance(e, dict):
+                tf = e.get('target_fit', 'N/A')
+                target_dist[tf] = target_dist.get(tf, 0) + 1
+        target_str = ", ".join([f"{k} {v}명" for k, v in target_dist.items()])
+        
+        # 페르소나 목록 (ID, 이름, 평균, 타겟, 코멘트 앞 60자)
+        persona_summary = []
+        for e in evaluations:
+            if not isinstance(e, dict):
+                continue
+            pid = safe_str(e.get('panel_id'), '?')
+            pname = safe_str(e.get('panel_name'), '?')
+            scores = e.get('scores', {}) if isinstance(e.get('scores'), dict) else {}
+            vals = [v for v in scores.values() if isinstance(v, (int, float))]
+            avg = sum(vals) / len(vals) if vals else 0
+            tf = safe_str(e.get('target_fit'), 'N/A')
+            cmt = safe_str(e.get('comment'), '')[:60]
+            persona_summary.append(
+                f"{pid} {pname} (평균 {avg:.1f}, {tf}): {cmt}"
+            )
+        persona_block = "\n".join(persona_summary)
+        
+        summary = f"""
+**제품 정보**
+- 제품명: {product}
+- 카테고리: {category}
+- 시장 맥락: {market_ctx}
+- 맛 프로파일: {taste_summary}
+
+**전체 평가 결과 (N={n}명)**
+- 항목별 평균: {mean_str}
+- 타겟 분포: {target_str}
+
+**페르소나별 평가 (질문 시 ID로 조회 가능)**
+{persona_block}
+"""
+    
+    # 컨셉 모드
+    else:
+        attrs = ['컨셉매력도', '구입의향', '타겟적합성', '차별화인식',
+                 '신뢰도', '가격수용도', '건강이미지', '프리미엄인식']
+        means = {}
+        for a in attrs:
+            vals = [e.get('scores', {}).get(a) for e in evaluations
+                    if isinstance(e, dict) and isinstance(e.get('scores', {}).get(a), (int, float))]
+            if vals:
+                means[a] = sum(vals) / len(vals)
+        mean_str = " · ".join([f"{a} {v:.1f}" for a, v in means.items()])
+        
+        persona_summary = []
+        for e in evaluations:
+            if not isinstance(e, dict):
+                continue
+            pid = safe_str(e.get('panel_id'), '?')
+            pname = safe_str(e.get('panel_name'), '?')
+            cmt = safe_str(e.get('comment'), '')[:80]
+            persona_summary.append(f"{pid} {pname}: {cmt}")
+        persona_block = "\n".join(persona_summary)
+        
+        summary = f"""
+**컨셉 정보**
+- 컨셉명: {product}
+
+**전체 평가 결과 (N={n}명)**
+- 항목별 평균: {mean_str}
+
+**페르소나별 코멘트**
+{persona_block}
+"""
+    
+    return summary.strip()
+
+
 # ============================================================================
 # 🛡 방어적 코딩 헬퍼 (AI 응답 유효성 검증)
 # ============================================================================
@@ -5085,10 +5257,11 @@ with tabs[3]:
                         pct = cnt / len(evaluations) * 100
                         st.metric(tf, f"{cnt}명", f"{pct:.0f}%")
         
-        # 탭 구성: 평균/개별코멘트/점수분포/세션비교
-        ai_tab1, ai_tab2, ai_tab3, ai_tab4 = st.tabs([
+        # 탭 구성: 평균/개별코멘트/점수분포/세션비교/챗봇
+        ai_tab1, ai_tab2, ai_tab3, ai_tab4, ai_tab5 = st.tabs([
             "📊 항목별 평균", "💬 개별 코멘트",
-            "🔥 점수 분포", "💾 세션 비교"
+            "🔥 점수 분포", "💾 세션 비교",
+            "🤖 개선 상담 챗봇"
         ])
         
         with ai_tab1:
@@ -5526,6 +5699,192 @@ with tabs[3]:
                     "📥 평가 데이터 CSV",
                     key="t4_eval_csv"
                 )
+        
+        # ═══════════════════════════════════════════════════════════
+        # 🤖 개선 상담 챗봇 탭 (ai_tab5)
+        # ═══════════════════════════════════════════════════════════
+        with ai_tab5:
+            st.caption(
+                "💡 평가 결과에 대해 자유롭게 질문하세요. "
+                "개선 제안, 페르소나 심층 인터뷰, 유사 제품 비교 등 모두 가능합니다."
+            )
+            
+            # 강의 모드 안내
+            if st.session_state.get('teaching_mode'):
+                teaching_highlight("""
+<h4>🎓 강의 활용 Tip</h4>
+챗봇은 AI 추론이며, 실제 시장 전문가의 의견이 아닙니다.
+수강생들에게 <strong>"이 답변의 근거는 20명의 가상 평가 데이터뿐"</strong>임을
+명확히 전달하세요. 챗봇 답변을 실제 의사결정의 유일한 근거로 사용하면 안 됩니다.
+""")
+            
+            # session_state 초기화
+            if 'chatbot_history' not in st.session_state:
+                st.session_state.chatbot_history = []
+            if 'chatbot_eval_ts' not in st.session_state:
+                st.session_state.chatbot_eval_ts = None
+            
+            # 새로운 평가 결과가 들어오면 챗봇 대화 초기화
+            current_ts = eval_data.get('timestamp', '')
+            current_product = eval_data.get('product_name', '')
+            eval_signature = f"{current_product}_{current_ts}"
+            if st.session_state.chatbot_eval_ts != eval_signature:
+                st.session_state.chatbot_history = []
+                st.session_state.chatbot_eval_ts = eval_signature
+            
+            MAX_TURNS = 20
+            used_turns = len([m for m in st.session_state.chatbot_history 
+                              if m.get('role') == 'user'])
+            remaining = MAX_TURNS - used_turns
+            
+            # 상단 상태 바
+            col_s1, col_s2, col_s3 = st.columns([2, 1, 1])
+            with col_s1:
+                st.markdown(
+                    f"**💬 Claude Haiku 4.5** · 남은 대화: "
+                    f"**{remaining}/{MAX_TURNS}회**"
+                )
+            with col_s2:
+                if st.button("🔄 대화 초기화", key="t4_chatbot_reset",
+                            use_container_width=True):
+                    st.session_state.chatbot_history = []
+                    st.rerun()
+            with col_s3:
+                st.caption(f"💰 세션당 약 $0.03 (40원)")
+            
+            # 대화 히스토리 표시
+            chat_container = st.container()
+            with chat_container:
+                if not st.session_state.chatbot_history:
+                    # 첫 진입 시 환영 메시지
+                    mode_str = ("배합비" if mode == 'recipe' else "컨셉")
+                    greeting = (
+                        f"안녕하세요! {current_product} {mode_str} 평가 결과에 대해 "
+                        f"궁금한 점이 있으시면 물어보세요. 아래 빠른 질문 버튼을 "
+                        f"이용하시거나 직접 입력해주세요."
+                    )
+                    with st.chat_message("assistant"):
+                        st.markdown(greeting)
+                else:
+                    for msg in st.session_state.chatbot_history:
+                        role = msg.get('role', 'user')
+                        content = msg.get('content', '')
+                        with st.chat_message(role):
+                            st.markdown(content)
+            
+            # Quick Prompts (빠른 질문)
+            if remaining > 0:
+                st.markdown("**💡 빠른 질문**")
+                qc1, qc2, qc3, qc4 = st.columns(4)
+                quick_prompt = None
+                with qc1:
+                    if st.button("💡 왜 이런 결과?", key="t4_qp1",
+                                use_container_width=True,
+                                help="현재 점수가 이렇게 나온 이유 분석"):
+                        quick_prompt = (
+                            "이번 평가에서 점수가 높은/낮은 항목의 원인을 "
+                            "페르소나 특성과 제품 프로파일로 설명해주세요."
+                        )
+                with qc2:
+                    if st.button("🔧 어떻게 개선?", key="t4_qp2",
+                                use_container_width=True,
+                                help="합격 판정을 위한 구체적 개선 방향"):
+                        quick_prompt = (
+                            "현재 결과를 바탕으로 완전 합격을 위해 "
+                            "배합 또는 공정을 어떻게 수정하면 좋을지 "
+                            "구체적으로 3가지 방향을 제안해주세요."
+                        )
+                with qc3:
+                    if st.button("👥 페르소나 인터뷰", key="t4_qp3",
+                                use_container_width=True,
+                                help="특정 패널에게 심층 질문"):
+                        quick_prompt = (
+                            "가장 낮은 점수를 준 페르소나 한 명을 골라, "
+                            "그 사람의 관점에서 '이 제품이 어떻게 바뀌면 "
+                            "살 것 같은지' 1인칭으로 답해주세요."
+                        )
+                with qc4:
+                    if st.button("📊 유사 제품 비교", key="t4_qp4",
+                                use_container_width=True,
+                                help="시장 경쟁 제품과 비교 분석"):
+                        quick_prompt = (
+                            "시장에 있는 유사 제품들과 비교했을 때 "
+                            "이 제품의 강점과 약점은 무엇인지, "
+                            "포지셔닝 전략도 함께 제안해주세요."
+                        )
+            else:
+                st.info(f"🎯 대화 한도({MAX_TURNS}회) 도달. "
+                       "새로운 대화를 원하시면 '🔄 대화 초기화'를 누르거나 재평가해주세요.")
+                quick_prompt = None
+            
+            # 사용자 입력
+            user_input = None
+            if remaining > 0:
+                user_input = st.chat_input(
+                    f"질문을 입력하세요... (남은 대화: {remaining}/{MAX_TURNS}회)",
+                    key="t4_chatbot_input"
+                )
+            
+            # Quick Prompt 또는 직접 입력 처리
+            final_input = quick_prompt or user_input
+            
+            if final_input and remaining > 0:
+                # API 키 체크
+                if not st.session_state.get('api_key'):
+                    st.error("⚠️ 사이드바에서 Claude API 키를 입력하세요.")
+                else:
+                    # 사용자 메시지 추가
+                    st.session_state.chatbot_history.append({
+                        'role': 'user',
+                        'content': final_input
+                    })
+                    
+                    # 시스템 프롬프트 (평가 결과 요약 포함)
+                    eval_summary = summarize_for_chatbot(eval_data)
+                    teaching_guide = ""
+                    if st.session_state.get('teaching_mode'):
+                        teaching_guide = (
+                            "\n[강의 모드] 답변 끝에 수강생이 더 생각해볼 수 있는 "
+                            "토론 질문 1개를 추가하세요."
+                        )
+                    
+                    system_msg = f"""당신은 식품 R&D 전문 컨설턴트입니다. 
+소비자 조사 결과(AI 시뮬레이션)를 분석하고 개선을 제안하는 역할입니다.
+
+{eval_summary}
+
+**답변 원칙**:
+1. 위 데이터에 근거해서만 답변하세요. 데이터에 없는 것은 추측하지 말고 
+   "주어진 결과만으로는 알 수 없습니다"라고 말하세요.
+2. 페르소나 인터뷰 요청 시 해당 ID의 reasoning과 comment를 참고해 1인칭으로 답하세요.
+3. 답변은 간결하게, 마크다운 사용 가능.
+4. 제품 R&D 실무자가 바로 활용할 수 있는 실질적 조언을 우선.
+5. 이 결과가 AI 시뮬레이션임을 항상 인지하고, 실제 시장 검증이 
+   필요함을 적절히 상기시키세요.{teaching_guide}"""
+                    
+                    # API 호출 (Haiku 4.5 고정)
+                    with st.spinner("🤔 답변 생성 중..."):
+                        response = call_claude_api_chat(
+                            messages=st.session_state.chatbot_history,
+                            api_key=st.session_state.api_key,
+                            system_msg=system_msg,
+                            model="claude-haiku-4-5",
+                            max_tokens=1500,
+                            timeout=120
+                        )
+                    
+                    # 응답 저장
+                    if response.startswith("❌") or response.startswith("⚠️"):
+                        st.error(response)
+                        # 실패한 사용자 메시지 제거 (재시도 가능하도록)
+                        st.session_state.chatbot_history.pop()
+                    else:
+                        st.session_state.chatbot_history.append({
+                            'role': 'assistant',
+                            'content': response
+                        })
+                    
+                    st.rerun()
         
         # 면책 문구 (하단 상시)
         st.markdown(
