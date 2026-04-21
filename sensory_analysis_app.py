@@ -54,6 +54,16 @@ for key, default in [
     if key not in st.session_state:
         st.session_state[key] = default
 
+# Streamlit secrets에서 API 키 자동 로드 (최초 1회)
+if not st.session_state.api_key:
+    try:
+        if 'ANTHROPIC_API_KEY' in st.secrets:
+            st.session_state.api_key = st.secrets['ANTHROPIC_API_KEY']
+            st.session_state.api_key_source = 'secrets'
+    except Exception:
+        # 로컬 환경에서 secrets.toml이 없을 때 무시
+        pass
+
 
 # ============================================================================
 # 공통 유틸리티
@@ -432,9 +442,26 @@ th {{ background: #0ea5e9; color: white; }}
 with st.sidebar:
     st.title("⚙️ 설정")
     st.subheader("🤖 Claude AI 해석")
-    st.session_state.api_key = st.text_input(
-        "Anthropic API Key", value=st.session_state.api_key,
-        type="password", help="결과 해석 시에만 사용")
+    
+    # Secrets에서 자동 로드 여부 확인
+    secrets_loaded = st.session_state.get('api_key_source') == 'secrets'
+    
+    if secrets_loaded:
+        st.success("✅ API 키 자동 연결됨 (Secrets)")
+        if st.checkbox("다른 API 키 사용", key="override_key"):
+            new_key = st.text_input(
+                "Anthropic API Key (임시)", value="",
+                type="password", help="이 세션에서만 사용됩니다")
+            if new_key:
+                st.session_state.api_key = new_key
+                st.session_state.api_key_source = 'manual'
+    else:
+        st.session_state.api_key = st.text_input(
+            "Anthropic API Key", value=st.session_state.api_key,
+            type="password", help="결과 해석 시에만 사용")
+        if st.session_state.api_key:
+            st.caption("🔑 키 입력됨 (이 세션만 유지)")
+    
     st.session_state.claude_model = st.selectbox(
         "모델", ["claude-sonnet-4-5", "claude-opus-4-5", "claude-haiku-4-5"])
     st.divider()
