@@ -690,10 +690,10 @@ with tabs[1]:
         col1, col2 = st.columns(2)
         with col1:
             tt = st.radio("검사 종류",
-                ["삼점검정 (Triangle)", "일-이점검정 (Duo-Trio)"], key="t2_tt")
-            total_p = st.number_input("전체 패널 수", 5, 500, 30, key="t2_n")
-            correct_p = st.number_input("정답자 수", 0, int(total_p), 15, key="t2_c")
-            alpha = st.selectbox("유의수준 α", [0.05, 0.01, 0.001], key="t2_a")
+                ["삼점검정 (Triangle)", "일-이점검정 (Duo-Trio)"], key="t2_tt_direct")
+            total_p = st.number_input("전체 패널 수", 5, 500, 30, key="t2_n_direct")
+            correct_p = st.number_input("정답자 수", 0, int(total_p), 15, key="t2_c_direct")
+            alpha = st.selectbox("유의수준 α", [0.05, 0.01, 0.001], key="t2_a_direct")
         with col2:
             p0 = 1/3 if "삼점" in tt else 1/2
             r = binomtest(correct_p, total_p, p0, alternative='greater')
@@ -899,17 +899,17 @@ with tabs[3]:
             c1, c2, c3, c4 = st.columns(4)
             panel_c = c1.selectbox("패널", df_rel.columns,
                 index=list(df_rel.columns).index('패널') if '패널' in df_rel.columns else 0,
-                key="t4_p")
+                key="t4_p_col")
             sample_c = c2.selectbox("시료", df_rel.columns,
                 index=list(df_rel.columns).index('시료') if '시료' in df_rel.columns else 1,
-                key="t4_s")
+                key="t4_s_col")
             rep_c = c3.selectbox("반복", df_rel.columns,
                 index=list(df_rel.columns).index('반복') if '반복' in df_rel.columns else 2,
-                key="t4_r")
+                key="t4_r_col")
             num_cols = df_rel.select_dtypes(include=np.number).columns.tolist()
             score_c = c4.selectbox("점수", num_cols,
                 index=num_cols.index('점수') if '점수' in num_cols else 0,
-                key="t4_sc") if num_cols else None
+                key="t4_sc_col") if num_cols else None
             
             if st.button("🔍 신뢰도 분석 실행", type="primary", key="t4_run") and score_c:
                 try:
