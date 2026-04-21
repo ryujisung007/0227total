@@ -213,6 +213,455 @@ def gen_reliability_form(n_panels, samples, n_reps, random_fill=False, seed=None
     return pd.DataFrame(rows)
 
 
+# ============================================================================
+# 인쇄용 질문지(조사지) HTML 생성 — 난수 코드 적용
+# ============================================================================
+
+QUESTIONNAIRE_CSS = """
+<style>
+@page { size: A4; margin: 1.5cm; }
+body { font-family: 'Malgun Gothic', 'Nanum Gothic', sans-serif;
+       color: #000; line-height: 1.6; font-size: 14px; }
+.page { page-break-after: always; padding: 10px 20px; max-width: 720px;
+        margin: 0 auto; min-height: 900px; }
+.page:last-child { page-break-after: auto; }
+h1 { text-align: center; font-size: 22px; border-bottom: 3px double #000;
+     padding-bottom: 10px; margin-bottom: 20px; }
+h2 { text-align: center; font-size: 20px; color: #0369a1;
+     border-bottom: 2px solid #0369a1; padding-bottom: 8px; }
+.info-box { border: 1px solid #666; padding: 12px; margin: 15px 0;
+            background: #f8f8f8; border-radius: 4px; }
+.info-box strong { font-size: 15px; }
+table { width: 100%; border-collapse: collapse; margin: 15px 0; }
+th, td { border: 1.5px solid #333; padding: 10px; text-align: center;
+         font-size: 14px; }
+th { background: #e5e7eb; font-weight: bold; }
+.code { font-size: 28px; font-weight: bold; letter-spacing: 3px;
+        font-family: 'Courier New', monospace; }
+.code-big { font-size: 48px; font-weight: bold; letter-spacing: 4px;
+            font-family: 'Courier New', monospace; display: inline-block;
+            padding: 15px 30px; border: 2px solid #000;
+            margin: 10px 15px; background: #fff; }
+.score-box { display: inline-block; border: 1.5px solid #000;
+             width: 28px; height: 28px; line-height: 28px; margin: 1px;
+             text-align: center; font-size: 13px; }
+.instruction { background: #fffbe0; padding: 12px; border-left: 4px solid #f59e0b;
+               margin: 15px 0; font-size: 14px; }
+.rank-input { border: 1.5px solid #000; width: 60px; height: 32px;
+              display: inline-block; }
+.footer { text-align: center; font-size: 11px; color: #666;
+          margin-top: 30px; border-top: 1px solid #ccc; padding-top: 10px; }
+.print-notice { background: #dbeafe; padding: 10px; margin-bottom: 20px;
+                border-radius: 4px; text-align: center; font-size: 13px; }
+@media print { .no-print { display: none !important; } }
+</style>
+"""
+
+PRINT_NOTICE = """
+<div class="print-notice no-print">
+📄 <strong>이 문서는 인쇄용입니다.</strong>
+브라우저에서 <kbd>Ctrl+P</kbd> (Mac: <kbd>Cmd+P</kbd>)를 눌러 인쇄하세요. 각 패널당 1페이지씩 출력됩니다.
+</div>
+"""
+
+
+def build_anova_questionnaire(n_panels, samples, attribute, seed):
+    """ANOVA 평점법 질문지"""
+    random.seed(seed)
+    n_samples = len(samples)
+    
+    # 패널별 난수 코드 + 제시 순서 (라틴방격)
+    all_codes = random.sample(range(100, 1000), n_panels * n_samples)
+    
+    pages_html = []
+    code_map = []  # 정답지용
+    
+    for p in range(n_panels):
+        codes = all_codes[p*n_samples:(p+1)*n_samples]
+        # 라틴방격 로테이션 순서
+        order = [(i + p) % n_samples for i in range(n_samples)]
+        
+        rows = ""
+        for i, s_idx in enumerate(order, 1):
+            s = samples[s_idx]
+            code = codes[s_idx]
+            score_boxes = "".join([
+                f'<span class="score-box">{n}</span>' for n in range(1, 10)
+            ])
+            rows += f"""<tr>
+                <td><strong>{i}</strong></td>
+                <td><span class="code">{code}</span></td>
+                <td>{score_boxes}</td>
+            </tr>"""
+            code_map.append({
+                '패널': f'P{p+1:02d}', '제시순서': i,
+                '시료명': s, '블라인드코드': code
+            })
+        
+        pages_html.append(f"""
+<div class="page">
+    <h1>관능검사 조사지 — 평점법 (ANOVA)</h1>
+    <div class="info-box">
+        패널 번호: <strong>P{p+1:02d}</strong> &nbsp;&nbsp;&nbsp; 
+        날짜: ________________ &nbsp;&nbsp;&nbsp; 
+        시간: ________________<br>
+        성명: ________________ &nbsp;&nbsp;&nbsp; 
+        성별: □ 남 &nbsp; □ 여 &nbsp;&nbsp;&nbsp; 
+        연령대: □ 20대 □ 30대 □ 40대 □ 50대↑
+    </div>
+    <div class="instruction">
+        <strong>📋 평가 속성: <u>{attribute}</u></strong><br>
+        아래 시료를 제시된 순서대로 드시고 <strong>9점 척도</strong>에서 해당 숫자에 동그라미 치세요.<br>
+        <small>(1 = 매우 약함 / 매우 나쁨, &nbsp; 5 = 보통, &nbsp; 9 = 매우 강함 / 매우 좋음)</small><br>
+        각 시료 사이에는 <strong>물로 입을 헹궈주세요.</strong>
+    </div>
+    <table>
+        <tr><th style="width:15%">제시 순서</th><th style="width:20%">시료 코드</th><th>점수 (해당 숫자에 ○)</th></tr>
+        {rows}
+    </table>
+    <div class="info-box">
+        <strong>자유 의견:</strong><br>
+        _______________________________________________________________________<br><br>
+        _______________________________________________________________________
+    </div>
+    <div class="footer">Sweet Lab · Natural Lab R&D · {datetime.date.today()}</div>
+</div>""")
+    
+    html = f"""<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8">
+<title>관능검사 조사지 (평점법)</title>{QUESTIONNAIRE_CSS}</head>
+<body>{PRINT_NOTICE}{"".join(pages_html)}</body></html>"""
+    
+    return html, pd.DataFrame(code_map)
+
+
+def build_triangle_questionnaire(n_panels, attribute, seed):
+    """삼점검정 질문지 — 3개 중 다른 하나 식별"""
+    random.seed(seed)
+    pages_html = []
+    answer_info = []
+    
+    for p in range(n_panels):
+        codes_3 = random.sample(range(100, 1000), 3)
+        # 패널별 odd 위치 랜덤화 (AAB, ABA, BAA 중 하나)
+        odd_position = random.randint(0, 2)
+        odd_code = codes_3[odd_position]
+        
+        pages_html.append(f"""
+<div class="page">
+    <h1>관능검사 조사지 — 삼점검정 (Triangle Test)</h1>
+    <div class="info-box">
+        패널 번호: <strong>P{p+1:02d}</strong> &nbsp;&nbsp;&nbsp; 
+        날짜: ________________ &nbsp;&nbsp;&nbsp; 
+        시간: ________________<br>
+        성명: ________________
+    </div>
+    <div class="instruction">
+        <strong>📋 지시사항:</strong><br>
+        아래 3개 시료는 <strong>2개는 동일</strong>하고 <strong>1개는 다른 시료</strong>입니다.<br>
+        <strong>{attribute}</strong>(을/를) 기준으로, <u>왼쪽부터 순서대로</u> 드시고 
+        <strong>다른 하나</strong>를 찾아주세요.<br>
+        각 시료 사이에 <strong>물로 입을 헹궈주세요.</strong> 반드시 하나는 선택해야 합니다.
+    </div>
+    <div style="text-align:center; margin: 35px 0;">
+        <div class="code-big">{codes_3[0]}</div>
+        <div class="code-big">{codes_3[1]}</div>
+        <div class="code-big">{codes_3[2]}</div>
+    </div>
+    <div class="info-box" style="font-size: 16px; text-align:center; padding: 20px;">
+        <strong>다른 시료 코드:</strong> &nbsp;&nbsp;
+        <span style="border-bottom: 2px solid #000; padding: 0 40px; font-size: 24px;">
+        &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span>
+    </div>
+    <p><strong>확신도:</strong> &nbsp;
+        □ 확실함 &nbsp;&nbsp; □ 거의 확실함 &nbsp;&nbsp; □ 모호함 &nbsp;&nbsp; □ 추측</p>
+    <p><strong>차이 강도:</strong> &nbsp;
+        □ 약함 &nbsp;&nbsp; □ 중간 &nbsp;&nbsp; □ 강함 &nbsp;&nbsp; □ 매우 강함</p>
+    <div class="info-box">
+        <strong>어떤 점이 달랐습니까? (자유 의견)</strong><br>
+        _______________________________________________________________________<br><br>
+        _______________________________________________________________________
+    </div>
+    <div class="footer">Sweet Lab · Natural Lab R&D · {datetime.date.today()}</div>
+</div>""")
+        answer_info.append({
+            '패널': f'P{p+1:02d}',
+            '시료코드_1': codes_3[0], '시료코드_2': codes_3[1], '시료코드_3': codes_3[2],
+            '정답위치': f'{odd_position + 1}번째',
+            '정답코드': odd_code
+        })
+    
+    html = f"""<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8">
+<title>관능검사 조사지 (삼점검정)</title>{QUESTIONNAIRE_CSS}</head>
+<body>{PRINT_NOTICE}{"".join(pages_html)}</body></html>"""
+    
+    return html, pd.DataFrame(answer_info)
+
+
+def build_duotrio_questionnaire(n_panels, attribute, seed):
+    """일-이점검정 질문지 — R과 동일한 것 식별"""
+    random.seed(seed)
+    pages_html = []
+    answer_info = []
+    
+    for p in range(n_panels):
+        # R + 2개 시료 (1개는 R과 동일, 1개는 다름)
+        r_code = random.randint(100, 999)
+        codes_2 = random.sample([c for c in range(100, 1000) if c != r_code], 2)
+        same_position = random.randint(0, 1)  # R과 같은 시료의 위치
+        same_code = codes_2[same_position]
+        
+        pages_html.append(f"""
+<div class="page">
+    <h1>관능검사 조사지 — 일-이점검정 (Duo-Trio)</h1>
+    <div class="info-box">
+        패널 번호: <strong>P{p+1:02d}</strong> &nbsp;&nbsp;&nbsp; 
+        날짜: ________________ &nbsp;&nbsp;&nbsp; 
+        시간: ________________<br>
+        성명: ________________
+    </div>
+    <div class="instruction">
+        <strong>📋 지시사항:</strong><br>
+        먼저 <strong>기준시료 R</strong>을 드신 후, 아래 2개 시료 중
+        <strong>R과 동일한 것</strong>을 찾아주세요.<br>
+        <strong>{attribute}</strong>(을/를) 기준으로 평가하시며, 
+        각 시료 사이에 <strong>물로 입을 헹궈주세요.</strong>
+    </div>
+    <div style="text-align:center; margin: 30px 0;">
+        <div style="border: 3px solid #dc2626; display:inline-block; padding: 20px 40px; 
+             margin-bottom: 20px; background: #fee2e2;">
+            <span style="font-size:20px; font-weight:bold; color: #991b1b;">기준시료</span><br>
+            <span class="code" style="font-size:36px;">R ({r_code})</span>
+        </div>
+        <br>
+        <div style="margin-top: 20px;">
+            <div class="code-big">{codes_2[0]}</div>
+            <div class="code-big">{codes_2[1]}</div>
+        </div>
+    </div>
+    <div class="info-box" style="font-size: 16px; text-align:center; padding: 20px;">
+        <strong>R과 같은 시료 코드:</strong> &nbsp;&nbsp;
+        <span style="border-bottom: 2px solid #000; padding: 0 40px; font-size: 24px;">
+        &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span>
+    </div>
+    <p><strong>확신도:</strong> &nbsp;
+        □ 확실함 &nbsp;&nbsp; □ 거의 확실함 &nbsp;&nbsp; □ 모호함 &nbsp;&nbsp; □ 추측</p>
+    <div class="info-box">
+        <strong>자유 의견:</strong><br>
+        _______________________________________________________________________
+    </div>
+    <div class="footer">Sweet Lab · Natural Lab R&D · {datetime.date.today()}</div>
+</div>""")
+        answer_info.append({
+            '패널': f'P{p+1:02d}',
+            '기준시료_R': r_code,
+            '시료코드_1': codes_2[0], '시료코드_2': codes_2[1],
+            '정답위치': f'{same_position + 1}번째',
+            '정답코드(R과동일)': same_code
+        })
+    
+    html = f"""<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8">
+<title>관능검사 조사지 (일-이점검정)</title>{QUESTIONNAIRE_CSS}</head>
+<body>{PRINT_NOTICE}{"".join(pages_html)}</body></html>"""
+    
+    return html, pd.DataFrame(answer_info)
+
+
+def build_ranking_questionnaire(n_panels, samples, attribute, seed):
+    """순위법 질문지"""
+    random.seed(seed)
+    n_samples = len(samples)
+    all_codes = random.sample(range(100, 1000), n_panels * n_samples)
+    
+    pages_html = []
+    code_map = []
+    
+    for p in range(n_panels):
+        codes = all_codes[p*n_samples:(p+1)*n_samples]
+        # 제시 순서 랜덤화 (순위법은 모든 시료가 동시에 제시됨)
+        order = list(range(n_samples))
+        random.shuffle(order)
+        
+        rows = ""
+        for s_idx in order:
+            s = samples[s_idx]
+            code = codes[s_idx]
+            rows += f"""<tr>
+                <td><span class="code">{code}</span></td>
+                <td><span class="rank-input"></span></td>
+            </tr>"""
+            code_map.append({
+                '패널': f'P{p+1:02d}',
+                '시료명': s, '블라인드코드': code
+            })
+        
+        pages_html.append(f"""
+<div class="page">
+    <h1>관능검사 조사지 — 순위법</h1>
+    <div class="info-box">
+        패널 번호: <strong>P{p+1:02d}</strong> &nbsp;&nbsp;&nbsp; 
+        날짜: ________________ &nbsp;&nbsp;&nbsp; 
+        시간: ________________<br>
+        성명: ________________
+    </div>
+    <div class="instruction">
+        <strong>📋 지시사항:</strong><br>
+        아래 시료를 <strong>{attribute}</strong> 기준으로 평가하여 <strong>순위</strong>를 매겨주세요.<br>
+        <strong>1 = 가장 강함(또는 가장 선호), 숫자가 클수록 약함(또는 덜 선호)</strong><br>
+        <u>동점은 허용되지 않습니다.</u> 반드시 모든 시료에 다른 순위를 부여하세요.<br>
+        각 시료 사이에 <strong>물로 입을 헹궈주세요.</strong>
+    </div>
+    <table style="max-width: 500px; margin: 0 auto;">
+        <tr><th style="width:50%">시료 코드</th><th>순위 (1 = 최상)</th></tr>
+        {rows}
+    </table>
+    <div class="info-box" style="margin-top: 30px;">
+        <strong>순위 결정 기준 (자유 의견):</strong><br>
+        _______________________________________________________________________<br><br>
+        _______________________________________________________________________
+    </div>
+    <div class="footer">Sweet Lab · Natural Lab R&D · {datetime.date.today()}</div>
+</div>""")
+    
+    html = f"""<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8">
+<title>관능검사 조사지 (순위법)</title>{QUESTIONNAIRE_CSS}</head>
+<body>{PRINT_NOTICE}{"".join(pages_html)}</body></html>"""
+    
+    return html, pd.DataFrame(code_map)
+
+
+def build_reliability_questionnaire(n_panels, samples, n_reps, attribute, seed):
+    """반복측정 질문지 — 패널별 × 반복별 페이지"""
+    random.seed(seed)
+    n_samples = len(samples)
+    
+    pages_html = []
+    code_map = []
+    
+    for p in range(n_panels):
+        for r in range(n_reps):
+            # 각 반복마다 새로운 코드 (블라인드 강화)
+            codes = random.sample(range(100, 1000), n_samples)
+            # 제시 순서는 반복마다 다르게 (라틴방격)
+            order = [(i + p + r) % n_samples for i in range(n_samples)]
+            
+            rows = ""
+            for i, s_idx in enumerate(order, 1):
+                s = samples[s_idx]
+                code = codes[s_idx]
+                score_boxes = "".join([
+                    f'<span class="score-box">{n}</span>' for n in range(1, 10)
+                ])
+                rows += f"""<tr>
+                    <td><strong>{i}</strong></td>
+                    <td><span class="code">{code}</span></td>
+                    <td>{score_boxes}</td>
+                </tr>"""
+                code_map.append({
+                    '패널': f'P{p+1:02d}', '반복': r+1,
+                    '제시순서': i, '시료명': s, '블라인드코드': code
+                })
+            
+            pages_html.append(f"""
+<div class="page">
+    <h1>관능검사 조사지 — 반복측정 (신뢰도)</h1>
+    <div class="info-box">
+        패널: <strong>P{p+1:02d}</strong> &nbsp;|&nbsp; 
+        <strong>반복 {r+1}회차 / 총 {n_reps}회차</strong> &nbsp;|&nbsp;
+        날짜: ________________ &nbsp;|&nbsp; 시간: ________________<br>
+        성명: ________________
+    </div>
+    <div class="instruction">
+        <strong>📋 평가 속성: <u>{attribute}</u></strong><br>
+        제시된 시료를 순서대로 평가하여 <strong>9점 척도</strong>에서 해당 숫자에 ○ 치세요.<br>
+        <small>(1 = 매우 약함, 5 = 보통, 9 = 매우 강함) &nbsp;
+        <strong>※ 이전 회차 결과를 참고하지 마세요.</strong></small>
+    </div>
+    <table>
+        <tr><th style="width:15%">제시 순서</th><th style="width:20%">시료 코드</th><th>점수 (○)</th></tr>
+        {rows}
+    </table>
+    <div class="info-box">
+        <strong>의견:</strong>
+        _______________________________________________________________________
+    </div>
+    <div class="footer">Sweet Lab · Natural Lab R&D · {datetime.date.today()}</div>
+</div>""")
+    
+    html = f"""<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8">
+<title>관능검사 조사지 (신뢰도/반복측정)</title>{QUESTIONNAIRE_CSS}</head>
+<body>{PRINT_NOTICE}{"".join(pages_html)}</body></html>"""
+    
+    return html, pd.DataFrame(code_map)
+
+
+def build_answer_key_html(test_type, df_answer):
+    """정답지(연구자용) HTML 생성"""
+    title_map = {
+        'anova': 'ANOVA 평점법',
+        'triangle': '삼점검정',
+        'duo_trio': '일-이점검정',
+        'ranking': '순위법',
+        'reliability': '반복측정 (신뢰도)'
+    }
+    title = title_map.get(test_type, test_type)
+    
+    html = f"""<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8">
+<title>정답지 — {title}</title>{QUESTIONNAIRE_CSS}</head>
+<body>{PRINT_NOTICE}
+<div class="page">
+    <h2>🔑 정답지 (Answer Key) — {title}</h2>
+    <div class="info-box" style="background: #fef3c7; border: 2px solid #f59e0b;">
+        <strong>⚠️ 기밀 문서</strong> — 연구자 전용. 패널에게 공개하지 마세요.<br>
+        이 문서는 조사 종료 후 결과 집계(CSV 작성)에 사용됩니다.
+    </div>
+    {df_answer.to_html(index=False, escape=False)}
+    <div class="footer">
+        Sweet Lab · Natural Lab R&D · {datetime.date.today()}<br>
+        총 {len(df_answer['패널'].unique() if '패널' in df_answer.columns else df_answer)}명 패널
+    </div>
+</div>
+</body></html>"""
+    return html
+
+
+# ============================================================================
+# 조사지 관리 UI 함수
+# ============================================================================
+
+def _render_questionnaire_section(tab_key, test_type, html_fn, df_fn_or_params):
+    """
+    질문지 HTML + 정답지 + 코드매핑 CSV 다운로드 UI 렌더링
+    
+    html_fn: () -> (html, df_answer_or_codemap)
+    """
+    html, df_meta = html_fn()
+    
+    d1, d2, d3 = st.columns(3)
+    with d1:
+        st.download_button(
+            "📄 인쇄용 질문지 (HTML)",
+            data=html.encode('utf-8'),
+            file_name=f"질문지_{test_type}_{datetime.date.today()}.html",
+            mime="text/html", key=f"{tab_key}_q_html",
+            use_container_width=True,
+            help="브라우저에서 열고 Ctrl+P로 인쇄하세요"
+        )
+    with d2:
+        key_html = build_answer_key_html(test_type, df_meta)
+        st.download_button(
+            "🔑 정답지 / 코드매핑 (HTML)",
+            data=key_html.encode('utf-8'),
+            file_name=f"정답지_{test_type}_{datetime.date.today()}.html",
+            mime="text/html", key=f"{tab_key}_a_html",
+            use_container_width=True,
+            help="연구자 전용. 패널에 배포 금지"
+        )
+    with d3:
+        df_to_csv_download(df_meta, f"코드매핑_{test_type}.csv",
+            "📊 코드매핑 CSV", key=f"{tab_key}_map_csv",
+            help_text="조사 결과 CSV 작성 시 참조용")
+
+
 def form_manager_ui(tab_key, form_type):
     """각 탭 상단 공통 조사지 관리 UI"""
     with st.expander("📋 조사지 관리 — 양식 다운로드 / 랜덤 데이터 생성", expanded=False):
@@ -233,11 +682,23 @@ def form_manager_ui(tab_key, form_type):
                 d1, d2 = st.columns(2)
                 with d1:
                     df_to_csv_download(blank, f"ANOVA_조사지양식_{n}명.csv",
-                        "📥 빈 조사지 양식", key=f"{tab_key}_dl1")
+                        "📥 빈 조사지 양식 (CSV)", key=f"{tab_key}_dl1")
                 with d2:
                     df_to_csv_download(rand, f"ANOVA_랜덤데이터_{n}명.csv",
-                        "🎲 랜덤 응답 데이터", key=f"{tab_key}_dl2")
-                st.markdown("**미리보기** (랜덤 응답):")
+                        "🎲 랜덤 응답 데이터 (CSV)", key=f"{tab_key}_dl2")
+                
+                st.divider()
+                st.markdown("**📄 인쇄용 질문지 (난수 코드 적용)**")
+                attribute = st.text_input("평가 속성", "전반적 기호도",
+                    key=f"{tab_key}_attr",
+                    help="예: 단맛 강도, 향 강도, 전반적 기호도 등")
+                _render_questionnaire_section(
+                    tab_key, 'anova',
+                    lambda: build_anova_questionnaire(n, samples, attribute, int(seed)),
+                    None
+                )
+                
+                st.markdown("**미리보기** (랜덤 응답 CSV):")
                 st.dataframe(rand.head(6), use_container_width=True)
         
         elif form_type == 'discrimination':
@@ -258,12 +719,32 @@ def form_manager_ui(tab_key, form_type):
             d1, d2 = st.columns(2)
             with d1:
                 df_to_csv_download(blank, f"{t_type}_조사지양식_{n}명.csv",
-                    "📥 빈 조사지 양식", key=f"{tab_key}_dl1")
+                    "📥 빈 조사지 양식 (CSV)", key=f"{tab_key}_dl1")
             with d2:
                 df_to_csv_download(rand, f"{t_type}_랜덤데이터_{n}명.csv",
-                    "🎲 랜덤 응답 데이터", key=f"{tab_key}_dl2")
-            st.caption("💡 정답여부: 1=다른시료 식별 성공, 0=실패")
-            st.markdown("**미리보기** (랜덤 응답):")
+                    "🎲 랜덤 응답 데이터 (CSV)", key=f"{tab_key}_dl2")
+            
+            st.divider()
+            st.markdown("**📄 인쇄용 질문지 (난수 코드 적용)**")
+            attribute = st.text_input("평가 속성", "단맛 강도",
+                key=f"{tab_key}_attr",
+                help="예: 단맛 강도, 향, 맛의 차이 등")
+            
+            if t_type == "삼점검정":
+                _render_questionnaire_section(
+                    tab_key, 'triangle',
+                    lambda: build_triangle_questionnaire(n, attribute, int(seed)),
+                    None
+                )
+            else:
+                _render_questionnaire_section(
+                    tab_key, 'duo_trio',
+                    lambda: build_duotrio_questionnaire(n, attribute, int(seed)),
+                    None
+                )
+            
+            st.caption("💡 CSV 정답여부: 1=다른시료 식별 성공, 0=실패 (정답지와 대조하여 작성)")
+            st.markdown("**미리보기** (랜덤 응답 CSV):")
             st.dataframe(rand.head(6), use_container_width=True)
         
         elif form_type == 'ranking':
@@ -282,12 +763,24 @@ def form_manager_ui(tab_key, form_type):
                 d1, d2 = st.columns(2)
                 with d1:
                     df_to_csv_download(blank, f"순위법_조사지양식_{n}명.csv",
-                        "📥 빈 조사지 양식", key=f"{tab_key}_dl1")
+                        "📥 빈 조사지 양식 (CSV)", key=f"{tab_key}_dl1")
                 with d2:
                     df_to_csv_download(rand, f"순위법_랜덤데이터_{n}명.csv",
-                        "🎲 랜덤 응답 데이터", key=f"{tab_key}_dl2")
+                        "🎲 랜덤 응답 데이터 (CSV)", key=f"{tab_key}_dl2")
+                
+                st.divider()
+                st.markdown("**📄 인쇄용 질문지 (난수 코드 적용)**")
+                attribute = st.text_input("평가 속성", "전반적 선호도",
+                    key=f"{tab_key}_attr",
+                    help="예: 전반적 선호도, 단맛 강도, 향 등")
+                _render_questionnaire_section(
+                    tab_key, 'ranking',
+                    lambda: build_ranking_questionnaire(n, samples, attribute, int(seed)),
+                    None
+                )
+                
                 st.caption("💡 1=가장 선호/강함, 숫자 클수록 낮은 순위")
-                st.markdown("**미리보기** (랜덤 응답):")
+                st.markdown("**미리보기** (랜덤 응답 CSV):")
                 st.dataframe(rand.head(6), use_container_width=True)
         
         elif form_type == 'reliability':
@@ -307,11 +800,23 @@ def form_manager_ui(tab_key, form_type):
                 d1, d2 = st.columns(2)
                 with d1:
                     df_to_csv_download(blank, f"신뢰도_조사지양식_{n}명_{n_reps}반복.csv",
-                        "📥 빈 조사지 양식", key=f"{tab_key}_dl1")
+                        "📥 빈 조사지 양식 (CSV)", key=f"{tab_key}_dl1")
                 with d2:
                     df_to_csv_download(rand, f"신뢰도_랜덤데이터_{n}명_{n_reps}반복.csv",
-                        "🎲 랜덤 응답 데이터", key=f"{tab_key}_dl2")
-                st.markdown("**미리보기** (랜덤 응답):")
+                        "🎲 랜덤 응답 데이터 (CSV)", key=f"{tab_key}_dl2")
+                
+                st.divider()
+                st.markdown(f"**📄 인쇄용 질문지 (반복 {n_reps}회차 × 패널 {n}명 = {n*n_reps}페이지)**")
+                attribute = st.text_input("평가 속성", "전반적 기호도",
+                    key=f"{tab_key}_attr",
+                    help="반복 간 일관성을 평가할 속성")
+                _render_questionnaire_section(
+                    tab_key, 'reliability',
+                    lambda: build_reliability_questionnaire(n, samples, n_reps, attribute, int(seed)),
+                    None
+                )
+                
+                st.markdown("**미리보기** (랜덤 응답 CSV):")
                 st.dataframe(rand.head(8), use_container_width=True)
 
 
