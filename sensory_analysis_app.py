@@ -531,16 +531,52 @@ B는 A와 C의 중간적 특성을 보인다."
 • <strong>기호도</strong>: "얼마나 좋은가?" (소비자 수용성)<br>
 • <strong>평점법</strong>: "각 속성이 어떠한가?" (다차원 특성)<br><br>
 
-<strong>▸ 리커트 7점 척도 (관능강도형)</strong><br>
-1 = 매우 약함 / 매우 나쁨<br>
-4 = 보통<br>
-7 = 매우 강함 / 매우 좋음<br><br>
+<strong>▸ 리커트 7점 척도 — 항목별 다른 해석</strong><br>
+모든 항목에 같은 1~7 척도를 쓰지만, <em>해석은 다릅니다</em>.<br>
+• <strong>기호형(Hedonic)</strong>: 높을수록 좋음<br>
+  예: 전반적 만족도, 구입 의향, 전반적 맛<br>
+• <strong>적정형(JAR)</strong>: 중간값이 최적<br>
+  예: 단맛, 쓴맛, 끝맛 여운 (자세한 내용은 JAR 척도 교재 참조)<br><br>
 
-<strong>▸ 합격 기준의 의미</strong><br>
-• 전반적 맛 ≥ 5.0: 소비자 수용 가능 수준<br>
-• 구입 의향 ≥ 5.0: 실제 구매 행동 연결 가능<br>
-• 전반 만족도 ≥ 5.0: 재구매 의향<br>
-3기준 모두 충족 시 시장 출시 가능성이 높습니다.
+<strong>▸ 이중 합격 기준</strong><br>
+• Hedonic: 전반적 맛, 구입 의향, 전반 만족도 모두 ≥ 5.0<br>
+• JAR: 단맛·쓴맛·끝맛여운이 카테고리별 허용 범위 내<br>
+두 조건을 모두 충족해야 완전 합격으로 판정됩니다.
+""",
+
+    'scaling_jar': """
+<h4>JAR (Just-About-Right) 척도의 이해</h4>
+
+<strong>▸ 왜 JAR가 필요한가?</strong><br>
+모든 감각 속성을 "높을수록 좋음"으로 평가하면 왜곡이 생깁니다.<br>
+예: "단맛 7점(매우 강함)"이 과연 좋은 걸까요? 당연히 아닙니다.
+제품에 따라 <em>적정 수준</em>이 존재합니다.<br><br>
+
+<strong>▸ JAR 척도의 원리</strong><br>
+강도 척도(1~7) 그대로 답하되, <strong>중간값 근처가 최적</strong>으로 해석.<br>
+• 음료 단맛 JAR 최적 = 4점 (±1 허용)<br>
+• 5점 → 적정 범위, 합격<br>
+• 6점 → 약간 강함, 경고<br>
+• 7점 → 너무 강함, JAR 탈락<br><br>
+
+<strong>▸ 카테고리별 JAR 최적값</strong><br>
+<code>
+음료(일반)  단맛 4, 쓴맛 2, 끝맛여운 4<br>
+음료(탄산)  단맛 5, 쓴맛 1, 끝맛여운 3<br>
+주류       단맛 2, 쓴맛 4, 끝맛여운 5<br>
+커피/차    단맛 2, 쓴맛 4, 끝맛여운 5<br>
+</code><br>
+
+<strong>▸ 편차 계산 공식</strong><br>
+<code>deviation = |score - optimal|</code><br>
+<code>penalty = max(0, (deviation - tolerance) / 3)</code><br>
+편차가 허용 범위(tolerance) 안이면 패널티 0,
+밖이면 편차에 비례해 감점됩니다.<br><br>
+
+<strong>▸ 교육 포인트</strong><br>
+"코카콜라의 단맛 강도가 7점이지만 시장에서 성공한 이유는?"<br>
+→ 탄산·산미·저온·향이 단맛을 상쇄하는 복합적 설계 때문.<br>
+→ JAR는 단일 속성만 보는 한계가 있고, <em>속성 간 균형</em>을 추가 분석해야 합니다.
 """,
 
     'scaling_questionnaire_design': """
@@ -758,14 +794,190 @@ def gen_reliability_form(n_panels, samples, n_reps, random_fill=False, seed=None
     return pd.DataFrame(rows)
 
 
-# 평점법 12항목 정의
+# 평점법 12항목 정의 (하위 호환용 리스트)
 SCALING_ATTRIBUTES = [
     '전반적 만족도', '구입 의향', '색상', '전반적 맛',
     '풍미', '재료 맛 조화', '재료 고유의 맛', '단맛',
     '쓴맛', '전반적 식감', '재료 식감 조화', '끝맛 여운'
 ]
 
+# 항목별 유형 정의 (hedonic: 높을수록 좋음 / jar: 적정값 존재)
+SCALING_ATTR_TYPES = {
+    '전반적 만족도': 'hedonic',
+    '구입 의향':    'hedonic',
+    '색상':         'hedonic',
+    '전반적 맛':    'hedonic',
+    '풍미':         'hedonic',
+    '재료 맛 조화':  'hedonic',
+    '재료 고유의 맛': 'hedonic',
+    '단맛':         'jar',       # 적정값 존재 (너무 강해도/약해도 안됨)
+    '쓴맛':         'jar',       # 적정값 존재 (제품에 따라 다름)
+    '전반적 식감':   'hedonic',
+    '재료 식감 조화': 'hedonic',
+    '끝맛 여운':    'jar',       # 적정값 존재 (너무 길어도/짧아도)
+}
+
+# 카테고리별 JAR 최적값 (리커트 7점 기준)
+# 각 값은 {항목명: (최적값, 허용범위)} 형태
+JAR_OPTIMAL_BY_CATEGORY = {
+    '음료': {
+        '단맛': (4, 1.0),      # 최적 4, ±1 허용
+        '쓴맛': (2, 1.0),      # 최적 2, ±1 허용
+        '끝맛 여운': (4, 1.0),
+    },
+    '유제품': {
+        '단맛': (5, 1.0),
+        '쓴맛': (1, 0.5),
+        '끝맛 여운': (4, 1.0),
+    },
+    '빙과': {
+        '단맛': (5, 1.0),
+        '쓴맛': (1, 0.5),
+        '끝맛 여운': (4, 1.0),
+    },
+    '스낵': {
+        '단맛': (3, 1.0),
+        '쓴맛': (2, 1.0),
+        '끝맛 여운': (4, 1.0),
+    },
+    '베이커리': {
+        '단맛': (5, 1.0),
+        '쓴맛': (2, 1.0),
+        '끝맛 여운': (4, 1.0),
+    },
+    '주류': {
+        '단맛': (2, 1.0),
+        '쓴맛': (4, 1.5),
+        '끝맛 여운': (5, 1.5),
+    },
+    '기타': {
+        '단맛': (4, 1.0),
+        '쓴맛': (2, 1.0),
+        '끝맛 여운': (4, 1.0),
+    },
+}
+
+# 합격 기준 (hedonic 항목 중에서만)
 SCALING_PASS_CRITERIA = ['전반적 만족도', '구입 의향', '전반적 맛']
+
+
+def get_hedonic_attrs(attr_list=None):
+    """hedonic 타입 항목만 필터링"""
+    target = attr_list if attr_list else SCALING_ATTRIBUTES
+    return [a for a in target if SCALING_ATTR_TYPES.get(a) == 'hedonic']
+
+
+def get_jar_attrs(attr_list=None):
+    """JAR 타입 항목만 필터링"""
+    target = attr_list if attr_list else SCALING_ATTRIBUTES
+    return [a for a in target if SCALING_ATTR_TYPES.get(a) == 'jar']
+
+
+def get_jar_optimal(category, attr):
+    """카테고리와 항목에 대한 JAR (최적값, 허용범위) 반환"""
+    cat_key = category if category in JAR_OPTIMAL_BY_CATEGORY else '기타'
+    return JAR_OPTIMAL_BY_CATEGORY[cat_key].get(attr, (4, 1.0))
+
+
+def calculate_jar_deviation(score, optimal, tolerance):
+    """JAR 편차 계산
+    
+    Returns:
+        dict with keys:
+          - deviation: |score - optimal|
+          - within_tolerance: True/False
+          - penalty: 초과 시 감점 (0 ~ 1.0)
+          - direction: '적정' / '너무 약함' / '너무 강함'
+    """
+    deviation = abs(score - optimal)
+    within = deviation <= tolerance
+    # 허용 범위 초과 시 감점 (0~최대 1.0)
+    if within:
+        penalty = 0.0
+        direction = '적정'
+    else:
+        penalty = min(1.0, (deviation - tolerance) / 3.0)
+        direction = '너무 약함' if score < optimal else '너무 강함'
+    return {
+        'score': score,
+        'optimal': optimal,
+        'tolerance': tolerance,
+        'deviation': deviation,
+        'within_tolerance': within,
+        'penalty': penalty,
+        'direction': direction
+    }
+
+
+def evaluate_scaling_pass_status(mean_scores, category='기타', jar_optimal_override=None):
+    """평점법 종합 합격 판정 (hedonic + JAR 이중 체크)
+    
+    Args:
+        mean_scores: {항목명: 평균점수} dict
+        category: 제품 카테고리 (JAR 기준값 결정)
+        jar_optimal_override: {항목명: (optimal, tolerance)} 수동 지정 (옵션)
+    
+    Returns:
+        dict with pass_status, hedonic_details, jar_details
+    """
+    # 1. Hedonic 체크 (≥ 5.0)
+    hedonic_results = {}
+    for attr in SCALING_PASS_CRITERIA:
+        if attr in mean_scores:
+            hedonic_results[attr] = {
+                'score': mean_scores[attr],
+                'pass': mean_scores[attr] >= 5.0
+            }
+    
+    hedonic_passed = sum(1 for r in hedonic_results.values() if r['pass'])
+    hedonic_total = len(hedonic_results)
+    
+    # 2. JAR 체크
+    jar_attrs_in_data = [a for a in get_jar_attrs() if a in mean_scores]
+    jar_results = {}
+    for attr in jar_attrs_in_data:
+        if jar_optimal_override and attr in jar_optimal_override:
+            opt, tol = jar_optimal_override[attr]
+        else:
+            opt, tol = get_jar_optimal(category, attr)
+        jar_results[attr] = calculate_jar_deviation(
+            mean_scores[attr], opt, tol
+        )
+    
+    jar_within = sum(1 for r in jar_results.values() if r['within_tolerance'])
+    jar_total = len(jar_results)
+    
+    # 3. 종합 판정
+    if hedonic_total == 0:
+        pass_status = "판정 불가 (합격 기준 항목 없음)"
+        status_level = 'none'
+    elif hedonic_passed == hedonic_total and jar_within == jar_total:
+        pass_status = "🟢 완전 합격 (hedonic + JAR 모두 충족)"
+        status_level = 'full'
+    elif hedonic_passed == hedonic_total and jar_within >= jar_total - 1:
+        pass_status = "🟡 조건부 합격 (hedonic OK, JAR 일부 경고)"
+        status_level = 'conditional_jar'
+    elif hedonic_passed == hedonic_total:
+        pass_status = "🟡 부분 합격 (hedonic OK, JAR 다수 편차)"
+        status_level = 'partial'
+    elif hedonic_passed == 2:
+        pass_status = "🟡 조건부 합격 (hedonic 2/3 통과)"
+        status_level = 'conditional_hedonic'
+    else:
+        pass_status = f"🔴 불합격 (hedonic {hedonic_passed}/{hedonic_total}만 통과)"
+        status_level = 'fail'
+    
+    return {
+        'pass_status': pass_status,
+        'status_level': status_level,
+        'hedonic_passed': hedonic_passed,
+        'hedonic_total': hedonic_total,
+        'hedonic_details': hedonic_results,
+        'jar_within': jar_within,
+        'jar_total': jar_total,
+        'jar_details': jar_results,
+        'category_used': category
+    }
 
 
 def gen_scaling_form(n_panels, product_name="시료A", random_fill=False, 
@@ -1905,16 +2117,34 @@ def prompt_stage1_flavor(normalized_recipe_json):
 """
 
 
-def prompt_stage2_panel_eval_recipe(product_name, flavor_profile_json, personas):
-    """Stage 2: N명 페르소나 배합비 모드 평가"""
+def prompt_stage2_panel_eval_recipe(product_name, flavor_profile_json, personas,
+                                      market_context="신제품 개발",
+                                      category="음료"):
+    """Stage 2: N명 페르소나 배합비 모드 평가
+    
+    Args:
+        market_context: "신제품 개발" / "기존 제품 재현" / "리뉴얼" 등
+        category: 제품 카테고리 (JAR 최적값 결정)
+    """
     persona_text = json.dumps(personas, ensure_ascii=False, indent=1)
     flavor_text = json.dumps(flavor_profile_json, ensure_ascii=False, indent=1)
     n_panels = len(personas)
+    
+    # 카테고리별 JAR 기준 안내
+    jar_opt = JAR_OPTIMAL_BY_CATEGORY.get(category, JAR_OPTIMAL_BY_CATEGORY['기타'])
+    jar_guide = (
+        f"{category} 카테고리 JAR 최적값: "
+        f"단맛≈{jar_opt['단맛'][0]}점, "
+        f"쓴맛≈{jar_opt['쓴맛'][0]}점, "
+        f"끝맛여운≈{jar_opt['끝맛 여운'][0]}점"
+    )
     
     return f"""당신은 관능검사 시뮬레이션 엔진입니다. 
 {n_panels}명의 한국 소비자 패널이 동일한 제품을 시음한 후 각자의 취향으로 평가하는 
 상황을 매우 현실적으로 재현해주세요.
 
+**시장 맥락**: {market_context}
+**제품 카테고리**: {category}
 **시음 제품**: {product_name}
 
 **맛 프로파일** (이 제품의 실제 관능 특성):
@@ -1927,55 +2157,91 @@ def prompt_stage2_panel_eval_recipe(product_name, flavor_profile_json, personas)
 {persona_text}
 ```
 
-**중요한 시뮬레이션 규칙**:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+**⭐ 가장 중요한 규칙 — 타겟 적합성 판단**
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-1. **몰입**: 각 패널의 1인칭 시점으로 제품을 시음했다고 상상하세요.
-   "이 페르소나는 이 점수를 줄 것이다"가 아니라
-   "내가 민지라면 이 맛을 어떻게 느낄까?"를 실제로 사고하세요.
+각 페르소나는 <<이 제품의 타겟 소비자인지 먼저 판단>>해야 합니다.
 
-2. **다양성 필수**: {n_panels}명이 모두 비슷한 점수를 주면 실패입니다.
-   실제 소비자 조사의 점수 분포는:
-   - 극호(6-7점): 15-20%
-   - 호(5-6점): 30-40%
-   - 중립(4점): 20-30%
-   - 불호(3점 이하): 15-20%
-   - 극불호(1-2점): 5-10%
+**타겟 판단 로직:**
+- 이 페르소나의 식품 관심사/선호/구매 성향이 이 제품({category})과 맞는가?
+- 평소 이런 유형의 제품을 <<자발적으로>> 구매할 사람인가?
+- 예: "건강·담백 지향 페르소나"가 "고당도 탄산음료"를 평가할 때
+  → 타겟이 아님 → 점수를 낮게 주되, <<제품 탓이 아니라 취향 불일치임>>을 코멘트에 명시
 
-3. **일관된 개성**: 각 패널의 프로필(선호/혐오/성향)에 <<반드시>> 충실하세요.
-   - 단맛 선호형이 단맛 강한 제품에 낮은 점수 → 모순
-   - 건강 지향형이 아무 거부감 없이 단 제품에 만점 → 모순
-   - 프로필과 점수 사이에 <<명확한 인과관계>>가 있어야 함
+**타겟/비타겟 구분 결과 처리:**
+- 타겟(60~70% 정도): 정상 평가, 프로필 기반 점수
+- 약한 타겟(20~25%): 일부 속성만 호감
+- 비타겟(10~20%): "내 취향은 아니지만 이 제품 나름의 완성도는..." 식으로 평가
+- 절대 거부(5~10%): 최저 점수 + 명확한 거부 이유
 
-4. **현실성**: 점수는 1-7 정수 (반정수 X). 실제 소비자도 
-   "6.5는 아니고 6 정도" 식으로 평가합니다.
+→ <<이 분포가 중요>>: 극단적 거부가 너무 많으면 비현실적.
+   실제 시장 테스트에서는 "타겟 아니지만 괜찮다"가 다수입니다.
 
-5. **코멘트 진정성**: 각 패널의 코멘트는 그 사람이 실제로 쓸 법한 어투:
-   - 20대: 이모지, 짧은 문장, SNS 어투
-   - 40대+: 차분, 구체적 설명
-   - 식품 관심자: 원료/공정 언급
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+**평가 항목과 척도 유형 — 이 부분이 핵심**
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-**참고: 실제 소비자 리뷰 예시** (어투 참조용):
+**🅰 기호형 항목 (Hedonic Scale)**: 높을수록 좋음
+- 전반적 만족도 (1=매우 불만, 7=매우 만족)
+- 구입 의향 (1=절대 안 삼, 7=꼭 살 것)
+- 색상 (1=매우 나쁨, 7=매우 좋음, 시각적 호감)
+- 전반적 맛 (1=매우 나쁨, 7=매우 좋음)
+- 풍미 (1=매우 나쁨, 7=매우 좋음, 풍미 품질)
+- 전반적 식감 (1=매우 나쁨, 7=매우 좋음)
 
-예시1 (26세 여성, 저탄산 제품 평): 
-"처음엔 좀 밍밍한 느낌이었는데 마실수록 부담 없어서 좋아요. 
-회사에서 일하면서 마시기 딱이에요."
+**🅱 적정형 항목 (JAR - Just-About-Right)**: 중간값이 최적
+- 단맛 (1=매우 약함, 7=매우 강함)
+  → <<강도만 보고 점수를 주세요. 좋다/나쁘다가 아니라 얼마나 강한가>>
+  → 코멘트에 "이 강도가 이 제품에 적정한지"는 별도로 언급
+- 쓴맛 (1=매우 약함, 7=매우 강함) — 강도
+- 끝맛 여운 (1=매우 짧음, 7=매우 길게 지속) — 강도
 
-예시2 (45세 남성, 프리미엄 녹차 평):
-"가격 대비 품질이 확실히 느껴집니다. 쓴맛이 깊이 있으면서도 
-뒷맛이 깔끔해요."
+→ {jar_guide}
+→ JAR 항목은 <<객관적 강도>>를 평가하세요. 페르소나가 좋아하든 싫어하든
+   제품 자체의 속성 강도는 동일합니다. 단, 그 강도를 받아들이는 감정은
+   코멘트에 담아주세요.
 
-**평가 항목 (1-7 리커트, 관능 강도형)**
-[1=매우 약함/매우 나쁨, 4=보통, 7=매우 강함/매우 좋음]
-1. 전반적 만족도
-2. 구입 의향
-3. 색상
-4. 전반적 맛
-5. 풍미 (입 안의 향)
-6. 단맛
-7. 전반적 식감
-8. 끝맛 여운
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+**시뮬레이션 규칙**
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-**출력 형식** (JSON만, 다른 설명 없이):
+1. **몰입**: 각 패널의 1인칭 시점. "내가 민지라면 이 맛을 어떻게 느낄까?"
+
+2. **점수 분포 현실성**: {n_panels}명이 모두 비슷하면 실패.
+   **단, 기존 시장 성공 제품이라면 중상위(5-6점)가 다수여야 함.**
+   - 신제품 탐색: 극호 15%, 호 30%, 중립 25%, 불호 20%, 극불호 10%
+   - 기존 메가 브랜드 재현: 극호 25%, 호 45%, 중립 20%, 불호 8%, 극불호 2%
+
+3. **일관된 개성**: 페르소나 프로필과 점수 사이 명확한 인과관계 필수.
+
+4. **척도 유형 준수**: 
+   - 기호형(만족도 등): "내가 좋아하나?"
+   - 적정형(단맛/쓴맛 등): "이게 얼마나 강한가?" (객관적 강도)
+
+5. **현실성**: 점수는 1-7 정수. 반정수 X.
+
+6. **코멘트에 담을 것**:
+   - 타겟/비타겟 인식 ("내 취향인가")
+   - 단맛 등의 JAR 강도를 어떻게 받아들였는지 (과하다/적정/부족)
+   - 구매 여부와 그 이유
+
+**참고: 실제 소비자 리뷰 어투 예시**:
+
+예시1 (타겟 소비자, 26세 여성): 
+"이 정도 단맛이면 저한테 딱이에요. 산미도 적당하고 뒷맛 깔끔해서
+ 카페에서 한 잔씩 마실 것 같아요."
+
+예시2 (비타겟 소비자, 45세 남성, 담백 선호):
+"제가 즐겨 마시는 스타일은 아니지만 젊은 친구들은 좋아할 것 같네요.
+ 단맛이 좀 있는 편인데 그건 이 카테고리 특성이라 이해합니다."
+
+예시3 (절대 거부, 62세 여성, 건강 우선):
+"단맛이 너무 강해서 한 모금 이상 못 마시겠네요. 저는 약재차 같은 게 좋습니다."
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+**출력 형식** (JSON만, 다른 설명 없이)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 ```json
 {{
@@ -1983,14 +2249,16 @@ def prompt_stage2_panel_eval_recipe(product_name, flavor_profile_json, personas)
     {{
       "panel_id": "P01",
       "panel_name": "김민지 (24세, 여)",
-      "sensory_experience": "첫 모금에서 복숭아 향이 확 퍼지는데, 기대보다 단맛이 강해 부담스러움. 뒷맛에 인공향이 살짝 느껴짐.",
+      "target_fit": "타겟/약한타겟/비타겟/절대거부 중 하나",
+      "sensory_experience": "첫 모금 느낌 서술",
       "scores": {{
         "전반적만족도": 5, "구입의향": 4, "색상": 6,
-        "전반적맛": 5, "풍미": 6, "단맛": 6,
-        "전반적식감": 4, "끝맛여운": 4
+        "전반적맛": 5, "풍미": 6,
+        "단맛": 6, "쓴맛": 2, "끝맛여운": 4,
+        "전반적식감": 4
       }},
-      "comment": "복숭아 향은 진짜 좋은데 🍑 근데 살짝 너무 단 느낌? 다이어트 중이라 설탕 4%가 부담되긴 해요.",
-      "reasoning": "단맛 선호하지만 최근 다이어트 시작해 당분 민감화"
+      "comment": "🍑 복숭아 향 좋은데 단맛이 제 취향보다 살짝 강해요. 6점 정도 되는 느낌? 다이어트 중이라 자주는 못 마실듯",
+      "reasoning": "타겟 소비자. 단맛 선호하나 다이어트로 당분 민감화. 단맛 6점(강함)은 강도 평가, 만족도 5점은 호감도 평가."
     }}
   ]
 }}
@@ -3613,6 +3881,22 @@ with tabs[3]:
                 else:
                     product_name = st.text_input("제품명", "신제품A", key="t4_pn")
                 
+                # 카테고리 선택 (JAR 기준 결정)
+                analysis_category = st.selectbox(
+                    "제품 카테고리 (JAR 기준값 결정)",
+                    ["음료", "유제품", "빙과", "스낵", "베이커리", "주류", "기타"],
+                    index=0,
+                    key="t4_analysis_cat",
+                    help="카테고리에 따라 단맛·쓴맛·끝맛여운 JAR 기준이 달라집니다"
+                )
+                jar_opt_disp = JAR_OPTIMAL_BY_CATEGORY.get(analysis_category, 
+                                                            JAR_OPTIMAL_BY_CATEGORY['기타'])
+                st.caption(
+                    f"📏 **JAR 기준**: 단맛 {jar_opt_disp['단맛'][0]}±{jar_opt_disp['단맛'][1]:.1f} · "
+                    f"쓴맛 {jar_opt_disp['쓴맛'][0]}±{jar_opt_disp['쓴맛'][1]:.1f} · "
+                    f"끝맛 여운 {jar_opt_disp['끝맛 여운'][0]}±{jar_opt_disp['끝맛 여운'][1]:.1f}"
+                )
+                
                 if st.button("🚀 평점법 분석 실행", type="primary", key="t4_run"):
                     # 각 항목 통계 계산
                     stats_rows = []
@@ -3622,13 +3906,25 @@ with tabs[3]:
                             mean = col_data.mean()
                             std = col_data.std()
                             se = std / np.sqrt(len(col_data))
+                            # 타입별 판정
+                            attr_type = SCALING_ATTR_TYPES.get(attr, 'hedonic')
+                            if attr_type == 'jar':
+                                opt, tol = get_jar_optimal(analysis_category, attr)
+                                within = abs(mean - opt) <= tol
+                                judge = '✓ 적정' if within else ('⚠ 강함' if mean > opt else '⚠ 약함')
+                                basis = f"JAR {opt}±{tol:.1f}"
+                            else:
+                                judge = '✓ 통과' if mean >= 5.0 else '✗ 미달'
+                                basis = "Hedonic ≥5.0"
                             stats_rows.append({
                                 '항목': attr,
+                                '타입': attr_type.upper(),
                                 '평균': mean,
                                 'SD': std,
                                 'SE': se,
                                 'N': len(col_data),
-                                '판정': '✓ 합격선 통과' if mean >= 5.0 else '✗ 미달'
+                                '기준': basis,
+                                '판정': judge
                             })
                     stats_df = pd.DataFrame(stats_rows)
                     mean_scores = dict(zip(stats_df['항목'], stats_df['평균']))
@@ -3654,28 +3950,18 @@ with tabs[3]:
                     # ──────────────────────────────
                     st.markdown("### 🏆 합격 판정")
                     
-                    criteria_results = {}
-                    for c in SCALING_PASS_CRITERIA:
-                        if c in mean_scores:
-                            criteria_results[c] = {
-                                'score': mean_scores[c],
-                                'pass': mean_scores[c] >= 5.0
-                            }
+                    pass_result = evaluate_scaling_pass_status(
+                        mean_scores, category=analysis_category
+                    )
+                    pass_status = pass_result['pass_status']
+                    status_level = pass_result['status_level']
                     
-                    passed_count = sum(1 for r in criteria_results.values() if r['pass'])
-                    total_criteria = len(criteria_results)
-                    
-                    if total_criteria == 0:
-                        pass_status = "판정 불가 (합격 기준 항목 없음)"
-                        badge_class = "pass-badge-fail"
-                    elif passed_count == total_criteria:
-                        pass_status = "🟢 완전 합격 (3기준 모두 통과)"
+                    # 배지 클래스
+                    if status_level == 'full':
                         badge_class = "pass-badge-full"
-                    elif passed_count == 2:
-                        pass_status = "🟡 조건부 합격 (2기준 통과)"
+                    elif status_level in ('conditional_jar', 'partial', 'conditional_hedonic'):
                         badge_class = "pass-badge-conditional"
                     else:
-                        pass_status = f"🔴 불합격 ({passed_count}/{total_criteria} 기준만 통과)"
                         badge_class = "pass-badge-fail"
                     
                     st.markdown(
@@ -3685,15 +3971,35 @@ with tabs[3]:
                         unsafe_allow_html=True
                     )
                     
-                    # 합격 기준 상세
+                    # Hedonic 합격 기준 상세
+                    st.markdown("**🅰 Hedonic 합격 기준 (≥ 5.0)**")
+                    hedonic_details = pass_result['hedonic_details']
+                    criteria_results = hedonic_details  # 하위 호환
                     cc1, cc2, cc3 = st.columns(3)
-                    for i, (c, r) in enumerate(criteria_results.items()):
+                    for i, (c, r) in enumerate(hedonic_details.items()):
                         col = [cc1, cc2, cc3][i % 3]
                         with col:
                             score = r['score']
                             status = "🟢 통과" if r['pass'] else "🔴 미달"
-                            st.metric(c, f"{score:.2f}", status,
-                                     delta_color="normal")
+                            st.metric(c, f"{score:.2f}", status)
+                    
+                    # JAR 상세
+                    jar_details = pass_result['jar_details']
+                    if jar_details:
+                        st.markdown(f"**🅱 JAR 편차 ({analysis_category} 기준)**")
+                        jar_cols_real = st.columns(len(jar_details))
+                        for i, (jar_name, jar_res) in enumerate(jar_details.items()):
+                            with jar_cols_real[i]:
+                                within = jar_res['within_tolerance']
+                                score = jar_res['score']
+                                opt = jar_res['optimal']
+                                tol = jar_res['tolerance']
+                                direction = jar_res['direction']
+                                status = "✓ 적정" if within else f"⚠ {direction}"
+                                delta_str = (f"최적 {opt} (±{tol:.1f})" if within 
+                                             else f"최적 {opt} · {direction}")
+                                st.metric(jar_name, f"{score:.2f}", delta_str,
+                                         delta_color="normal" if within else "inverse")
                     
                     # ──────────────────────────────
                     # 3. 시각화
@@ -3936,6 +4242,36 @@ with tabs[3]:
         with recipe_col2:
             st.caption("💡 자유 형식으로 입력하세요. AI가 자동 정규화합니다.")
         
+        # 시장 맥락 + 카테고리 (JAR 기준 결정)
+        ctx_col1, ctx_col2 = st.columns(2)
+        with ctx_col1:
+            market_context = st.selectbox(
+                "시장 맥락",
+                ["신제품 개발 (초기 탐색)",
+                 "기존 제품 재현 (경쟁사 벤치마크 등)",
+                 "리뉴얼 (기존 자사 제품 개선)"],
+                key="t4_market_context",
+                help="신제품은 보수적 평가, 기존 성공 제품은 중상위 분포가 현실적"
+            )
+        with ctx_col2:
+            recipe_category = st.selectbox(
+                "카테고리 (JAR 기준값 결정)",
+                ["음료", "유제품", "빙과", "스낵", "베이커리", "주류", "기타"],
+                index=0,
+                key="t4_recipe_category",
+                help="카테고리에 따라 단맛·쓴맛·끝맛여운의 적정 범위가 달라집니다"
+            )
+        
+        # 선택한 카테고리의 JAR 기준 안내
+        jar_opt = JAR_OPTIMAL_BY_CATEGORY.get(recipe_category, 
+                                               JAR_OPTIMAL_BY_CATEGORY['기타'])
+        st.caption(
+            f"📏 **{recipe_category} JAR 기준**: "
+            f"단맛 {jar_opt['단맛'][0]}±{jar_opt['단맛'][1]:.1f} · "
+            f"쓴맛 {jar_opt['쓴맛'][0]}±{jar_opt['쓴맛'][1]:.1f} · "
+            f"끝맛 여운 {jar_opt['끝맛 여운'][0]}±{jar_opt['끝맛 여운'][1]:.1f}"
+        )
+        
         recipe_text = st.text_area(
             "배합비 (자유 서술)",
             placeholder="예시:\n복숭아 농축액 15%, 설탕 4%, 구연산 0.3%, 향료 0.2%\n또는\n복숭아 주스에 설탕 좀, 산도조절용 구연산",
@@ -4090,13 +4426,24 @@ with tabs[3]:
                 if run_s2:
                     # 패널 수에 비례해 max_tokens 계산 (1명당 약 400토큰)
                     dynamic_tokens = max(6000, min(16000, n_panels * 450))
+                    # Stage 0에서 감지된 카테고리 우선, 없으면 사용자 선택값
+                    detected_cat = parsed.get('product_category', recipe_category) if parsed else recipe_category
+                    # 사용자 지정이 일반적이면 자동 감지 사용
+                    effective_category = detected_cat if detected_cat in JAR_OPTIMAL_BY_CATEGORY else recipe_category
+                    # 시장 맥락 단순 키워드로 변환
+                    ctx_short = ("신제품 개발" if "신제품" in market_context else
+                                 "기존 제품 재현" if "기존 제품" in market_context else
+                                 "리뉴얼")
+                    
                     spinner_msg = (
                         f"Stage 2: {n_panels}명 페르소나가 평가 중... "
                         f"(예상 {n_panels * 4}~{n_panels * 8}초)"
                     )
                     with st.spinner(spinner_msg):
                         prompt = prompt_stage2_panel_eval_recipe(
-                            recipe_product_name, flavor, selected_personas
+                            recipe_product_name, flavor, selected_personas,
+                            market_context=ctx_short,
+                            category=effective_category
                         )
                         eval_result, raw = call_claude_api_json(
                             prompt, st.session_state.api_key,
@@ -4115,6 +4462,8 @@ with tabs[3]:
                                 'timestamp': datetime.datetime.now().strftime('%H:%M'),
                                 'n_panels': n_panels,
                                 'personas_used': selected_personas,
+                                'category': effective_category,
+                                'market_context': ctx_short,
                                 'input_data': {
                                     'recipe': recipe_text,
                                     'process': process_text
@@ -4379,13 +4728,31 @@ with tabs[3]:
         
         # 평가 항목 결정
         if mode == 'recipe':
+            # 8→9 항목으로 확장 (쓴맛 추가)
             attr_list = ['전반적만족도', '구입의향', '색상', '전반적맛',
-                        '풍미', '단맛', '전반적식감', '끝맛여운']
+                        '풍미', '단맛', '쓴맛', '전반적식감', '끝맛여운']
             pass_criteria = ['전반적맛', '구입의향', '전반적만족도']
+            # 공백 없는 키 → 공백 있는 키 매핑 (내부 처리용)
+            key_map = {
+                '전반적만족도': '전반적 만족도', '구입의향': '구입 의향',
+                '색상': '색상', '전반적맛': '전반적 맛', '풍미': '풍미',
+                '단맛': '단맛', '쓴맛': '쓴맛', 
+                '전반적식감': '전반적 식감', '끝맛여운': '끝맛 여운'
+            }
+            # JAR 항목 (배합비 모드에서만)
+            jar_attr_names = ['단맛', '쓴맛', '끝맛여운']
+            hedonic_attr_names = [a for a in attr_list if a not in jar_attr_names]
+            # 카테고리
+            category = eval_data.get('category', '음료')
         else:
+            # 컨셉 모드는 모두 hedonic
             attr_list = ['컨셉매력도', '구입의향', '타겟적합성', '차별화인식',
                         '신뢰도', '가격수용도', '건강이미지', '프리미엄인식']
             pass_criteria = ['컨셉매력도', '구입의향', '타겟적합성']
+            key_map = {a: a for a in attr_list}
+            jar_attr_names = []
+            hedonic_attr_names = attr_list
+            category = None
         
         # 점수 DataFrame 구성
         rows = []
@@ -4393,7 +4760,8 @@ with tabs[3]:
             scores = e.get('scores', {})
             row = {
                 'ID': e.get('panel_id', ''),
-                '이름': e.get('panel_name', '')
+                '이름': e.get('panel_name', ''),
+                '타겟적합': e.get('target_fit', 'N/A') if mode == 'recipe' else '-'
             }
             for a in attr_list:
                 row[a] = scores.get(a, None)
@@ -4407,20 +4775,56 @@ with tabs[3]:
             if len(col) > 0:
                 mean_ai[a] = col.mean()
         
-        # 합격 판정
-        passed_ai = sum(1 for c in pass_criteria 
-                       if c in mean_ai and mean_ai[c] >= 5.0)
-        total_crit = len(pass_criteria)
+        # ──────────────────────────────────────────────
+        # 이중 합격 판정 (hedonic + JAR)
+        # ──────────────────────────────────────────────
+        hedonic_passed = sum(1 for c in pass_criteria 
+                              if c in mean_ai and mean_ai[c] >= 5.0)
+        hedonic_total = len(pass_criteria)
         
-        if passed_ai == total_crit:
-            ai_pass_status = "🟢 완전 합격 (3기준 모두 통과)"
-            ai_badge = "pass-badge-full"
-        elif passed_ai == 2:
-            ai_pass_status = "🟡 조건부 합격 (2기준 통과)"
-            ai_badge = "pass-badge-conditional"
+        # JAR 편차 계산
+        jar_evaluations = {}
+        if mode == 'recipe' and category:
+            for jar_name in jar_attr_names:
+                if jar_name in mean_ai:
+                    # 공백 키로 변환 후 JAR_OPTIMAL 조회
+                    spaced_name = key_map[jar_name]
+                    opt, tol = get_jar_optimal(category, spaced_name)
+                    jar_evaluations[jar_name] = calculate_jar_deviation(
+                        mean_ai[jar_name], opt, tol
+                    )
+        jar_within = sum(1 for r in jar_evaluations.values() 
+                          if r['within_tolerance'])
+        jar_total = len(jar_evaluations)
+        
+        # 종합 판정 (모드별)
+        if mode == 'recipe':
+            if hedonic_passed == hedonic_total and jar_within == jar_total:
+                ai_pass_status = "🟢 완전 합격 (Hedonic + JAR 모두 충족)"
+                ai_badge = "pass-badge-full"
+            elif hedonic_passed == hedonic_total and jar_within >= jar_total - 1:
+                ai_pass_status = f"🟡 조건부 합격 (Hedonic OK, JAR {jar_total-jar_within}개 경고)"
+                ai_badge = "pass-badge-conditional"
+            elif hedonic_passed == hedonic_total:
+                ai_pass_status = "🟡 부분 합격 (Hedonic OK, JAR 다수 편차)"
+                ai_badge = "pass-badge-conditional"
+            elif hedonic_passed == 2:
+                ai_pass_status = f"🟡 조건부 합격 (Hedonic 2/3)"
+                ai_badge = "pass-badge-conditional"
+            else:
+                ai_pass_status = f"🔴 불합격 (Hedonic {hedonic_passed}/{hedonic_total})"
+                ai_badge = "pass-badge-fail"
         else:
-            ai_pass_status = f"🔴 불합격 ({passed_ai}/{total_crit})"
-            ai_badge = "pass-badge-fail"
+            # 컨셉 모드는 기존 방식
+            if hedonic_passed == hedonic_total:
+                ai_pass_status = "🟢 완전 합격 (3기준 모두 통과)"
+                ai_badge = "pass-badge-full"
+            elif hedonic_passed == 2:
+                ai_pass_status = "🟡 조건부 합격 (2기준 통과)"
+                ai_badge = "pass-badge-conditional"
+            else:
+                ai_pass_status = f"🔴 불합격 ({hedonic_passed}/{hedonic_total})"
+                ai_badge = "pass-badge-fail"
         
         # 판정 배지 + 재평가 버튼
         cc_pass1, cc_pass2 = st.columns([3, 1])
@@ -4468,8 +4872,8 @@ with tabs[3]:
                     else:
                         st.error(f"❌ 재평가 실패: {raw[:400]}")
         
-        # 합격 기준 상세
-        st.markdown("#### 🎯 합격 기준별 점수")
+        # 합격 기준 상세 (Hedonic)
+        st.markdown("#### 🎯 Hedonic 합격 기준 (≥ 5.0)")
         cc_k1, cc_k2, cc_k3 = st.columns(3)
         for i, crit in enumerate(pass_criteria):
             col = [cc_k1, cc_k2, cc_k3][i]
@@ -4478,6 +4882,36 @@ with tabs[3]:
                     score = mean_ai[crit]
                     status = "🟢 통과" if score >= 5.0 else "🔴 미달"
                     st.metric(crit, f"{score:.2f}", status)
+        
+        # JAR 상세 (배합비 모드만)
+        if mode == 'recipe' and jar_evaluations:
+            st.markdown(f"#### 📏 JAR 편차 ({category} 기준)")
+            jar_cols = st.columns(len(jar_evaluations))
+            for i, (jar_name, jar_res) in enumerate(jar_evaluations.items()):
+                with jar_cols[i]:
+                    within = jar_res['within_tolerance']
+                    score = jar_res['score']
+                    opt = jar_res['optimal']
+                    tol = jar_res['tolerance']
+                    direction = jar_res['direction']
+                    status = f"✓ 적정" if within else f"⚠ {direction}"
+                    delta_str = f"최적 {opt} · {direction}" if not within else f"최적 {opt} (±{tol:.1f})"
+                    st.metric(jar_name, f"{score:.2f}", delta_str,
+                             delta_color="normal" if within else "inverse")
+        
+        # 타겟 적합성 분포 (배합비 모드만)
+        if mode == 'recipe':
+            target_counts = {}
+            for e in evaluations:
+                tf = e.get('target_fit', 'N/A')
+                target_counts[tf] = target_counts.get(tf, 0) + 1
+            if len(target_counts) > 1 or (len(target_counts) == 1 and 'N/A' not in target_counts):
+                st.markdown("#### 👥 타겟 적합성 분포")
+                tc_cols = st.columns(len(target_counts))
+                for i, (tf, cnt) in enumerate(sorted(target_counts.items())):
+                    with tc_cols[i]:
+                        pct = cnt / len(evaluations) * 100
+                        st.metric(tf, f"{cnt}명", f"{pct:.0f}%")
         
         # 탭 구성: 평균/개별코멘트/점수분포/세션비교
         ai_tab1, ai_tab2, ai_tab3, ai_tab4 = st.tabs([
@@ -4489,11 +4923,11 @@ with tabs[3]:
             # 평균 막대그래프 + 레이더
             v1, v2 = st.columns(2)
             with v1:
-                # 막대그래프
-                attrs = list(mean_ai.keys())
-                values = list(mean_ai.values())
+                # Hedonic 전용 막대그래프 (배합비 모드에서 JAR 제외)
+                hedonic_in_data = [a for a in mean_ai.keys() if a in hedonic_attr_names]
+                hedonic_values = [mean_ai[a] for a in hedonic_in_data]
                 colors_b = []
-                for attr, val in zip(attrs, values):
+                for attr, val in zip(hedonic_in_data, hedonic_values):
                     if attr in pass_criteria:
                         colors_b.append('#10b981' if val >= 5.0 else '#ef4444')
                     else:
@@ -4501,36 +4935,36 @@ with tabs[3]:
                 
                 fig_ai_bar = go.Figure()
                 fig_ai_bar.add_trace(go.Bar(
-                    x=attrs, y=values,
+                    x=hedonic_in_data, y=hedonic_values,
                     marker=dict(color=colors_b,
                                line=dict(color='#94a3b8', width=1)),
-                    text=[f"{v:.2f}" for v in values],
+                    text=[f"{v:.2f}" for v in hedonic_values],
                     textposition='outside'
                 ))
                 fig_ai_bar.add_hline(y=5.0, line_dash="dash",
                     line_color="#3b82f6",
                     annotation_text="합격선 5.0")
                 fig_ai_bar.update_layout(
-                    title="8항목 평균 (진한 색=합격 기준 항목)",
-                    yaxis=dict(range=[0, 7.5]),
+                    title=f"Hedonic {len(hedonic_in_data)}항목 평균 (높을수록 좋음)",
+                    yaxis=dict(range=[0, 7.5], title="점수"),
                     xaxis=dict(tickangle=-35)
                 )
                 apply_plotly_theme(fig_ai_bar)
                 st.plotly_chart(fig_ai_bar, use_container_width=True)
             
             with v2:
-                # 레이더
+                # 레이더 (hedonic만)
                 fig_ai_radar = go.Figure()
                 fig_ai_radar.add_trace(go.Scatterpolar(
-                    r=values + [values[0]],
-                    theta=attrs + [attrs[0]],
+                    r=hedonic_values + [hedonic_values[0]],
+                    theta=hedonic_in_data + [hedonic_in_data[0]],
                     fill='toself', name=eval_data['product_name'],
                     line=dict(color='#3b82f6', width=2),
                     fillcolor='rgba(59, 130, 246, 0.25)'
                 ))
                 fig_ai_radar.add_trace(go.Scatterpolar(
-                    r=[5.0] * (len(attrs) + 1),
-                    theta=attrs + [attrs[0]],
+                    r=[5.0] * (len(hedonic_in_data) + 1),
+                    theta=hedonic_in_data + [hedonic_in_data[0]],
                     name='합격선 5.0',
                     line=dict(color='#f59e0b', dash='dash', width=1)
                 ))
@@ -4540,19 +4974,112 @@ with tabs[3]:
                                        gridcolor='rgba(30, 64, 175, 0.3)'),
                         bgcolor='rgba(248, 250, 252, 0.5)'
                     ),
-                    title="Radar Profile"
+                    title="Hedonic Radar Profile"
                 )
                 apply_plotly_theme(fig_ai_radar)
                 st.plotly_chart(fig_ai_radar, use_container_width=True)
             
-            st.markdown("#### 📋 평균 점수표")
-            mean_table = pd.DataFrame([
-                {'항목': a, '평균': v,
-                 '판정': '✓' if v >= 5.0 else '✗'}
-                for a, v in mean_ai.items()
-            ])
+            # JAR 편차 막대 (배합비 모드만, 별도 줄)
+            if mode == 'recipe' and jar_evaluations:
+                st.markdown("#### 📏 JAR 편차 분석 (최적값 대비)")
+                
+                jar_names_list = list(jar_evaluations.keys())
+                jar_scores = [jar_evaluations[n]['score'] for n in jar_names_list]
+                jar_optimals = [jar_evaluations[n]['optimal'] for n in jar_names_list]
+                jar_tols = [jar_evaluations[n]['tolerance'] for n in jar_names_list]
+                jar_devs = [jar_evaluations[n]['score'] - jar_evaluations[n]['optimal'] 
+                            for n in jar_names_list]
+                jar_within_list = [jar_evaluations[n]['within_tolerance'] 
+                                    for n in jar_names_list]
+                
+                fig_jar = go.Figure()
+                # 실제 점수 막대
+                fig_jar.add_trace(go.Bar(
+                    x=jar_names_list, y=jar_scores,
+                    name='실제 점수',
+                    marker=dict(
+                        color=['#10b981' if w else '#ef4444' for w in jar_within_list],
+                        line=dict(color='#94a3b8', width=1)
+                    ),
+                    text=[f"{s:.2f}" for s in jar_scores],
+                    textposition='outside'
+                ))
+                # 최적값 라인 (점별 표시)
+                for i, (n, opt, tol) in enumerate(zip(jar_names_list, jar_optimals, jar_tols)):
+                    # 허용 범위 음영
+                    fig_jar.add_shape(
+                        type="rect",
+                        x0=i - 0.4, x1=i + 0.4,
+                        y0=opt - tol, y1=opt + tol,
+                        fillcolor="rgba(16, 185, 129, 0.15)",
+                        line=dict(color="rgba(16, 185, 129, 0.5)", width=1, dash="dot"),
+                        layer="below"
+                    )
+                    # 최적값 마커
+                    fig_jar.add_trace(go.Scatter(
+                        x=[n], y=[opt],
+                        mode='markers',
+                        marker=dict(symbol='diamond', size=14, color='#f59e0b',
+                                   line=dict(color='#92400e', width=2)),
+                        name=f'최적값 {opt}' if i == 0 else None,
+                        showlegend=(i == 0)
+                    ))
+                
+                fig_jar.update_layout(
+                    title=f"JAR 편차 — {category} 카테고리 기준 "
+                          "(초록 음영=허용 범위, 다이아몬드=최적값)",
+                    yaxis=dict(range=[0, 7.5], title="강도 (1-7)"),
+                    xaxis=dict(title="JAR 항목"),
+                    barmode='group',
+                    showlegend=True
+                )
+                apply_plotly_theme(fig_jar)
+                st.plotly_chart(fig_jar, use_container_width=True)
+                
+                # JAR 편차 요약 표
+                jar_summary_rows = []
+                for n, res in jar_evaluations.items():
+                    jar_summary_rows.append({
+                        '항목': n,
+                        '실제 강도': f"{res['score']:.2f}",
+                        '최적값': f"{res['optimal']}",
+                        '허용 범위': f"±{res['tolerance']:.1f}",
+                        '편차': f"{res['deviation']:.2f}",
+                        '판정': '✓ 적정' if res['within_tolerance'] else f"⚠ {res['direction']}"
+                    })
+                st.dataframe(pd.DataFrame(jar_summary_rows), 
+                           use_container_width=True, hide_index=True)
+            
+            st.markdown("#### 📋 종합 평균 점수표")
+            
+            table_rows = []
+            for a, v in mean_ai.items():
+                if mode == 'recipe':
+                    if a in jar_attr_names and a in jar_evaluations:
+                        jar_res = jar_evaluations[a]
+                        attr_type = 'JAR'
+                        judgement = ('✓ 적정' if jar_res['within_tolerance'] 
+                                     else f"⚠ {jar_res['direction']}")
+                        note = (f"최적 {jar_res['optimal']} ±{jar_res['tolerance']:.1f}")
+                    else:
+                        attr_type = 'Hedonic'
+                        judgement = '✓' if v >= 5.0 else '✗'
+                        note = "합격선 5.0"
+                else:
+                    attr_type = 'Hedonic'
+                    judgement = '✓' if v >= 5.0 else '✗'
+                    note = "합격선 5.0"
+                
+                table_rows.append({
+                    '항목': a,
+                    '타입': attr_type,
+                    '평균': v,
+                    '기준': note,
+                    '판정': judgement
+                })
+            mean_table = pd.DataFrame(table_rows)
             st.dataframe(mean_table.style.format({'평균': '{:.2f}'}),
-                        use_container_width=True)
+                        use_container_width=True, hide_index=True)
         
         with ai_tab2:
             # 개별 코멘트
