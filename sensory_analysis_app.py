@@ -2623,7 +2623,6 @@ def prompt_stage0_recipe(recipe_text, process_text=""):
 
 ```json
 {{
-  "product_category": "음료/유제품/빙과/스낵/베이커리/주류/기타 중 하나",
   "normalized_recipe": [
     {{
       "ingredient": "복숭아 농축액",
@@ -5097,19 +5096,21 @@ with tabs[3]:
                 )
                 
                 if run_s2:
-                    # 패널 수에 비례해 max_tokens 계산 (1명당 약 400토큰)
+                    # 패널 수에 비례해 max_tokens 계산 (1명당 약 700토큰)
                     dynamic_tokens = max(8000, min(20000, n_panels * 700))
-                    # Stage 0에서 감지된 카테고리 우선, 없으면 사용자 선택값
-                    detected_cat = parsed.get('product_category', recipe_category) if parsed else recipe_category
-                    # 사용자 지정이 일반적이면 자동 감지 사용
-                    effective_category = detected_cat if detected_cat in JAR_OPTIMAL_BY_CATEGORY else recipe_category
+                    
+                    # ⭐ 사용자가 직접 선택한 카테고리를 절대 우선
+                    # (AI Stage 0 자동 감지는 무시 — 사용자 의도가 정확함)
+                    effective_category = recipe_category
+                    
                     # 시장 맥락 단순 키워드로 변환
                     ctx_short = ("신제품 개발" if "신제품" in market_context else
                                  "기존 제품 재현" if "기존 제품" in market_context else
                                  "리뉴얼")
                     
                     spinner_msg = (
-                        f"Stage 2: {n_panels}명 페르소나가 평가 중... "
+                        f"Stage 2: {n_panels}명 페르소나가 **{effective_category}** "
+                        f"카테고리 기준으로 평가 중... "
                         f"(예상 {n_panels * 4}~{n_panels * 8}초)"
                     )
                     with st.spinner(spinner_msg):
@@ -5448,6 +5449,17 @@ with tabs[3]:
         
         st.markdown("---")
         st.markdown(f"## 📊 AI 평가 결과 — {eval_data['product_name']}")
+        
+        # 🎯 현재 평가에 적용된 카테고리 + 시장 맥락 명시
+        if eval_data.get('mode') == 'recipe':
+            applied_cat = eval_data.get('category', '기타')
+            applied_ctx = eval_data.get('market_context', '신제품 개발')
+            st.info(
+                f"🏷️ **이 평가에 적용된 카테고리**: `{applied_cat}` · "
+                f"**시장 맥락**: `{applied_ctx}` · "
+                f"**패널 수**: `{len(evaluations)}명`  \n"
+                f"JAR 기준·표준 특성·챗봇 답변 모두 **{applied_cat}** 기준으로 적용됩니다."
+            )
         
         # 평가 항목 결정
         if mode == 'recipe':
