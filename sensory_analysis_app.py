@@ -293,9 +293,68 @@ def call_claude_api(prompt, api_key, model="claude-sonnet-4-5",
     return f"❌ 재시도 모두 실패: {last_error}"
 
 
+def _try_recover_truncated_json(text):
+    """잘린 JSON을 복구 시도 — evaluations 배열의 유효한 앞부분만 건져냄
+    
+    전략:
+    1. 'evaluations' 배열 시작 위치 찾기
+    2. 완전한 { ... } 블록들을 하나씩 추출
+    3. 불완전한 마지막 블록은 버리고 닫기
+    """
+    import re
+    
+    # "evaluations": [ 위치 찾기
+    eval_match = re.search(r'"evaluations"\s*:\s*\[', text)
+    if not eval_match:
+        return None
+    
+    array_start = eval_match.end()
+    # 배열 시작 지점부터 유효한 오브젝트들을 하나씩 파싱
+    pos = array_start
+    valid_objects = []
+    depth = 0
+    obj_start = None
+    in_string = False
+    escape = False
+    
+    while pos < len(text):
+        ch = text[pos]
+        
+        if escape:
+            escape = False
+        elif ch == '\\':
+            escape = True
+        elif ch == '"' and not escape:
+            in_string = not in_string
+        elif not in_string:
+            if ch == '{':
+                if depth == 0:
+                    obj_start = pos
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+                if depth == 0 and obj_start is not None:
+                    # 완전한 오브젝트 하나 추출
+                    obj_str = text[obj_start:pos + 1]
+                    try:
+                        obj = json.loads(obj_str)
+                        valid_objects.append(obj)
+                    except json.JSONDecodeError:
+                        pass  # 이 객체는 포기
+                    obj_start = None
+            elif ch == ']' and depth == 0:
+                # 정상 종료
+                break
+        pos += 1
+    
+    if valid_objects:
+        return {'evaluations': valid_objects}
+    return None
+
+
 def call_claude_api_json(prompt, api_key, model="claude-sonnet-4-5",
                           system_msg=None, max_tokens=6000, timeout=300):
-    """Claude API 호출 후 JSON 파싱 시도 (타임아웃 연장)"""
+    """Claude API 호출 후 JSON 파싱 시도 (타임아웃 연장 + 부분 복구)"""
     response = call_claude_api(prompt, api_key, model, system_msg, max_tokens, timeout)
     if response.startswith("❌") or response.startswith("⚠️"):
         return None, response
@@ -318,6 +377,18 @@ def call_claude_api_json(prompt, api_key, model="claude-sonnet-4-5",
             parsed = json.loads(text[start:end])
             return parsed, response
         return None, response
+    except json.JSONDecodeError as e:
+        # 🛟 잘린 JSON 복구 시도
+        recovered = _try_recover_truncated_json(text if 'text' in dir() else response)
+        if recovered and recovered.get('evaluations'):
+            n_recovered = len(recovered['evaluations'])
+            return recovered, (
+                f"⚠️ 응답이 중간에 잘렸지만 {n_recovered}명 분 평가를 "
+                f"복구했습니다. (원래는 더 많은 평가가 예정됨)\n"
+                f"파싱 오류: {str(e)[:200]}"
+            )
+        return None, (f"JSON 파싱 실패: {str(e)}\n"
+                      f"원본 (처음 500자): {response[:500]}")
     except Exception as e:
         return None, f"JSON 파싱 실패: {str(e)}\n원본 (처음 500자): {response[:500]}"
 
@@ -2804,6 +2875,14 @@ def prompt_stage2_panel_eval_recipe(product_name, flavor_profile_json, personas,
 ```
 
 반드시 **{n_panels}명 전부** 평가하세요. 위 규칙을 엄격히 따르세요.
+
+**⚠️ 길이 제약 (토큰 절약을 위해 엄수)**:
+- `sensory_experience`: 80자 이내 (1문장)
+- `comment`: 100자 이내 (1~2문장)
+- `reasoning`: 60자 이내 (핵심만)
+
+이 제한을 넘기면 JSON이 중간에 잘려 평가가 손실됩니다.
+간결하되 페르소나 개성은 살려주세요.
 """
 
 
@@ -3001,6 +3080,13 @@ def prompt_stage2_panel_eval_concept(concept_name, perception_json, personas):
 ```
 
 반드시 {n_panels}명 전부 평가. 위 규칙 엄격히 따르기.
+
+**⚠️ 길이 제약**:
+- `concept_impression`: 80자 이내
+- `comment`: 100자 이내
+- `reasoning`: 60자 이내
+
+간결하게 써야 모든 패널 평가가 누락 없이 저장됩니다.
 """
 
 
@@ -4994,7 +5080,7 @@ with tabs[3]:
                 
                 if run_s2:
                     # 패널 수에 비례해 max_tokens 계산 (1명당 약 400토큰)
-                    dynamic_tokens = max(6000, min(16000, n_panels * 450))
+                    dynamic_tokens = max(8000, min(20000, n_panels * 700))
                     # Stage 0에서 감지된 카테고리 우선, 없으면 사용자 선택값
                     detected_cat = parsed.get('product_category', recipe_category) if parsed else recipe_category
                     # 사용자 지정이 일반적이면 자동 감지 사용
@@ -5030,6 +5116,18 @@ with tabs[3]:
                                 eval_result['evaluations'], recipe_attrs
                             )
                             
+                            # 응답이 중간 잘렸는지 체크
+                            if isinstance(raw, str) and raw.startswith("⚠️"):
+                                st.warning(raw[:300])
+                            
+                            # 요청 대비 응답 수 비교
+                            if len(validated_evals) < n_panels:
+                                st.warning(
+                                    f"⚠️ 요청 {n_panels}명 중 {len(validated_evals)}명 분만 "
+                                    f"확보되었습니다. 긴 응답으로 JSON이 잘렸을 수 있습니다.\n"
+                                    f"더 많은 패널이 필요하면 **재평가**하거나 패널 수를 줄여주세요."
+                                )
+                            
                             if warnings:
                                 with st.expander(f"⚠️ AI 응답 경고 ({len(warnings)}건)",
                                                 expanded=False):
@@ -5046,8 +5144,8 @@ with tabs[3]:
                                     'recipe_parse': parsed,
                                     'flavor_profile': flavor,
                                     'timestamp': datetime.datetime.now().strftime('%H:%M'),
-                                    'n_panels': n_panels,
-                                    'personas_used': selected_personas,
+                                    'n_panels': len(validated_evals),  # 실제 수로 저장
+                                    'personas_used': selected_personas[:len(validated_evals)],
                                     'category': effective_category,
                                     'market_context': ctx_short,
                                     'input_data': {
@@ -5261,7 +5359,7 @@ with tabs[3]:
                 )
                 
                 if run_c2:
-                    dynamic_tokens = max(6000, min(16000, n_panels * 450))
+                    dynamic_tokens = max(8000, min(20000, n_panels * 700))
                     spinner_msg = (
                         f"Stage 2: {n_panels}명이 컨셉을 평가 중... "
                         f"(예상 {n_panels * 4}~{n_panels * 8}초)"
@@ -5447,7 +5545,7 @@ with tabs[3]:
                 personas_for_retry = eval_data.get('personas_used', 
                                                     select_personas(20))
                 n_retry = len(personas_for_retry)
-                dynamic_tokens = max(6000, min(16000, n_retry * 450))
+                dynamic_tokens = max(8000, min(20000, n_retry * 700))
                 
                 with st.spinner(f"다시 평가 중... ({n_retry}명, 최대 5분)"):
                     if mode == 'recipe':
