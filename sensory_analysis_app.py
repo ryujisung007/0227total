@@ -144,6 +144,16 @@ BASE_STYLE = """
     border: 1px solid #fcd34d;
 }
 
+.pass-badge-partial {
+    background: #ffedd5;
+    color: #9a3412;
+    padding: 8px 16px;
+    border-radius: 20px;
+    display: inline-block;
+    font-weight: bold;
+    border: 1px solid #fdba74;
+}
+
 .pass-badge-fail {
     background: #fee2e2;
     color: #991b1b;
@@ -2252,6 +2262,15 @@ def format_category_guideline_for_prompt(category):
 # 합격 기준 (hedonic 항목 중에서만)
 SCALING_PASS_CRITERIA = ['전반적 만족도', '구입 의향', '전반적 맛']
 
+# ============================================================================
+# 📊 합격 기준 임계값 (3단계 판정)
+# ============================================================================
+# 실무 기준: 7점 리커트에서 5점(높은 기호)을 엄격한 합격, 
+#           4점(수용 가능) 이상을 '시장 진입 가능' 조건부 합격으로 봄
+# ============================================================================
+PASS_THRESHOLD_HIGH = 5.0   # 완전 합격 기준
+PASS_THRESHOLD_LOW = 4.0    # 조건부 합격 기준 (수용 가능선)
+
 
 def get_hedonic_attrs(attr_list=None):
     """hedonic 타입 항목만 필터링"""
@@ -2302,7 +2321,12 @@ def calculate_jar_deviation(score, optimal, tolerance):
 
 
 def evaluate_scaling_pass_status(mean_scores, category='기타', jar_optimal_override=None):
-    """평점법 종합 합격 판정 (hedonic + JAR 이중 체크)
+    """평점법 종합 합격 판정 (hedonic + JAR, 3단계 임계)
+    
+    3단계 임계:
+    - HIGH (5.0): 완전 합격 (강한 기호)
+    - LOW (4.0): 조건부 합격 (수용 가능)
+    - 4.0 미만: 불합격
     
     Args:
         mean_scores: {항목명: 평균점수} dict
@@ -2312,17 +2336,30 @@ def evaluate_scaling_pass_status(mean_scores, category='기타', jar_optimal_ove
     Returns:
         dict with pass_status, hedonic_details, jar_details
     """
-    # 1. Hedonic 체크 (≥ 5.0)
+    # 1. Hedonic 체크 (3단계)
     hedonic_results = {}
     for attr in SCALING_PASS_CRITERIA:
         if attr in mean_scores:
+            score = mean_scores[attr]
+            if score >= PASS_THRESHOLD_HIGH:
+                level = 'high'      # 완전 통과 (≥5.0)
+            elif score >= PASS_THRESHOLD_LOW:
+                level = 'low'       # 조건부 통과 (≥4.0)
+            else:
+                level = 'fail'      # 불합격 (<4.0)
             hedonic_results[attr] = {
-                'score': mean_scores[attr],
-                'pass': mean_scores[attr] >= 5.0
+                'score': score,
+                'level': level,
+                'pass': level in ('high', 'low'),  # 수용 가능선 이상
+                'pass_high': level == 'high',       # 엄격한 합격
             }
     
-    hedonic_passed = sum(1 for r in hedonic_results.values() if r['pass'])
+    hedonic_high = sum(1 for r in hedonic_results.values() if r['level'] == 'high')
+    hedonic_low = sum(1 for r in hedonic_results.values() if r['level'] == 'low')
+    hedonic_fail = sum(1 for r in hedonic_results.values() if r['level'] == 'fail')
     hedonic_total = len(hedonic_results)
+    # 하위 호환 (pass=수용 가능 이상)
+    hedonic_passed = hedonic_high + hedonic_low
     
     # 2. JAR 체크
     jar_attrs_in_data = [a for a in get_jar_attrs() if a in mean_scores]
@@ -2339,30 +2376,41 @@ def evaluate_scaling_pass_status(mean_scores, category='기타', jar_optimal_ove
     jar_within = sum(1 for r in jar_results.values() if r['within_tolerance'])
     jar_total = len(jar_results)
     
-    # 3. 종합 판정
+    # 3. 종합 판정 (3단계 합격 기준 반영)
     if hedonic_total == 0:
         pass_status = "판정 불가 (합격 기준 항목 없음)"
         status_level = 'none'
-    elif hedonic_passed == hedonic_total and jar_within == jar_total:
-        pass_status = "🟢 완전 합격 (hedonic + JAR 모두 충족)"
+    elif hedonic_high == hedonic_total and jar_within == jar_total:
+        # 모두 5점+ AND JAR 모두 적정
+        pass_status = f"🟢 완전 합격 (모두 ≥{PASS_THRESHOLD_HIGH} + JAR 적정)"
         status_level = 'full'
-    elif hedonic_passed == hedonic_total and jar_within >= jar_total - 1:
-        pass_status = "🟡 조건부 합격 (hedonic OK, JAR 일부 경고)"
-        status_level = 'conditional_jar'
+    elif hedonic_high == hedonic_total:
+        # 모두 5점+ 이지만 JAR 이슈
+        pass_status = f"🟢 합격 (Hedonic 모두 ≥{PASS_THRESHOLD_HIGH}, JAR {jar_total-jar_within}개 편차)"
+        status_level = 'pass_jar_warn'
+    elif hedonic_passed == hedonic_total and hedonic_high >= 2:
+        # 모두 4점+ AND 5점+ 이 2개 이상
+        pass_status = f"🟡 조건부 합격 (모두 ≥{PASS_THRESHOLD_LOW}, 2개 이상 ≥{PASS_THRESHOLD_HIGH})"
+        status_level = 'conditional_strong'
     elif hedonic_passed == hedonic_total:
-        pass_status = "🟡 부분 합격 (hedonic OK, JAR 다수 편차)"
+        # 모두 4점+ 수용 가능
+        pass_status = f"🟡 수용 가능 (모두 ≥{PASS_THRESHOLD_LOW})"
+        status_level = 'conditional'
+    elif hedonic_passed >= 2:
+        # 2개 이상 4점+
+        pass_status = f"🟠 부분 합격 ({hedonic_passed}/{hedonic_total}이 ≥{PASS_THRESHOLD_LOW})"
         status_level = 'partial'
-    elif hedonic_passed == 2:
-        pass_status = "🟡 조건부 합격 (hedonic 2/3 통과)"
-        status_level = 'conditional_hedonic'
     else:
-        pass_status = f"🔴 불합격 (hedonic {hedonic_passed}/{hedonic_total}만 통과)"
+        pass_status = f"🔴 불합격 ({hedonic_passed}/{hedonic_total}만 ≥{PASS_THRESHOLD_LOW})"
         status_level = 'fail'
     
     return {
         'pass_status': pass_status,
         'status_level': status_level,
         'hedonic_passed': hedonic_passed,
+        'hedonic_high': hedonic_high,
+        'hedonic_low': hedonic_low,
+        'hedonic_fail': hedonic_fail,
         'hedonic_total': hedonic_total,
         'hedonic_details': hedonic_results,
         'jar_within': jar_within,
@@ -2831,6 +2879,216 @@ def select_personas(n_panels):
         selected.extend(remaining[:n_panels - len(selected)])
     
     return selected[:n_panels]
+
+
+# ============================================================================
+# 🎯 타겟 기반 페르소나 자동 매칭
+# ============================================================================
+# 제품 타겟(예: "20대 여성, MZ세대, 건강지향")을 파싱하여 
+# 페르소나 풀에서 타겟 비중 높게 구성
+# ============================================================================
+
+def parse_target_description(target_text, api_key=None, model="claude-haiku-4-5"):
+    """타겟 설명 → 구조화된 타겟 속성
+    
+    Returns:
+        {
+            'age_primary': [20, 30],    # 주 타겟 연령대
+            'age_secondary': [],         # 보조 타겟
+            'gender_primary': '여',      # '여' / '남' / 'all'
+            'lifestyle_keywords': ['MZ', '건강지향'],
+            'raw': 원본,
+        }
+    """
+    # API 호출 없이 로컬 키워드 파싱 (Haiku 호출 비용 절감)
+    text = str(target_text).strip()
+    
+    # 연령대 파싱
+    age_primary = []
+    age_secondary = []
+    import re
+    
+    # "20대", "20~30대", "MZ" 등
+    age_matches = re.findall(r'(\d+)\s*대', text)
+    for m in age_matches:
+        age_val = int(m)
+        if age_val not in age_primary:
+            age_primary.append(age_val)
+    
+    # 키워드 기반 추론
+    text_lower = text.lower()
+    if 'mz' in text_lower or '젊은' in text or '청년' in text or '2030' in text:
+        for age in [20, 30]:
+            if age not in age_primary:
+                age_primary.append(age)
+    if '중장년' in text or '40대' in text:
+        if 40 not in age_primary:
+            age_primary.append(40)
+    if '시니어' in text or '5060' in text or '중년' in text:
+        for age in [50, 60]:
+            if age not in age_primary:
+                age_primary.append(age)
+    if '전연령' in text or '모든' in text or '대중' in text:
+        age_primary = [20, 30, 40, 50]
+    
+    # 성별 파싱
+    gender = 'all'
+    if ('여성' in text or '여자' in text) and ('남' not in text or '남녀' in text or '모두' in text):
+        if '남녀' in text or '모두' in text or ('남' in text and '여' in text):
+            gender = 'all'
+        else:
+            gender = '여'
+    elif '남성' in text or '남자' in text:
+        if '여' in text:
+            gender = 'all'
+        else:
+            gender = '남'
+    
+    # 라이프스타일 키워드
+    lifestyle_keywords = []
+    keyword_dict = {
+        'MZ': 'mz',
+        '건강지향': '건강',
+        '건강': '건강',
+        '프리미엄': '프리미엄',
+        '다이어트': '다이어트',
+        '가족': '가족',
+        '어린이': '어린이',
+        '자녀': '어린이',
+        '운동': '운동',
+        '직장인': '직장인',
+        '주부': '주부',
+        '학생': '학생',
+    }
+    for kw, tag in keyword_dict.items():
+        if kw.lower() in text_lower:
+            if tag not in lifestyle_keywords:
+                lifestyle_keywords.append(tag)
+    
+    # 기본값 (파싱 실패 시)
+    if not age_primary:
+        age_primary = [20, 30, 40, 50]  # 전연령
+    
+    return {
+        'age_primary': age_primary,
+        'age_secondary': age_secondary,
+        'gender_primary': gender,
+        'lifestyle_keywords': lifestyle_keywords,
+        'raw': text,
+    }
+
+
+def score_persona_target_fit(persona, target_parsed):
+    """페르소나 개인별 타겟 적합도 점수 (0~100)"""
+    score = 0
+    age = persona.get('age', 30)
+    gender = persona.get('gender', '')
+    
+    # 연령 매칭 (가장 큰 비중)
+    age_bucket = (age // 10) * 10
+    if age_bucket in target_parsed['age_primary']:
+        score += 60
+    elif age_bucket in target_parsed['age_secondary']:
+        score += 30
+    else:
+        # 인접 연령대는 부분 점수
+        min_diff = min(abs(age_bucket - ap) for ap in target_parsed['age_primary']) \
+            if target_parsed['age_primary'] else 99
+        if min_diff <= 10:
+            score += 15
+        else:
+            score += 0
+    
+    # 성별 매칭
+    if target_parsed['gender_primary'] == 'all':
+        score += 20
+    elif target_parsed['gender_primary'] == gender:
+        score += 20
+    else:
+        score += 0
+    
+    # 라이프스타일 매칭 (페르소나 설명에서 탐색)
+    persona_desc = str(persona.get('description', '')) + ' ' + str(persona.get('profile', ''))
+    persona_desc_lower = persona_desc.lower()
+    for kw in target_parsed['lifestyle_keywords']:
+        if kw.lower() in persona_desc_lower:
+            score += 5
+    # 최대 20점 추가
+    score = min(score, 100)
+    
+    return score
+
+
+def select_personas_by_target(target_description, n_panels=10):
+    """타겟 기반 페르소나 자동 선택
+    
+    Args:
+        target_description: "20대 여성, MZ세대, 건강지향" 같은 자연어
+        n_panels: 총 페르소나 수
+    
+    Returns:
+        (selected_personas, target_parsed, composition_summary)
+    """
+    target_parsed = parse_target_description(target_description)
+    full_pool = PERSONA_PANEL_20
+    
+    # 각 페르소나 점수화
+    scored = []
+    for p in full_pool:
+        score = score_persona_target_fit(p, target_parsed)
+        scored.append((score, p))
+    
+    # 점수 높은 순
+    scored.sort(key=lambda x: -x[0])
+    
+    # 분배: 타겟 70%, 보조 20%, 기타 10%
+    n_target = int(n_panels * 0.70)     # 타겟 (상위 점수)
+    n_secondary = int(n_panels * 0.20)  # 보조
+    n_other = n_panels - n_target - n_secondary  # 기타
+    
+    # 상위 → 타겟, 중위 → 보조, 하위 → 기타
+    selected = []
+    target_ones = [p for s, p in scored if s >= 70][:n_target]
+    selected.extend(target_ones)
+    
+    remaining = [p for s, p in scored if p not in selected]
+    secondary_ones = [p for p in remaining[:n_secondary]]
+    selected.extend(secondary_ones)
+    
+    remaining2 = [p for p in remaining if p not in secondary_ones]
+    other_ones = remaining2[:n_other]
+    selected.extend(other_ones)
+    
+    # 부족하면 나머지 상위로 채움
+    if len(selected) < n_panels:
+        for _, p in scored:
+            if p not in selected:
+                selected.append(p)
+                if len(selected) >= n_panels:
+                    break
+    
+    # 구성 요약
+    n_actual_target = sum(1 for p in selected 
+                           if score_persona_target_fit(p, target_parsed) >= 70)
+    n_actual_sec = sum(1 for p in selected 
+                        if 40 <= score_persona_target_fit(p, target_parsed) < 70)
+    n_actual_other = len(selected) - n_actual_target - n_actual_sec
+    
+    age_str = ', '.join([f'{a}대' for a in target_parsed['age_primary']])
+    gender_str = ('남녀 모두' if target_parsed['gender_primary'] == 'all'
+                   else f"{target_parsed['gender_primary']}성")
+    lifestyle_str = ', '.join(target_parsed['lifestyle_keywords']) \
+        if target_parsed['lifestyle_keywords'] else '특별 조건 없음'
+    
+    composition = {
+        'parsed_target': f"{age_str} {gender_str}, {lifestyle_str}",
+        'n_target': n_actual_target,
+        'n_secondary': n_actual_sec,
+        'n_other': n_actual_other,
+        'n_total': len(selected),
+    }
+    
+    return selected[:n_panels], target_parsed, composition
 
 
 # ============================================================================
@@ -3586,12 +3844,14 @@ def prompt_stage1_flavor(normalized_recipe_json, category="음료",
 
 def prompt_stage2_panel_eval_recipe(product_name, flavor_profile_json, personas,
                                       market_context="신제품 개발",
-                                      category="음료"):
+                                      category="음료",
+                                      target_info=None):
     """Stage 2: N명 페르소나 배합비 모드 평가
     
     Args:
         market_context: "신제품 개발" / "기존 제품 재현" / "리뉴얼" 등
         category: 제품 카테고리 (JAR 최적값 결정)
+        target_info: {'parsed_target': 설명, 'composition': 구성} - 타겟 매칭 정보
     """
     persona_text = json.dumps(personas, ensure_ascii=False, indent=1)
     flavor_text = json.dumps(flavor_profile_json, ensure_ascii=False, indent=1)
@@ -3609,6 +3869,33 @@ def prompt_stage2_panel_eval_recipe(product_name, flavor_profile_json, personas,
     # 카테고리 표준 프로파일 (전문 패널 훈련 지침)
     category_guideline = format_category_guideline_for_prompt(category)
     
+    # 🎯 타겟 정보 블록
+    target_block = ""
+    if target_info and target_info.get('parsed_target'):
+        comp = target_info.get('composition', {})
+        target_block = f"""
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+**🎯 제품 타겟 소비자 정보 (매우 중요!)**
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+**추정 타겟**: {target_info['parsed_target']}
+
+**선정된 패널 구성**:
+- 🎯 타겟 매칭 패널: {comp.get('n_target', 0)}명 (제품의 1차 타겟)
+- 🟡 보조 패널: {comp.get('n_secondary', 0)}명 (근접 타겟)
+- ⚪ 기타 패널: {comp.get('n_other', 0)}명 (타겟 아님)
+
+**⭐⭐ 평가 시 타겟 비중에 따른 지침**:
+- **타겟 매칭 패널들**은 이 제품의 1차 소비자이므로, 제품의 컨셉·맛·포지셔닝을 
+  적극적으로 수용하는 관점에서 평가합니다. 단, 개인 취향 편차는 유지.
+- **보조 패널들**은 타겟에 근접하지만 완벽히 매칭되지 않아 일부 아쉬운 점이 있을 수 있음.
+- **기타 패널들**은 이 제품의 타겟이 아니므로 낮게 평가할 수 있으나, 
+  **"카테고리 자체 비선호"**와 **"제품의 품질 이슈"**를 명확히 구분해서 코멘트 작성.
+  예: "저는 이 제품의 타겟은 아니지만 맛은 카테고리 표준에 부합합니다."
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
+    
     return f"""당신은 관능검사 시뮬레이션 엔진입니다. 
 {n_panels}명의 한국 소비자 패널이 **{category} 카테고리 표준 패널 훈련을 받은 후**
 동일한 제품을 시음하고 각자의 취향으로 평가하는 상황을 재현합니다.
@@ -3618,6 +3905,7 @@ def prompt_stage2_panel_eval_recipe(product_name, flavor_profile_json, personas,
 **시음 제품**: {product_name}
 
 {category_guideline}
+{target_block}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 **⭐ 패널 훈련 전제 조건 (반드시 준수)**
@@ -5427,8 +5715,13 @@ with tabs[3]:
                                 judge = '✓ 적정' if within else ('⚠ 강함' if mean > opt else '⚠ 약함')
                                 basis = f"JAR {opt}±{tol:.1f}"
                             else:
-                                judge = '✓ 통과' if mean >= 5.0 else '✗ 미달'
-                                basis = "Hedonic ≥5.0"
+                                if mean >= PASS_THRESHOLD_HIGH:
+                                    judge = '✓ 강함'
+                                elif mean >= PASS_THRESHOLD_LOW:
+                                    judge = '△ 수용'
+                                else:
+                                    judge = '✗ 미달'
+                                basis = f"Hedonic ≥{PASS_THRESHOLD_HIGH}(강)/≥{PASS_THRESHOLD_LOW}(수용)"
                             stats_rows.append({
                                 '항목': attr,
                                 '타입': attr_type.upper(),
@@ -5521,16 +5814,19 @@ with tabs[3]:
                     v1, v2 = st.columns(2)
                     
                     with v1:
-                        # 막대그래프 (합격선 5.0)
-                        colors_bar = ['#3b82f6' if m >= 5.0 else '#f59e0b' 
-                                      for m in stats_df['평균']]
-                        # 합격 3기준은 진한 색
+                        # 막대그래프 (3단계: 5.0+ 초록 / 4.0+ 노랑 / 4.0 미만 빨강)
+                        def color_3tier(m):
+                            if m >= PASS_THRESHOLD_HIGH:
+                                return '#10b981'  # 초록 (완전)
+                            elif m >= PASS_THRESHOLD_LOW:
+                                return '#f59e0b'  # 노랑 (수용)
+                            else:
+                                return '#ef4444'  # 빨강 (미달)
+                        colors_bar = [color_3tier(m) for m in stats_df['평균']]
+                        # 합격 3기준 항목은 진하게 표시
                         for i, attr in enumerate(stats_df['항목']):
                             if attr in SCALING_PASS_CRITERIA:
-                                if stats_df['평균'].iloc[i] >= 5.0:
-                                    colors_bar[i] = '#10b981'
-                                else:
-                                    colors_bar[i] = '#ef4444'
+                                colors_bar[i] = color_3tier(stats_df['평균'].iloc[i])
                         
                         fig_bar = go.Figure()
                         fig_bar.add_trace(go.Bar(
@@ -5679,8 +5975,47 @@ with tabs[3]:
                 icon="⏱️"
             )
     
-    # 선택된 페르소나 미리 계산 (재사용)
-    selected_personas = select_personas(n_panels)
+    # ═══════════════════════════════════════════════════════════════════
+    # 🎯 타겟 기반 페르소나 구성 (신규)
+    # ═══════════════════════════════════════════════════════════════════
+    st.markdown("---")
+    st.markdown("##### 🎯 타겟 소비자 기반 패널 구성 (선택)")
+    
+    target_col1, target_col2 = st.columns([3, 1])
+    with target_col1:
+        target_desc = st.text_input(
+            "제품의 타겟 소비자를 자유롭게 설명 (비워두면 한국 인구 분포 사용)",
+            placeholder="예: 20대 여성, MZ세대, 건강지향 / 40대 주부 / 전연령 대중",
+            key="t4_target_desc",
+            help="타겟을 설명하면 해당 연령·성별·라이프스타일 페르소나를 70% 이상 배치"
+        )
+    with target_col2:
+        use_target = st.toggle(
+            "타겟 매칭 활성화",
+            value=bool(target_desc and target_desc.strip()),
+            key="t4_use_target",
+            help="끄면 한국 인구 분포 기반 랜덤 구성"
+        )
+    
+    # 선택된 페르소나 계산 (타겟 매칭 여부에 따라 분기)
+    if use_target and target_desc and target_desc.strip():
+        selected_personas, target_parsed, target_composition = \
+            select_personas_by_target(target_desc, n_panels)
+        
+        # 매칭 결과 미리보기
+        st.info(
+            f"🎯 **추정 타겟**: {target_composition['parsed_target']}  \n"
+            f"**패널 구성** ({target_composition['n_total']}명): "
+            f"🎯 타겟 {target_composition['n_target']}명 · "
+            f"🟡 보조 {target_composition['n_secondary']}명 · "
+            f"⚪ 기타 {target_composition['n_other']}명"
+        )
+    else:
+        selected_personas = select_personas(n_panels)
+        target_parsed = None
+        target_composition = None
+        if target_desc and target_desc.strip() and not use_target:
+            st.caption("⚠️ 타겟이 입력되었지만 '타겟 매칭 활성화'가 꺼져 있어 한국 인구 분포로 구성됩니다.")
     
     # 페르소나 열람 expander
     with st.expander(f"👥 선택된 {len(selected_personas)}명 가상 패널 프로필 열람",
@@ -6246,10 +6581,19 @@ with tabs[3]:
                         f"(예상 {n_panels * 4}~{n_panels * 8}초)"
                     )
                     with st.spinner(spinner_msg):
+                        # 🎯 타겟 정보 구성
+                        stage2_target_info = None
+                        if use_target and target_parsed and target_composition:
+                            stage2_target_info = {
+                                'parsed_target': target_composition.get('parsed_target'),
+                                'composition': target_composition,
+                            }
+                        
                         prompt = prompt_stage2_panel_eval_recipe(
                             recipe_product_name, flavor, selected_personas,
                             market_context=ctx_short,
-                            category=effective_category
+                            category=effective_category,
+                            target_info=stage2_target_info
                         )
                         eval_result, raw = call_claude_api_json(
                             prompt, st.session_state.api_key,
@@ -6299,10 +6643,14 @@ with tabs[3]:
                                     'recipe_parse': parsed,
                                     'flavor_profile': flavor,
                                     'timestamp': datetime.datetime.now().strftime('%H:%M'),
-                                    'n_panels': len(validated_evals),  # 실제 수로 저장
+                                    'n_panels': len(validated_evals),
                                     'personas_used': selected_personas[:len(validated_evals)],
                                     'category': effective_category,
                                     'market_context': ctx_short,
+                                    # 🎯 타겟 정보 저장 (재평가 시 유지)
+                                    'target_description': target_desc if use_target else None,
+                                    'target_parsed': target_parsed,
+                                    'target_composition': target_composition,
                                     'input_data': {
                                         'recipe': recipe_text,
                                         'process': process_text
@@ -6586,12 +6934,25 @@ with tabs[3]:
         if eval_data.get('mode') == 'recipe':
             applied_cat = eval_data.get('category', '기타')
             applied_ctx = eval_data.get('market_context', '신제품 개발')
-            st.info(
-                f"🏷️ **이 평가에 적용된 카테고리**: `{applied_cat}` · "
+            target_desc_saved = eval_data.get('target_description')
+            target_comp_saved = eval_data.get('target_composition')
+            
+            info_msg = (
+                f"🏷️ **카테고리**: `{applied_cat}` · "
                 f"**시장 맥락**: `{applied_ctx}` · "
-                f"**패널 수**: `{len(evaluations)}명`  \n"
-                f"JAR 기준·표준 특성·챗봇 답변 모두 **{applied_cat}** 기준으로 적용됩니다."
+                f"**패널 수**: `{len(evaluations)}명`"
             )
+            if target_desc_saved and target_comp_saved:
+                info_msg += (
+                    f"\n\n🎯 **타겟**: {target_comp_saved.get('parsed_target', '?')} — "
+                    f"타겟 {target_comp_saved.get('n_target', 0)}명 / "
+                    f"보조 {target_comp_saved.get('n_secondary', 0)}명 / "
+                    f"기타 {target_comp_saved.get('n_other', 0)}명"
+                )
+            else:
+                info_msg += "\n\n👥 **패널 구성**: 한국 인구 분포 반영"
+            info_msg += f"\n\nJAR 기준·표준 특성·챗봇 답변 모두 **{applied_cat}** 기준으로 적용."
+            st.info(info_msg)
         
         # 평가 항목 결정
         if mode == 'recipe':
@@ -6643,10 +7004,15 @@ with tabs[3]:
                 mean_ai[a] = col.mean()
         
         # ──────────────────────────────────────────────
-        # 이중 합격 판정 (hedonic + JAR)
+        # 이중 합격 판정 (hedonic + JAR, 3단계 임계)
         # ──────────────────────────────────────────────
-        hedonic_passed = sum(1 for c in pass_criteria 
-                              if c in mean_ai and mean_ai[c] >= 5.0)
+        # HIGH(5.0) 통과 개수, LOW(4.0) 통과 개수 각각 집계
+        hedonic_high = sum(1 for c in pass_criteria 
+                            if c in mean_ai and mean_ai[c] >= PASS_THRESHOLD_HIGH)
+        hedonic_low_only = sum(1 for c in pass_criteria 
+                                if c in mean_ai and 
+                                PASS_THRESHOLD_LOW <= mean_ai[c] < PASS_THRESHOLD_HIGH)
+        hedonic_passed = hedonic_high + hedonic_low_only  # 4점 이상 = 수용 가능
         hedonic_total = len(pass_criteria)
         
         # JAR 편차 계산
@@ -6654,7 +7020,6 @@ with tabs[3]:
         if mode == 'recipe' and category:
             for jar_name in jar_attr_names:
                 if jar_name in mean_ai:
-                    # 공백 키로 변환 후 JAR_OPTIMAL 조회
                     spaced_name = key_map[jar_name]
                     opt, tol = get_jar_optimal(category, spaced_name)
                     jar_evaluations[jar_name] = calculate_jar_deviation(
@@ -6664,33 +7029,39 @@ with tabs[3]:
                           if r['within_tolerance'])
         jar_total = len(jar_evaluations)
         
-        # 종합 판정 (모드별)
+        # 종합 판정 (3단계 합격 기준 적용)
         if mode == 'recipe':
-            if hedonic_passed == hedonic_total and jar_within == jar_total:
-                ai_pass_status = "🟢 완전 합격 (Hedonic + JAR 모두 충족)"
+            if hedonic_high == hedonic_total and jar_within == jar_total:
+                ai_pass_status = f"🟢 완전 합격 (모두 ≥{PASS_THRESHOLD_HIGH} + JAR 적정)"
                 ai_badge = "pass-badge-full"
-            elif hedonic_passed == hedonic_total and jar_within >= jar_total - 1:
-                ai_pass_status = f"🟡 조건부 합격 (Hedonic OK, JAR {jar_total-jar_within}개 경고)"
+            elif hedonic_high == hedonic_total:
+                ai_pass_status = f"🟢 합격 (Hedonic 모두 ≥{PASS_THRESHOLD_HIGH}, JAR {jar_total-jar_within}개 경고)"
+                ai_badge = "pass-badge-full"
+            elif hedonic_passed == hedonic_total and hedonic_high >= 2:
+                ai_pass_status = f"🟡 조건부 합격 (모두 ≥{PASS_THRESHOLD_LOW}, 2개 이상 ≥{PASS_THRESHOLD_HIGH})"
                 ai_badge = "pass-badge-conditional"
             elif hedonic_passed == hedonic_total:
-                ai_pass_status = "🟡 부분 합격 (Hedonic OK, JAR 다수 편차)"
+                ai_pass_status = f"🟡 수용 가능 (모두 ≥{PASS_THRESHOLD_LOW})"
                 ai_badge = "pass-badge-conditional"
-            elif hedonic_passed == 2:
-                ai_pass_status = f"🟡 조건부 합격 (Hedonic 2/3)"
-                ai_badge = "pass-badge-conditional"
+            elif hedonic_passed >= 2:
+                ai_pass_status = f"🟠 부분 합격 ({hedonic_passed}/{hedonic_total}이 ≥{PASS_THRESHOLD_LOW})"
+                ai_badge = "pass-badge-partial"
             else:
-                ai_pass_status = f"🔴 불합격 (Hedonic {hedonic_passed}/{hedonic_total})"
+                ai_pass_status = f"🔴 불합격 ({hedonic_passed}/{hedonic_total}만 ≥{PASS_THRESHOLD_LOW})"
                 ai_badge = "pass-badge-fail"
         else:
-            # 컨셉 모드는 기존 방식
-            if hedonic_passed == hedonic_total:
-                ai_pass_status = "🟢 완전 합격 (3기준 모두 통과)"
+            # 컨셉 모드도 3단계 적용
+            if hedonic_high == hedonic_total:
+                ai_pass_status = f"🟢 완전 합격 (3기준 모두 ≥{PASS_THRESHOLD_HIGH})"
                 ai_badge = "pass-badge-full"
-            elif hedonic_passed == 2:
-                ai_pass_status = "🟡 조건부 합격 (2기준 통과)"
+            elif hedonic_passed == hedonic_total:
+                ai_pass_status = f"🟡 수용 가능 (모두 ≥{PASS_THRESHOLD_LOW})"
                 ai_badge = "pass-badge-conditional"
+            elif hedonic_passed >= 2:
+                ai_pass_status = f"🟠 부분 합격 ({hedonic_passed}/{hedonic_total})"
+                ai_badge = "pass-badge-partial"
             else:
-                ai_pass_status = f"🔴 불합격 ({hedonic_passed}/{hedonic_total})"
+                ai_pass_status = f"🔴 불합격 ({hedonic_passed}/{hedonic_total}만 ≥{PASS_THRESHOLD_LOW})"
                 ai_badge = "pass-badge-fail"
         
         # 판정 배지 + 재평가 버튼
@@ -6715,14 +7086,24 @@ with tabs[3]:
                 
                 with st.spinner(f"다시 평가 중... ({n_retry}명, 최대 5분)"):
                     if mode == 'recipe':
-                        # ✅ 저장된 카테고리·시장 맥락을 재평가에도 전달
+                        # ✅ 저장된 카테고리·시장 맥락·타겟을 재평가에도 전달
                         retry_category = eval_data.get('category', '음료')
                         retry_market_ctx = eval_data.get('market_context', '신제품 개발')
+                        # 🎯 타겟 정보 복원
+                        retry_target_info = None
+                        retry_target_comp = eval_data.get('target_composition')
+                        if eval_data.get('target_description') and retry_target_comp:
+                            retry_target_info = {
+                                'parsed_target': retry_target_comp.get('parsed_target'),
+                                'composition': retry_target_comp,
+                            }
+                        
                         prompt = prompt_stage2_panel_eval_recipe(
                             eval_data['product_name'],
                             eval_data['flavor_profile'], personas_for_retry,
                             market_context=retry_market_ctx,
-                            category=retry_category
+                            category=retry_category,
+                            target_info=retry_target_info
                         )
                         retry_system_msg = (
                             f"당신은 {retry_category} 카테고리 관능검사 시뮬레이션 "
@@ -6767,14 +7148,19 @@ with tabs[3]:
                         st.error(f"❌ 재평가 실패: {safe_str(raw)[:400]}")
         
         # 합격 기준 상세 (Hedonic)
-        st.markdown("#### 🎯 Hedonic 합격 기준 (≥ 5.0)")
+        st.markdown(f"#### 🎯 Hedonic 합격 기준 (≥{PASS_THRESHOLD_HIGH} 완전 / ≥{PASS_THRESHOLD_LOW} 수용)")
         cc_k1, cc_k2, cc_k3 = st.columns(3)
         for i, crit in enumerate(pass_criteria):
             col = [cc_k1, cc_k2, cc_k3][i]
             with col:
                 if crit in mean_ai:
                     score = mean_ai[crit]
-                    status = "🟢 통과" if score >= 5.0 else "🔴 미달"
+                    if score >= PASS_THRESHOLD_HIGH:
+                        status = "🟢 통과 (강함)"
+                    elif score >= PASS_THRESHOLD_LOW:
+                        status = "🟡 수용 가능"
+                    else:
+                        status = "🔴 미달"
                     st.metric(crit, f"{score:.2f}", status)
         
         # JAR 상세 (배합비 모드만)
@@ -6818,15 +7204,17 @@ with tabs[3]:
             # 평균 막대그래프 + 레이더
             v1, v2 = st.columns(2)
             with v1:
-                # Hedonic 전용 막대그래프 (배합비 모드에서 JAR 제외)
+                # Hedonic 전용 막대그래프 (3단계 색상)
                 hedonic_in_data = [a for a in mean_ai.keys() if a in hedonic_attr_names]
                 hedonic_values = [mean_ai[a] for a in hedonic_in_data]
                 colors_b = []
                 for attr, val in zip(hedonic_in_data, hedonic_values):
-                    if attr in pass_criteria:
-                        colors_b.append('#10b981' if val >= 5.0 else '#ef4444')
+                    if val >= PASS_THRESHOLD_HIGH:
+                        colors_b.append('#10b981')  # 초록 (완전 통과)
+                    elif val >= PASS_THRESHOLD_LOW:
+                        colors_b.append('#f59e0b')  # 노랑 (수용 가능)
                     else:
-                        colors_b.append('#3b82f6' if val >= 5.0 else '#f59e0b')
+                        colors_b.append('#ef4444')  # 빨강 (미달)
                 
                 fig_ai_bar = go.Figure()
                 fig_ai_bar.add_trace(go.Bar(
@@ -6836,9 +7224,12 @@ with tabs[3]:
                     text=[f"{v:.2f}" for v in hedonic_values],
                     textposition='outside'
                 ))
-                fig_ai_bar.add_hline(y=5.0, line_dash="dash",
-                    line_color="#3b82f6",
-                    annotation_text="합격선 5.0")
+                fig_ai_bar.add_hline(y=PASS_THRESHOLD_HIGH, line_dash="dash",
+                    line_color="#10b981",
+                    annotation_text=f"완전 합격 {PASS_THRESHOLD_HIGH}")
+                fig_ai_bar.add_hline(y=PASS_THRESHOLD_LOW, line_dash="dot",
+                    line_color="#f59e0b",
+                    annotation_text=f"수용 가능 {PASS_THRESHOLD_LOW}")
                 fig_ai_bar.update_layout(
                     title=f"Hedonic {len(hedonic_in_data)}항목 평균 (높을수록 좋음)",
                     yaxis=dict(range=[0, 7.5], title="점수"),
@@ -6962,12 +7353,22 @@ with tabs[3]:
                         note = (f"최적 {jar_res['optimal']} ±{jar_res['tolerance']:.1f}")
                     else:
                         attr_type = 'Hedonic'
-                        judgement = '✓' if v >= 5.0 else '✗'
-                        note = "합격선 5.0"
+                        if v >= PASS_THRESHOLD_HIGH:
+                            judgement = '✓ 강함'
+                        elif v >= PASS_THRESHOLD_LOW:
+                            judgement = '🟡 수용'
+                        else:
+                            judgement = '✗ 미달'
+                        note = f"강한합격 {PASS_THRESHOLD_HIGH} / 수용 {PASS_THRESHOLD_LOW}"
                 else:
                     attr_type = 'Hedonic'
-                    judgement = '✓' if v >= 5.0 else '✗'
-                    note = "합격선 5.0"
+                    if v >= PASS_THRESHOLD_HIGH:
+                        judgement = '✓ 강함'
+                    elif v >= PASS_THRESHOLD_LOW:
+                        judgement = '🟡 수용'
+                    else:
+                        judgement = '✗ 미달'
+                    note = f"강한합격 {PASS_THRESHOLD_HIGH} / 수용 {PASS_THRESHOLD_LOW}"
                 
                 table_rows.append({
                     '항목': a,
