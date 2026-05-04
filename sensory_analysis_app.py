@@ -1953,7 +1953,8 @@ def generate_ice_cream_qda(physical, sub_type='아이스크림'):
     return qda
 
 
-
+def perceived_sweetness_intensity(brix, category='음료', has_co2=False,
+                                    acidity_pct=0, fat_pct=0):
     """지각 단맛 강도 (1~7 리커트)
     
     Stevens' power law + 카테고리 보정
