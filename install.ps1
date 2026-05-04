@@ -7,6 +7,13 @@
 
 $ErrorActionPreference = "Stop"
 
+# 한글 깨짐 방지 (PowerShell 콘솔 인코딩 UTF-8로)
+try {
+    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+    $OutputEncoding = [System.Text.Encoding]::UTF8
+    chcp 65001 > $null
+} catch {}
+
 # 사용자가 자기 repo에 맞게 수정해야 할 부분
 $RepoOwner = "ryujisung007"
 $RepoName  = "0227total"
@@ -140,18 +147,41 @@ if ($hasChromium) {
 }
 
 # -----------------------------------------------------------
-# 실행
+# 실행 - 사용 가능한 포트 자동 탐색
 # -----------------------------------------------------------
+function Test-PortAvailable {
+    param([int]$Port)
+    try {
+        $listener = [System.Net.Sockets.TcpListener]::new(
+            [System.Net.IPAddress]::Loopback, $Port
+        )
+        $listener.Start()
+        $listener.Stop()
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+$port = 8501
+foreach ($p in @(8501, 8502, 8503, 8504, 8505, 8510)) {
+    if (Test-PortAvailable -Port $p) {
+        $port = $p
+        break
+    }
+}
+
 Write-Host @"
 
 ============================================================
   🚀 Streamlit 앱 실행 중...
 ============================================================
+  포트: $port (자동 선택)
   브라우저가 자동으로 열립니다.
-  안 열리면: http://localhost:8501
+  안 열리면: http://localhost:$port
 
   종료: 이 PowerShell 창에서 Ctrl+C
 ============================================================
 "@ -ForegroundColor Green
 
-python -m streamlit run app.py
+python -m streamlit run app.py --server.port $port
