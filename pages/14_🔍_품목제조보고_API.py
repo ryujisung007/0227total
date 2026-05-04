@@ -309,6 +309,99 @@ def _render_api_mode():
 # ============================================================
 # ============== 🌐 웹 수집 모드 (신규) ======================
 # ============================================================
+def _is_container():
+    """Streamlit Cloud / Docker / 컨테이너 환경 감지."""
+    if sys.platform in ("win32", "darwin"):
+        return False
+    return (
+        os.environ.get("DISPLAY") is None
+        or os.path.exists("/home/appuser")
+        or os.environ.get("HOME", "").startswith("/home/appuser")
+        or os.path.exists("/.dockerenv")
+    )
+
+
+def _render_local_execution_guide():
+    """모드 선택 즉시 환경 안내 + 로컬 실행 가이드 표시."""
+    in_container = _is_container()
+
+    if in_container:
+        st.warning(
+            "🚨 **현재 Streamlit Cloud 서버에서 실행 중 — 웹 수집은 로컬 PC 실행을 "
+            "강력히 권장합니다.**\n\n"
+            "**왜 클라우드에서는 잘 안 되는가**\n"
+            "- **IP 미스매치**: 모바일 핫스팟에 접속하셔도 화면 표시만 핫스팟 IP일 뿐, "
+            "실제 식품안전나라 사이트 요청은 **Streamlit Cloud의 미국 AWS IP**에서 나감 "
+            "→ 차단 위험\n"
+            "- **메모리 제약**: 무료 티어 1GB는 Chromium 안정 동작에 빠듯 "
+            "(`Target page, context or browser has been closed` 류 에러)\n"
+            "- **시스템 라이브러리 누락 가능성**: `packages.txt` 없으면 Chromium 자체가 "
+            "실행 불가\n\n"
+            "👇 아래 가이드로 **로컬 PC**에서 실행하시면, 모바일 핫스팟 IP로 요청이 나가서 "
+            "차단 회피 + 안정적 동작 보장."
+        )
+    else:
+        st.info(
+            "💡 로컬 환경에서 실행 중입니다. 웹 수집이 안정적으로 동작합니다. "
+            "모바일 핫스팟에 연결하면 한국 통신사 IP로 요청이 나가서 IP 차단 회피에 유리합니다."
+        )
+
+    expander_label = (
+        "📖 로컬 PC 실행 가이드 (Windows) — 클릭해서 펼치기"
+        if not in_container
+        else "📖 로컬 PC 실행 가이드 (Windows) — 필수 확인"
+    )
+    with st.expander(expander_label, expanded=in_container):
+        st.markdown(
+            """
+**🔧 사전 준비 (최초 1회만)**
+
+**1. repo 다운로드**
+GitHub 페이지 우상단 `Code` → `Download ZIP` → 압축 해제 (또는 `git clone`)
+
+**2. CMD 또는 PowerShell**을 해제한 폴더에서 열고 두 줄 실행:
+```cmd
+python -m pip install -r requirements.txt
+python -m playwright install chromium
+```
+
+> 💡 `python -m`을 꼭 붙이세요. `playwright install chromium` 만 치면 PATH 문제로
+> "인식되지 않습니다" 에러 빈발.
+
+---
+
+**▶️ 매번 실행할 때**
+```cmd
+python -m streamlit run app.py
+```
+
+브라우저가 자동으로 열림 (`http://localhost:8501`). 사이드바에서
+이 페이지(**14_🔍_품목제조보고_API**) 선택 → 상단 라디오에서 **🌐 웹 수집** 선택.
+
+---
+
+**📡 모바일 핫스팟으로 IP 차단 회피**
+
+식품안전나라가 회사/집 IP를 차단한 경우:
+1. PC를 **모바일 핫스팟에 Wi-Fi 연결** (회사/집 인터넷에서 떼어내기)
+2. 위 `streamlit run` 명령 실행
+3. 사이트 요청이 **통신사 IP**로 나가서 차단된 IP 풀과 무관해짐
+
+---
+
+**🛠️ 자주 발생하는 문제**
+
+| 증상 | 원인 / 해결 |
+|---|---|
+| `'playwright' is not recognized` | PATH 문제 — `python -m playwright install chromium` |
+| `'streamlit' is not recognized` | 같은 PATH 문제 — `python -m streamlit run app.py` |
+| `No module named playwright` | 패키지 미설치 — `python -m pip install playwright` 먼저 |
+| Chromium 설치 시간 초과 | 한 번 더 실행 (또는 안정적 네트워크 사용) |
+| 검색 페이지가 "메인으로" 버튼만 보임 | 식품안전나라 IP 차단 — 모바일 핫스팟으로 전환, 또는 24시간 대기 |
+            """
+        )
+
+
 @st.cache_resource(show_spinner=False)
 def _ensure_playwright_browser():
     cache_dir = os.path.expanduser("~/.cache/ms-playwright")
@@ -374,16 +467,22 @@ def _check_scraper_available():
 
 
 def _render_scraper_mode():
-    if not _check_scraper_available():
-        return
-    if not _ensure_playwright_browser():
-        return
-
+    # 헤더 (먼저 표시)
     st.subheader("🌐 웹 수집 (전체 식품유형 + 상세정보)")
     st.caption(
         "Playwright 자동화. 품목유형 → 최근등록순 → 50개씩 → "
         "각 제품 클릭 → **성분 및 원료 + 신고일자** → 엑셀 다운로드"
     )
+
+    # 환경 진단 + 로컬 실행 가이드 (체크 전에 보여줌)
+    _render_local_execution_guide()
+    st.divider()
+
+    # 환경 체크
+    if not _check_scraper_available():
+        return
+    if not _ensure_playwright_browser():
+        return
 
     with st.sidebar:
         st.markdown("### ⚙️ 수집 설정")
