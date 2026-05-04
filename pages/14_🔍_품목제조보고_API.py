@@ -82,25 +82,46 @@ def _normalize(s: str) -> str:
     return s.strip().replace("·", ".").replace("‧", ".").replace(" ", "")
 
 
-def _api_get(url: str, timeout: int = 20):
-    req = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": "Mozilla/5.0",
-            "Accept": "application/json",
-        },
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+def _api_get(url: str, timeout: int = 60, retries: int = 3, log=None):
+    """API GET with retry. 타임아웃/네트워크 오류 시 백오프 재시도.
+
+    Streamlit Cloud 미국 서버 ↔ 한국 정부 API 국제 구간이 느릴 수 있어
+    충분한 timeout과 자동 재시도가 필수.
+    """
+    import urllib.error
+    last_err = None
+    for attempt in range(retries):
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={
+                    "User-Agent": "Mozilla/5.0",
+                    "Accept": "application/json",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except (TimeoutError, urllib.error.URLError, OSError) as e:
+            last_err = e
+            if attempt < retries - 1:
+                wait = 1.5 * (2 ** attempt)  # 1.5, 3, 6초
+                if log:
+                    log(
+                        f"  ⏰ 네트워크 오류 - {wait:.0f}초 후 재시도 "
+                        f"({attempt + 2}/{retries})"
+                    )
+                time.sleep(wait)
+    raise last_err
 
 
-def _find_working_base(api_key: str) -> str:
+def _find_working_base(api_key: str, log=None) -> str:
     if "_pmr_api_base" in st.session_state:
         return st.session_state["_pmr_api_base"]
     for base in BASE_URLS:
         try:
             data = _api_get(
-                f"{base}/{api_key}/I1250/json/1/1", timeout=15
+                f"{base}/{api_key}/I1250/json/1/1",
+                timeout=30, retries=2, log=log,
             )
             if data.get("I1250", {}).get(
                 "RESULT", {}
@@ -131,8 +152,8 @@ def _fetch_with_term(
     norm_target = _normalize(food_type)
     all_data = []
     start = 1
-    page_size = 500
-    retries = 0
+    page_size = 200  # 500 → 200 (작게 나눠서 타임아웃 위험 감소)
+    consec_fails = 0
 
     while start <= max_rows and len(all_data) < max_rows:
         end = min(start + page_size - 1, max_rows)
@@ -141,7 +162,7 @@ def _fetch_with_term(
             f"PRDLST_DCNM={encoded}"
         )
         try:
-            data = _api_get(url, timeout=20)
+            data = _api_get(url, timeout=60, retries=3, log=log)
             svc = data.get("I1250", {})
             code = svc.get("RESULT", {}).get("CODE", "")
 
@@ -167,26 +188,31 @@ def _fetch_with_term(
             if len(rows) < page_size:
                 break
             start += page_size
-            time.sleep(0.2)
-            retries = 0
+            time.sleep(0.3)
+            consec_fails = 0
 
-        except TimeoutError:
-            retries += 1
-            if retries > 2:
-                log("⏰ 타임아웃 3회 — 중단")
-                break
-            log(f"⏰ 타임아웃 — 재시도 ({retries}/3)")
-            time.sleep(1)
-            continue
         except Exception as e:
-            log(f"⚠️ {e}")
-            break
+            consec_fails += 1
+            log(f"⚠️ {type(e).__name__}: {e}")
+
+            # HTTPS에서 연속 실패 → HTTP로 자동 전환
+            if consec_fails >= 2 and base_url.startswith("https://"):
+                http_base = base_url.replace("https://", "http://", 1)
+                log(f"🔄 HTTPS 연속 실패 → HTTP로 전환 시도")
+                base_url = http_base
+                st.session_state["_pmr_api_base"] = http_base
+                consec_fails = 0
+                continue
+
+            if consec_fails >= 3:
+                log("⛔ 3회 연속 실패 - 중단")
+                break
 
     return all_data[:max_rows]
 
 
 def _fetch_data(api_key, food_type, max_rows, log):
-    base_url = _find_working_base(api_key)
+    base_url = _find_working_base(api_key, log=log)
     proto = base_url.split("://")[0]
     terms = _get_search_terms(food_type)
 
@@ -214,6 +240,17 @@ def _render_api_mode():
         "I1250 공식 API. 음료 17종 카테고리 한정. "
         "빠르고 안정적이며 IP 차단 위험 없음."
     )
+
+    # 컨테이너 환경에서는 한미 국제 구간 지연 안내
+    if _is_container():
+        st.info(
+            "ℹ️ Streamlit Cloud(미국 서버) → 한국 정부 API 국제 구간이 "
+            "느려서 종종 타임아웃이 발생할 수 있습니다. "
+            "자동 재시도(3회) + HTTPS↔HTTP fallback이 적용되어 있어 "
+            "**대부분 결국 성공**하지만, 시간이 더 걸립니다.\n\n"
+            "🚀 더 빠르고 안정적인 사용은 **로컬 PC 실행** 권장 — "
+            "🌐 웹 수집 모드의 PowerShell 원라이너 가이드 참고."
+        )
 
     with st.sidebar:
         st.markdown("### 🔑 API 키")
