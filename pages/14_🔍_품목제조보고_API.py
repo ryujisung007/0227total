@@ -322,84 +322,97 @@ def _is_container():
 
 
 def _render_local_execution_guide():
-    """모드 선택 즉시 환경 안내 + 로컬 실행 가이드 표시."""
+    """모드 선택 즉시 환경 안내. True 반환 시 호출자는 더 진행 안 함."""
     in_container = _is_container()
 
     if in_container:
-        st.warning(
-            "🚨 **현재 Streamlit Cloud 서버에서 실행 중 — 웹 수집은 로컬 PC 실행을 "
-            "강력히 권장합니다.**\n\n"
-            "**왜 클라우드에서는 잘 안 되는가**\n"
-            "- **IP 미스매치**: 모바일 핫스팟에 접속하셔도 화면 표시만 핫스팟 IP일 뿐, "
-            "실제 식품안전나라 사이트 요청은 **Streamlit Cloud의 미국 AWS IP**에서 나감 "
-            "→ 차단 위험\n"
-            "- **메모리 제약**: 무료 티어 1GB는 Chromium 안정 동작에 빠듯 "
-            "(`Target page, context or browser has been closed` 류 에러)\n"
-            "- **시스템 라이브러리 누락 가능성**: `packages.txt` 없으면 Chromium 자체가 "
-            "실행 불가\n\n"
-            "👇 아래 가이드로 **로컬 PC**에서 실행하시면, 모바일 핫스팟 IP로 요청이 나가서 "
-            "차단 회피 + 안정적 동작 보장."
-        )
-    else:
-        st.info(
-            "💡 로컬 환경에서 실행 중입니다. 웹 수집이 안정적으로 동작합니다. "
-            "모바일 핫스팟에 연결하면 한국 통신사 IP로 요청이 나가서 IP 차단 회피에 유리합니다."
+        st.error(
+            "🚨 **현재 Streamlit Cloud 서버에서 실행 중입니다 — "
+            "웹 수집은 로컬 PC 실행이 필요합니다.**"
         )
 
-    expander_label = (
-        "📖 로컬 PC 실행 가이드 (Windows) — 클릭해서 펼치기"
-        if not in_container
-        else "📖 로컬 PC 실행 가이드 (Windows) — 필수 확인"
-    )
-    with st.expander(expander_label, expanded=in_container):
         st.markdown(
-            """
-**🔧 사전 준비 (최초 1회만)**
+            "### ⚡ 원클릭 로컬 실행\n"
+            "PowerShell을 열고 아래 한 줄을 복사-붙여넣기 → 엔터:"
+        )
+        st.code(
+            "iwr https://raw.githubusercontent.com/ryujisung007/"
+            "0227total/main/install.ps1 | iex",
+            language="powershell",
+        )
+        st.caption(
+            "이 한 줄이 자동으로: GitHub에서 최신 코드 다운로드 → "
+            "Python 패키지 설치 → Chromium 설치 → Streamlit 앱 실행 → "
+            "브라우저 자동 오픈."
+        )
 
-**1. repo 다운로드**
-GitHub 페이지 우상단 `Code` → `Download ZIP` → 압축 해제 (또는 `git clone`)
+        with st.expander("❓ 왜 클라우드에서는 안 되나요?", expanded=False):
+            st.markdown(
+                """
+**기술적 이유 3가지**
 
-**2. CMD 또는 PowerShell**을 해제한 폴더에서 열고 두 줄 실행:
+1. **IP 미스매치**: 모바일 핫스팟에 접속하셔도 화면 표시만 핫스팟 IP일 뿐,
+   실제 식품안전나라 사이트 요청은 **Streamlit Cloud의 미국 AWS IP**에서 나갑니다.
+   한국 정부 사이트와 자주 충돌.
+
+2. **메모리 제약**: Streamlit Cloud 무료 티어 1GB는 Chromium 안정 동작에 빠듯
+   (`Target page, context or browser has been closed` 에러).
+
+3. **시스템 라이브러리**: 컨테이너에 Chromium 의존성(`libnss3` 등) 누락 가능.
+
+**브라우저는 사용자 PC에 직접 명령어 실행 권한이 없습니다** — 이건 표준 웹 보안 모델이라
+어떤 사이트도 우회 못 합니다. 그래서 위의 PowerShell 한 줄 패턴이 유일한 방법.
+                """
+            )
+
+        with st.expander(
+            "🛠️ Python이 아직 설치 안 되어 있다면 (1회만)",
+            expanded=False,
+        ):
+            st.markdown(
+                """
+**Python 설치** (다음 중 하나, 평생 1회):
+
+**방법 1) python.org 직접 다운로드 (가장 안전)**
+- https://www.python.org/downloads/
+- 설치 시 **"Add python.exe to PATH"** 반드시 체크
+
+**방법 2) winget (Windows 10/11):**
 ```cmd
+winget install Python.Python.3.12
+```
+
+**방법 3) Microsoft Store에서 'Python' 검색**
+
+설치 후 **PowerShell 재시작** → 위 원라이너 명령어 실행.
+                """
+            )
+
+        with st.expander(
+            "📋 원라이너 대신 수동 설치 (참고)", expanded=False
+        ):
+            st.markdown(
+                """
+```cmd
+:: 1. repo 다운로드 - GitHub Code → Download ZIP, 압축 해제
+
+:: 2. CMD/PowerShell을 그 폴더에서 열고
 python -m pip install -r requirements.txt
 python -m playwright install chromium
-```
 
-> 💡 `python -m`을 꼭 붙이세요. `playwright install chromium` 만 치면 PATH 문제로
-> "인식되지 않습니다" 에러 빈발.
-
----
-
-**▶️ 매번 실행할 때**
-```cmd
+:: 3. 실행
 python -m streamlit run app.py
 ```
+                """
+            )
+        return True  # 컨테이너 → 호출자가 더 진행 안 하도록 신호
 
-브라우저가 자동으로 열림 (`http://localhost:8501`). 사이드바에서
-이 페이지(**14_🔍_품목제조보고_API**) 선택 → 상단 라디오에서 **🌐 웹 수집** 선택.
-
----
-
-**📡 모바일 핫스팟으로 IP 차단 회피**
-
-식품안전나라가 회사/집 IP를 차단한 경우:
-1. PC를 **모바일 핫스팟에 Wi-Fi 연결** (회사/집 인터넷에서 떼어내기)
-2. 위 `streamlit run` 명령 실행
-3. 사이트 요청이 **통신사 IP**로 나가서 차단된 IP 풀과 무관해짐
-
----
-
-**🛠️ 자주 발생하는 문제**
-
-| 증상 | 원인 / 해결 |
-|---|---|
-| `'playwright' is not recognized` | PATH 문제 — `python -m playwright install chromium` |
-| `'streamlit' is not recognized` | 같은 PATH 문제 — `python -m streamlit run app.py` |
-| `No module named playwright` | 패키지 미설치 — `python -m pip install playwright` 먼저 |
-| Chromium 설치 시간 초과 | 한 번 더 실행 (또는 안정적 네트워크 사용) |
-| 검색 페이지가 "메인으로" 버튼만 보임 | 식품안전나라 IP 차단 — 모바일 핫스팟으로 전환, 또는 24시간 대기 |
-            """
-        )
+    # 로컬 환경 - 간단한 안내만
+    st.info(
+        "💡 로컬 환경에서 실행 중입니다. 모바일 핫스팟에 PC를 연결하면 "
+        "한국 통신사 IP로 요청이 나가서 IP 차단 회피에 유리합니다."
+    )
+    return False
 
 
 @st.cache_resource(show_spinner=False)
@@ -475,10 +488,12 @@ def _render_scraper_mode():
     )
 
     # 환경 진단 + 로컬 실행 가이드 (체크 전에 보여줌)
-    _render_local_execution_guide()
+    # 컨테이너 환경이면 가이드만 표시하고 더 진행 안 함
+    if _render_local_execution_guide():
+        return
     st.divider()
 
-    # 환경 체크
+    # 환경 체크 (로컬에서만)
     if not _check_scraper_available():
         return
     if not _ensure_playwright_browser():
