@@ -2,7 +2,7 @@
 식품안전나라 통합 조회 앱 v1.0
 API: I1250 / C002 / I0030 / I0490 / COOKRCP01 / I2500 / I1200
 로컬 실행: streamlit run food_safety_all.py
-secrets.toml: FOOD_SAFETY_API_KEY = "7270692908c74bccaebc"
+secrets.toml: FOOD_SAFETY_API_KEY = "9171f7ffd72f4ffcb62f"
 """
 import streamlit as st
 import requests
