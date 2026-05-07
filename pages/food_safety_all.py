@@ -22,16 +22,24 @@ st.set_page_config(
 # ============================================================
 def get_api_key():
     try:
-        for k in ("FOOD_SAFETY_API_KEY", "food_safety_api_key"):
+        for k in ("FOOD_SAFETY_API_KEY", "food_safety_api_key", "FOOD_SAFETY_KEY"):
             v = st.secrets.get(k, "")
             if v and str(v).strip():
                 return str(v).strip()
+        # 중첩 섹션 구조: [food_safety] API_KEY = "..."
+        for sec in ("food_safety", "foodsafety"):
+            try:
+                for k in ("FOOD_SAFETY_API_KEY", "API_KEY", "api_key"):
+                    v = st.secrets[sec].get(k, "")
+                    if v and str(v).strip():
+                        return str(v).strip()
+            except Exception:
+                pass
     except Exception:
         pass
     return ""
 
-API_KEY  = get_api_key()
-BASE     = "http://openapi.foodsafetykorea.go.kr/api"
+BASE = "http://openapi.foodsafetykorea.go.kr/api"
 
 SVC = {
     "품목제조보고":   "I1250",
@@ -47,7 +55,7 @@ SVC = {
 # 공통 유틸
 # ============================================================
 def _url(svc_id, p_s, p_e, params=""):
-    base = f"{BASE}/{API_KEY}/{svc_id}/json/{p_s}/{p_e}"
+    base = f"{BASE}/{get_api_key()}/{svc_id}/json/{p_s}/{p_e}"
     return f"{base}/{params}" if params else base
 
 def _norm(s):
@@ -135,10 +143,11 @@ st.markdown("""
 with st.sidebar:
     st.markdown("### 🍱 식품안전나라 통합조회")
     st.markdown("---")
+    API_KEY = get_api_key()
     if API_KEY:
         st.success(f"✅ API 키: `{API_KEY[:8]}...`")
     else:
-        st.error("❌ API 키 없음\nsecrets.toml:\nFOOD_SAFETY_API_KEY = \"키입력\"")
+        st.error("❌ API 키 없음\n\n`.streamlit/secrets.toml` 확인:\n```\nFOOD_SAFETY_API_KEY = \"키입력\"\n```")
         st.stop()
     st.markdown("---")
     st.caption("API 7종 통합 조회\n로컬 전용 앱")
