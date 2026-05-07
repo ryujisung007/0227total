@@ -144,6 +144,49 @@ st.markdown("""
 with st.sidebar:
     st.markdown("### 🍱 식품안전나라 통합조회")
     st.markdown("---")
+
+    # ── 설치 가이드 ──
+    with st.expander("🛠️ 최초 설치 가이드", expanded=False):
+        st.markdown("**1. 저장소 클론**")
+        st.code(
+            "git clone https://github.com/ryujisung007/0227total.git\n"
+            "cd 0227total",
+            language="bash"
+        )
+
+        st.markdown("**2. 패키지 설치**")
+        st.code("pip install -r requirements.txt", language="bash")
+
+        st.markdown("**3. API 키 설정**")
+        st.code(
+            "# Windows\n"
+            "mkdir .streamlit\n"
+            "echo FOOD_SAFETY_API_KEY = \"7270692908c74bccaebc\" > .streamlit/secrets.toml\n\n"
+            "# Mac/Linux\n"
+            "mkdir -p .streamlit\n"
+            "echo 'FOOD_SAFETY_API_KEY = \"7270692908c74bccaebc\"' > .streamlit/secrets.toml",
+            language="bash"
+        )
+
+        st.markdown("**4. 앱 실행**")
+        st.code(
+            "# pages 폴더 안에 있으므로 아래 명령 실행\n"
+            "streamlit run pages/food_safety_all.py",
+            language="bash"
+        )
+
+        st.markdown("**5. 업데이트 시**")
+        st.code(
+            "git pull origin main\n"
+            "streamlit run pages/food_safety_all.py",
+            language="bash"
+        )
+
+        st.markdown("**GitHub 주소**")
+        st.markdown("[🔗 ryujisung007/0227total](https://github.com/ryujisung007/0227total)")
+        st.info("💡 Python 3.9 이상 필요\nhttps://python.org")
+
+    st.markdown("---")
     API_KEY = get_api_key()
 
     if not API_KEY:
