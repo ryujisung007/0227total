@@ -64,12 +64,23 @@ def _norm(s):
 
 @st.cache_data(ttl=600, show_spinner=False)
 def _get(url):
-    try:
-        r = requests.get(url, timeout=20)
-        r.raise_for_status()
-        return r.json(), None
-    except Exception as e:
-        return None, str(e)
+    proxy = st.session_state.get("proxy_url", "").strip()
+    proxies = {"http": proxy, "https": proxy} if proxy else None
+    for attempt in range(3):
+        try:
+            r = requests.get(url, timeout=20, proxies=proxies)
+            r.raise_for_status()
+            return r.json(), None
+        except requests.exceptions.ConnectTimeout:
+            if attempt < 2:
+                time.sleep(2)
+                continue
+            return None, "연결 시간 초과 — 네트워크/방화벽 확인 필요"
+        except requests.exceptions.ConnectionError as e:
+            return None, f"연결 실패 — 방화벽/프록시 확인: {str(e)[:100]}"
+        except Exception as e:
+            return None, str(e)
+    return None, "3회 재시도 실패"
 
 def _rows(data, svc_id):
     """응답 JSON에서 row 리스트 추출"""
@@ -206,7 +217,42 @@ with st.sidebar:
     else:
         st.success(f"✅ API 키: `{API_KEY[:8]}...`")
     st.markdown("---")
-    st.caption("API 7종 통합 조회\n로컬 전용 앱")
+
+    # ── 네트워크 진단 ──
+    with st.expander("🔌 네트워크 진단 / 프록시 설정", expanded=False):
+        if st.button("🔌 연결 테스트", use_container_width=True, key="net_test"):
+            test_url = f"http://openapi.foodsafetykorea.go.kr/api/{API_KEY}/I1250/json/1/1"
+            proxy = st.session_state.get("proxy_url", "").strip()
+            proxies = {"http": proxy, "https": proxy} if proxy else None
+            try:
+                r = requests.get(test_url, timeout=10, proxies=proxies)
+                if r.status_code == 200:
+                    st.success("✅ API 서버 연결 정상")
+                else:
+                    st.warning(f"⚠️ HTTP {r.status_code}: {r.text[:100]}")
+            except requests.exceptions.ConnectTimeout:
+                st.error("❌ 연결 시간 초과\n방화벽/VPN 확인 필요")
+            except Exception as e:
+                st.error(f"❌ {str(e)[:150]}")
+
+        st.markdown("**프록시 설정 (회사 네트워크 시)**")
+        proxy_input = st.text_input(
+            "프록시 주소",
+            placeholder="http://proxy.company.com:8080",
+            key="proxy_url",
+        )
+        if proxy_input:
+            st.caption(f"프록시 적용: {proxy_input}")
+
+        st.markdown("**문제 해결 체크리스트**")
+        st.markdown("""
+- VPN 연결 해제 후 재시도
+- 회사 네트워크라면 프록시 주소 입력
+- `curl http://openapi.foodsafetykorea.go.kr` 로 직접 테스트
+- 식품안전나라 서버 점검 여부 확인
+        """)
+
+    st.markdown("---")
 
 # ============================================================
 # session_state 초기화
