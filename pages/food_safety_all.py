@@ -2,7 +2,7 @@
 식품안전나라 통합 조회 앱 v1.0
 API: I1250 / C002 / I0030 / I0490 / COOKRCP01 / I2500 / I1200
 로컬 실행: streamlit run food_safety_all.py
-secrets.toml: FOOD_SAFETY_API_KEY = "9171f7ffd72f4ffcb62f"
+secrets.toml: FOOD_SAFETY_API_KEY = "7270692908c74bccaebc"
 """
 import streamlit as st
 import requests
@@ -55,7 +55,8 @@ SVC = {
 # 공통 유틸
 # ============================================================
 def _url(svc_id, p_s, p_e, params=""):
-    base = f"{BASE}/{get_api_key()}/{svc_id}/json/{p_s}/{p_e}"
+    key  = st.session_state.get("manual_api_key", "").strip() or get_api_key()
+    base = f"{BASE}/{key}/{svc_id}/json/{p_s}/{p_e}"
     return f"{base}/{params}" if params else base
 
 def _norm(s):
@@ -144,11 +145,23 @@ with st.sidebar:
     st.markdown("### 🍱 식품안전나라 통합조회")
     st.markdown("---")
     API_KEY = get_api_key()
-    if API_KEY:
-        st.success(f"✅ API 키: `{API_KEY[:8]}...`")
+
+    if not API_KEY:
+        st.warning("⚠️ secrets.toml에서 키를 읽지 못했습니다.\n아래에 직접 입력하세요.")
+        manual_key = st.text_input(
+            "FOOD_SAFETY_API_KEY",
+            type="password",
+            placeholder="7270692908c74bcc...",
+            key="manual_api_key"
+        )
+        if manual_key.strip():
+            API_KEY = manual_key.strip()
+            st.success(f"✅ 수동 입력: `{API_KEY[:8]}...`")
+        else:
+            st.info("💡 키 입력 후 Enter를 누르세요.")
+            st.stop()
     else:
-        st.error("❌ API 키 없음\n\n`.streamlit/secrets.toml` 확인:\n```\nFOOD_SAFETY_API_KEY = \"키입력\"\n```")
-        st.stop()
+        st.success(f"✅ API 키: `{API_KEY[:8]}...`")
     st.markdown("---")
     st.caption("API 7종 통합 조회\n로컬 전용 앱")
 
