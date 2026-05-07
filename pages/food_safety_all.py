@@ -198,23 +198,31 @@ with st.sidebar:
         st.info("💡 Python 3.9 이상 필요\nhttps://python.org")
 
     st.markdown("---")
-    API_KEY = get_api_key()
-
     if not API_KEY:
         st.warning("⚠️ secrets.toml에서 키를 읽지 못했습니다.\n아래에 직접 입력하세요.")
         manual_key = st.text_input(
             "FOOD_SAFETY_API_KEY",
             type="password",
             placeholder="7270692908c74bcc...",
-            key="manual_api_key"
+            key="manual_api_key_raw",
+            help="키값만 입력 (숫자+영문 20자리)"
         )
         if manual_key.strip():
-            API_KEY = manual_key.strip()
-            st.success(f"✅ 수동 입력: `{API_KEY[:8]}...`")
+            # 알파벳+숫자만 추출 (URL 등 잘못 붙여넣기 방지)
+            import re as _re
+            cleaned = _re.sub(r'[^a-zA-Z0-9]', '', manual_key)
+            if len(cleaned) < 10:
+                st.error("❌ 키 형식 오류 — 숫자+영문 키값만 입력하세요.\n예: 7270692908c74bccaebc")
+                st.stop()
+            API_KEY = cleaned
+            # session_state에 정제된 키 저장
+            st.session_state["manual_api_key"] = cleaned
+            st.success(f"✅ 키 입력됨: `{cleaned[:8]}...`")
         else:
-            st.info("💡 키 입력 후 Enter를 누르세요.")
+            st.info("💡 API 키를 입력하세요 (숫자+영문 20자리만)")
             st.stop()
     else:
+        st.session_state["manual_api_key"] = API_KEY
         st.success(f"✅ API 키: `{API_KEY[:8]}...`")
     st.markdown("---")
 
