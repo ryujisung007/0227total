@@ -341,11 +341,16 @@ with tab1:
 
         rows = st.session_state.products
         df_p = pd.DataFrame([{
-            "품목제조번호": r.get("PRDLST_REPORT_NO",""),
-            "제품명":       r.get("PRDLST_NM",""),
-            "식품유형":     r.get("PRDLST_DCNM",""),
-            "제조사":       r.get("BSSH_NM",""),
-            "보고일자":     r.get("PRMS_DT",""),
+            "품목제조번호": r.get("PRDLST_REPORT_NO", ""),
+            "제품명":       r.get("PRDLST_NM", ""),
+            "식품유형":     r.get("PRDLST_DCNM", ""),
+            "제조사":       r.get("BSSH_NM", ""),
+            "보고일자":     r.get("PRMS_DT", ""),
+            "최종수정":     r.get("LAST_UPDT_DTM", ""),
+            "포장재질":     r.get("FRMLC_MTRQLT", ""),
+            "유통기한":     r.get("POG_DAYCNT", ""),
+            "생산여부":     r.get("PRODUCTION", ""),
+            "업종":         r.get("INDUTY_CD_NM", ""),
         } for r in rows])
 
         # 전체선택 / 전체해제
@@ -413,11 +418,27 @@ with tab1:
         # 원재료 DataFrame
         raw_rows = st.session_state.raw_mats
         df_raw = pd.DataFrame([{
-            "제품명":   r.get("_제품명",""),
-            "원재료명": r.get("RAWMTRL_NM",""),
-            "함량":     r.get("CONTENT",""),
-            "원산지":   r.get("ORIGIN_CNTRY_NM",""),
-        } for r in raw_rows if r.get("RAWMTRL_NM","")])
+            "제품명":   r.get("_제품명", ""),
+            # C002 필드명 우선순위로 탐색
+            "원재료명": (r.get("RAWMTRL_NM")
+                        or r.get("INGR_NM")
+                        or r.get("RAW_MTRL_NM")
+                        or r.get("MATERIAL_NM", "")),
+            "함량":     (r.get("CONTENT")
+                        or r.get("CNTNT")
+                        or r.get("CONTENT_NM", "")),
+            "원산지":   (r.get("ORIGIN_CNTRY_NM")
+                        or r.get("ORIGN_CNTRY_NM")
+                        or r.get("CNTRY_NM", "")),
+        } for r in raw_rows])
+
+        # 원재료명이 전부 비어있으면 실제 필드 디버그 표시
+        if df_raw["원재료명"].eq("").all() and raw_rows:
+            st.warning("⚠️ 원재료 필드명 자동 탐색 실패 — 실제 필드 확인 중")
+            with st.expander("🔍 C002 실제 응답 필드 (개발자 확인용)"):
+                st.json(raw_rows[0])
+            # 전체 필드를 그대로 표시
+            df_raw = pd.DataFrame(raw_rows[:50])
 
         # 원재료 집계 (제품별 사용 수)
         if not df_raw.empty:
