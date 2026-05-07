@@ -62,22 +62,22 @@ def _url(svc_id, p_s, p_e, params=""):
 def _norm(s):
     return s.strip().replace("·", ".").replace(" ", "").lower()
 
-@st.cache_data(ttl=600, show_spinner=False)
 def _get(url):
+    """캐시 없이 매번 직접 호출 — 캐시된 오류 방지"""
     proxy = st.session_state.get("proxy_url", "").strip()
     proxies = {"http": proxy, "https": proxy} if proxy else None
     for attempt in range(3):
         try:
-            r = requests.get(url, timeout=20, proxies=proxies)
+            r = requests.get(url, timeout=30, proxies=proxies)
             r.raise_for_status()
             return r.json(), None
         except requests.exceptions.ConnectTimeout:
             if attempt < 2:
                 time.sleep(2)
                 continue
-            return None, "연결 시간 초과 — 네트워크/방화벽 확인 필요"
+            return None, "연결 시간 초과 — Windows 방화벽에서 Python 허용 필요"
         except requests.exceptions.ConnectionError as e:
-            return None, f"연결 실패 — 방화벽/프록시 확인: {str(e)[:100]}"
+            return None, f"연결 실패: {str(e)[:120]}"
         except Exception as e:
             return None, str(e)
     return None, "3회 재시도 실패"
