@@ -146,21 +146,54 @@ def _get_search_terms(food_type: str) -> list:
 
 
 def _fetch_with_term(
-    base_url, api_key, search_term, food_type, max_rows, log
+    base_url, api_key, search_term, food_type, max_rows,
+    log, product_name="", min_prms_dt="",
+    use_exact_match=True, candidate_multiplier=3,
 ):
-    encoded = urllib.parse.quote(search_term)
-    norm_target = _normalize(food_type)
+    """
+    Args:
+        search_term: PRDLST_DCNM에 보낼 검색어 (식품유형 변형 포함)
+        food_type: 정확 매칭 기준이 되는 원본 식품유형 (전체 검색 시 빈 문자열)
+        product_name: PRDLST_NM 파라미터 추가 검색어
+        min_prms_dt: "YYYYMMDD" - 이 날짜 이전 데이터는 즉시 폐기
+        use_exact_match: True면 PRDLST_DCNM 정확 일치만 통과
+        candidate_multiplier: 최신순 정렬 위해 N배수 후보 확보 (3 = max_rows의 3배)
+    """
+    encoded_type = urllib.parse.quote(search_term) if search_term else ""
+    encoded_name = (
+        urllib.parse.quote(product_name) if product_name else ""
+    )
+    norm_target = _normalize(food_type) if food_type else ""
+
+    # API 파라미터 조합
+    params_list = []
+    if encoded_type:
+        params_list.append(f"PRDLST_DCNM={encoded_type}")
+    if encoded_name:
+        params_list.append(f"PRDLST_NM={encoded_name}")
+    params = "&".join(params_list) if params_list else ""
+
+    # 정렬 후 max_rows 추리려면 더 많은 후보 필요
+    target_candidates = max_rows * candidate_multiplier
+    target_candidates = min(target_candidates, 5000)  # 안전 상한
+
     all_data = []
     start = 1
-    page_size = 200  # 500 → 200 (작게 나눠서 타임아웃 위험 감소)
+    page_size = 200
     consec_fails = 0
+    fetched_total = 0
+    skipped_old = 0
+    skipped_type = 0
 
-    while start <= max_rows and len(all_data) < max_rows:
-        end = min(start + page_size - 1, max_rows)
-        url = (
-            f"{base_url}/{api_key}/I1250/json/{start}/{end}/"
-            f"PRDLST_DCNM={encoded}"
-        )
+    while (
+        start <= target_candidates
+        and len(all_data) < target_candidates
+    ):
+        end = min(start + page_size - 1, target_candidates)
+        url = f"{base_url}/{api_key}/I1250/json/{start}/{end}"
+        if params:
+            url += f"/{params}"
+
         try:
             data = _api_get(url, timeout=60, retries=3, log=log)
             svc = data.get("I1250", {})
@@ -174,15 +207,32 @@ def _fetch_with_term(
 
             rows = svc.get("row", [])
             total = svc.get("total_count", "0")
-            matched = [
-                r for r in rows
-                if _normalize(r.get("PRDLST_DCNM", "")) == norm_target
-            ]
-            all_data.extend(matched)
+            fetched_total += len(rows)
 
+            page_matched = []
+            for r in rows:
+                # 1) 식품유형 정확 매칭 (요청 시)
+                if use_exact_match and norm_target:
+                    if _normalize(
+                        r.get("PRDLST_DCNM", "")
+                    ) != norm_target:
+                        skipped_type += 1
+                        continue
+                # 2) 신고일 컷 (PRMS_DT는 YYYYMMDD 또는 YYYY-MM-DD)
+                if min_prms_dt:
+                    prms = (
+                        r.get("PRMS_DT", "") or ""
+                    ).replace("-", "").replace(".", "")[:8]
+                    if prms and prms < min_prms_dt:
+                        skipped_old += 1
+                        continue
+                page_matched.append(r)
+
+            all_data.extend(page_matched)
             log(
-                f"📦 {start}~{end} → {len(matched)}/{len(rows)}건 "
-                f"(누적: {len(all_data)} / DB: {total})"
+                f"📦 {start}~{end} → 매칭 {len(page_matched)}/{len(rows)} "
+                f"(누적: {len(all_data)}, 유형불일치: {skipped_type}, "
+                f"날짜컷: {skipped_old}, DB: {total})"
             )
 
             if len(rows) < page_size:
@@ -194,39 +244,69 @@ def _fetch_with_term(
         except Exception as e:
             consec_fails += 1
             log(f"⚠️ {type(e).__name__}: {e}")
-
-            # HTTPS에서 연속 실패 → HTTP로 자동 전환
             if consec_fails >= 2 and base_url.startswith("https://"):
-                http_base = base_url.replace("https://", "http://", 1)
-                log(f"🔄 HTTPS 연속 실패 → HTTP로 전환 시도")
+                http_base = base_url.replace(
+                    "https://", "http://", 1
+                )
+                log("🔄 HTTPS 연속 실패 → HTTP 전환")
                 base_url = http_base
                 st.session_state["_pmr_api_base"] = http_base
                 consec_fails = 0
                 continue
-
             if consec_fails >= 3:
                 log("⛔ 3회 연속 실패 - 중단")
                 break
 
+    # 최신 신고일 순으로 정렬 (PRMS_DT 내림차순)
+    def _prms_key(r):
+        d = (r.get("PRMS_DT", "") or "")
+        return d.replace("-", "").replace(".", "")[:8]
+
+    all_data.sort(key=_prms_key, reverse=True)
+    log(
+        f"🔢 후보 {len(all_data)}건 PRMS_DT 내림차순 정렬 → "
+        f"상위 {min(max_rows, len(all_data))}건 반환"
+    )
     return all_data[:max_rows]
 
 
-def _fetch_data(api_key, food_type, max_rows, log):
+def _fetch_data(
+    api_key, food_type, max_rows, log,
+    product_name="", min_prms_dt="",
+):
     base_url = _find_working_base(api_key, log=log)
     proto = base_url.split("://")[0]
-    terms = _get_search_terms(food_type)
 
+    # 식품유형이 비어있으면 (전체 검색) - 제품명만으로 검색
+    if not food_type:
+        log(f"🚀 전체 식품유형 + 제품명='{product_name}' 검색 ({proto})")
+        return _fetch_with_term(
+            base_url, api_key, "", "", max_rows, log,
+            product_name=product_name,
+            min_prms_dt=min_prms_dt,
+            use_exact_match=False,
+        )
+
+    # 식품유형 지정된 경우 - 검색어 변형 시도
+    terms = _get_search_terms(food_type)
     for term in terms:
         if term != food_type:
             log(f"🚀 {food_type} → '{term}'로 검색 ({proto})")
         else:
             log(f"🚀 {food_type} 수집 시작 ({proto})")
+        if product_name:
+            log(f"   + 제품명 필터: '{product_name}'")
+        if min_prms_dt:
+            log(f"   + 신고일 컷: {min_prms_dt} 이후")
 
         result = _fetch_with_term(
-            base_url, api_key, term, food_type, max_rows, log
+            base_url, api_key, term, food_type, max_rows, log,
+            product_name=product_name,
+            min_prms_dt=min_prms_dt,
+            use_exact_match=True,
         )
         if result:
-            log(f"✅ '{term}' 검색으로 {len(result)}건 수집 성공!")
+            log(f"✅ '{term}' 검색으로 {len(result)}건 수집!")
             return result
         else:
             log(f"⚠️ '{term}' 검색 0건 — 다음 검색어 시도")
@@ -235,10 +315,10 @@ def _fetch_data(api_key, food_type, max_rows, log):
 
 
 def _render_api_mode():
-    st.subheader("📡 API 조회 (음료 카테고리)")
+    st.subheader("📡 API 조회")
     st.caption(
-        "I1250 공식 API. 음료 17종 카테고리 한정. "
-        "빠르고 안정적이며 IP 차단 위험 없음."
+        "I1250 공식 API. 빠르고 안정적이며 IP 차단 위험 없음. "
+        "음료·과자·빵 등 모든 식품유형 검색 가능."
     )
 
     # 컨테이너 환경에서는 한미 국제 구간 지연 안내
@@ -248,9 +328,45 @@ def _render_api_mode():
             "느려서 종종 타임아웃이 발생할 수 있습니다. "
             "자동 재시도(3회) + HTTPS↔HTTP fallback이 적용되어 있어 "
             "**대부분 결국 성공**하지만, 시간이 더 걸립니다.\n\n"
-            "🚀 더 빠르고 안정적인 사용은 **로컬 PC 실행** 권장 — "
-            "🌐 웹 수집 모드의 PowerShell 원라이너 가이드 참고."
+            "🚀 더 빠르고 안정적인 사용은 **로컬 PC 실행** 권장."
         )
+
+    # 전체 식품유형 옵션 (음료 17종 + 추가 카테고리)
+    # 정확한 식품안전나라 분류명을 따라야 PRDLST_DCNM 매칭됨
+    ALL_FOOD_TYPES = [
+        # 음료
+        "과.채주스", "과.채음료", "농축과.채즙",
+        "탄산음료", "탄산수",
+        "두유", "가공두유", "원액두유",
+        "인삼.홍삼음료", "혼합음료", "유산균음료",
+        "음료베이스", "효모음료",
+        "커피", "침출차", "고형차", "액상차",
+        # 과자/빵/캔디
+        "과자", "캔디류", "츄잉껌", "초콜릿류",
+        "빵류", "떡류",
+        # 빙과/유제품
+        "빙과류", "아이스크림류", "아이스크림믹스류",
+        "우유류", "가공유류", "산양유", "발효유류",
+        "치즈류", "버터류", "분유류", "조제유류",
+        # 식육/수산
+        "식육가공품", "햄류", "소시지류", "베이컨류",
+        "건조저장육류", "수산물가공품", "어육가공품",
+        "젓갈류", "건포류",
+        # 면/즉석/조미
+        "면류", "즉석조리식품", "즉석섭취식품",
+        "즉석조리식품류", "조미식품",
+        "장류", "고추장", "된장", "혼합장", "춘장", "청국장", "간장",
+        "복합조미식품", "마요네즈", "토마토케첩",
+        "드레싱", "소스류",
+        # 절임/조림
+        "조림식품", "절임식품", "김치류", "절임류",
+        # 건강/특수
+        "건강기능식품",
+        "특수영양식품", "특수의료용도식품",
+        # 기타
+        "농산가공식품류", "기타가공품", "엿류", "당류가공품",
+        "주류",
+    ]
 
     with st.sidebar:
         st.markdown("### 🔑 API 키")
@@ -259,14 +375,112 @@ def _render_api_mode():
             type="password",
             key="_pmr_api_key",
         )
-        st.markdown("### 🍹 조회 설정")
-        food_type = st.selectbox(
-            "식품유형", DRINK_TYPES, key="_pmr_api_food_type"
+
+        st.markdown("### 🔍 검색 조건")
+
+        # 식품유형 - 드롭다운 + (전체) 옵션 + 직접 입력
+        food_type_options = (
+            ["(전체 - 제품명만 검색)"] + ALL_FOOD_TYPES
         )
+        default_idx = (
+            food_type_options.index("혼합음료")
+            if "혼합음료" in food_type_options else 0
+        )
+        food_type_sel = st.selectbox(
+            "식품유형",
+            options=food_type_options,
+            index=default_idx,
+            help=(
+                "원하는 식품유형 선택. '(전체)' 선택 시 "
+                "제품명을 반드시 입력해야 함."
+            ),
+            key="_pmr_api_food_type",
+        )
+        food_type = (
+            ""
+            if food_type_sel.startswith("(전체")
+            else food_type_sel
+        )
+
+        # 직접 입력 (목록에 없는 유형용)
+        with st.expander("📝 직접 입력 (목록에 없는 유형)"):
+            food_type_custom = st.text_input(
+                "식품유형 직접 입력",
+                value="",
+                placeholder="예: 가공밥",
+                help=(
+                    "위 드롭다운 대신 사용할 정확한 분류명. "
+                    "마침표(.) 포함 그대로."
+                ),
+                key="_pmr_api_food_custom",
+            )
+            if food_type_custom.strip():
+                food_type = food_type_custom.strip()
+                st.caption(f"💡 직접 입력 사용: '{food_type}'")
+
+        # 제품명 (선택)
+        product_name = st.text_input(
+            "제품명 (선택)",
+            value="",
+            placeholder="예: 콜라겐, 아메리카노",
+            help=(
+                "제품명 키워드로 좁히고 싶을 때만 입력. "
+                "비워두면 식품유형 전체."
+            ),
+            key="_pmr_api_product",
+        )
+
+        # 입력 검증
+        if not food_type and not product_name.strip():
+            st.warning(
+                "⚠️ 식품유형 '전체' 시에는 "
+                "**제품명 필수**."
+            )
+
+        st.markdown("### 📅 신고일 필터 (옵션)")
+        st.caption(
+            "옛날 데이터 제외하고 최근 신고만 보고 싶을 때 사용. "
+            "I1250 API는 신고일 정렬을 지원하지 않아, 클라이언트 측에서 "
+            "**충분한 후보를 가져온 뒤 필터링·재정렬**합니다."
+        )
+        date_filter_mode = st.radio(
+            "기간 제한",
+            ["제한 없음", "최근 6개월", "최근 1년", "최근 2년", "직접 지정"],
+            index=2,  # 최근 1년 기본
+            key="_pmr_api_date_filter",
+            label_visibility="collapsed",
+        )
+        min_prms_dt = ""
+        from datetime import datetime as _dt, timedelta as _td
+        if date_filter_mode == "최근 6개월":
+            min_prms_dt = (_dt.now() - _td(days=180)).strftime("%Y%m%d")
+        elif date_filter_mode == "최근 1년":
+            min_prms_dt = (_dt.now() - _td(days=365)).strftime("%Y%m%d")
+        elif date_filter_mode == "최근 2년":
+            min_prms_dt = (_dt.now() - _td(days=730)).strftime("%Y%m%d")
+        elif date_filter_mode == "직접 지정":
+            from_date = st.date_input(
+                "이 날짜 이후 신고 건만",
+                value=_dt.now() - _td(days=365),
+                key="_pmr_api_from_date",
+            )
+            min_prms_dt = from_date.strftime("%Y%m%d")
+        if min_prms_dt:
+            st.caption(f"📅 신고일 컷: **{min_prms_dt}** 이후")
+
+        st.markdown("### 📊 수집 범위")
         max_rows = st.slider(
-            "최대 수집 건수", 10, 1000, 200, step=10,
+            "최대 수집 건수",
+            min_value=10, max_value=2000,
+            value=200, step=10,
             key="_pmr_api_max",
+            help=(
+                "API는 식품유형 정확 매칭을 위해 내부적으로 "
+                "이 값의 3배 후보를 가져온 뒤 정렬·추리므로 "
+                "큰 값은 시간이 더 걸립니다."
+            ),
         )
+
         st.markdown("---")
         run = st.button(
             "🚀 조회 시작",
@@ -290,6 +504,13 @@ def _render_api_mode():
     if not run:
         return
 
+    if not food_type and not product_name.strip():
+        st.error(
+            "❌ 식품유형 '(전체)' 선택 시에는 "
+            "**제품명을 반드시 입력**해야 합니다."
+        )
+        return
+
     log_box = st.empty()
     log_lines = []
 
@@ -298,11 +519,18 @@ def _render_api_mode():
         log_box.code("\n".join(log_lines))
 
     t0 = time.time()
-    raw_rows = _fetch_data(api_key, food_type, max_rows, log)
+    raw_rows = _fetch_data(
+        api_key, food_type, max_rows, log,
+        product_name=product_name.strip(),
+        min_prms_dt=min_prms_dt,
+    )
     elapsed = time.time() - t0
 
     if not raw_rows:
-        st.error("❌ 수집된 데이터가 없습니다. API 키를 확인하세요.")
+        st.error(
+            "❌ 수집된 데이터가 없습니다. "
+            "검색 조건을 완화하거나 API 키를 확인해주세요."
+        )
         return
 
     df = pd.DataFrame(raw_rows)
@@ -314,12 +542,13 @@ def _render_api_mode():
         ).reset_index(drop=True)
 
     st.success(f"✅ {len(df)}건 수집 ({elapsed:.1f}초)")
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("수집 건수", f"{len(df)}건")
     if "제조사" in df.columns:
         c2.metric("제조사 수", f"{df['제조사'].nunique()}개소")
     if "보고일자" in df.columns:
         c3.metric("최근 보고일", df["보고일자"].max())
+        c4.metric("가장 오래된", df["보고일자"].min())
 
     st.markdown("---")
     show = [
@@ -331,12 +560,21 @@ def _render_api_mode():
     st.dataframe(df[show], use_container_width=True, height=500)
     st.caption(f"총 {len(df)}건")
 
+    # 파일명 구성
+    parts = []
+    if food_type:
+        parts.append(food_type.replace(".", "_"))
+    if product_name.strip():
+        parts.append(product_name.strip())
+    if not parts:
+        parts.append("전체")
+    name_prefix = "_".join(parts)
+
     csv = df.to_csv(index=False).encode("utf-8-sig")
     st.download_button(
         "📥 CSV 다운로드",
         csv,
-        f"{food_type.replace('.', '_')}_"
-        f"{datetime.now():%Y%m%d_%H%M}.csv",
+        f"{name_prefix}_{datetime.now():%Y%m%d_%H%M}.csv",
         "text/csv",
         use_container_width=True,
         key="_pmr_api_dl",
@@ -516,6 +754,76 @@ def _check_scraper_available():
     return True
 
 
+# ============================================================
+# 식품유형 dropdown용 캐시
+# ============================================================
+# Fallback 식품유형 목록 - 사이트 추출 실패 시 즉시 사용 가능한 주요 유형
+# (식품안전나라에서 자주 검색되는 유형들 수동 큐레이션)
+_FALLBACK_FOOD_TYPES = [
+    # 음료
+    "혼합음료", "과채음료", "과채주스", "농축과채즙",
+    "탄산음료", "탄산수", "두유", "가공두유", "원액두유",
+    "인삼홍삼음료", "유산균음료", "음료베이스", "효모음료",
+    "커피", "침출차", "고형차", "액상차",
+    # 과자/빵
+    "과자", "캔디류", "츄잉껌", "초콜릿류", "빵류", "떡류",
+    # 빙과/유제품
+    "빙과", "아이스크림류", "아이스크림믹스류",
+    "우유", "가공유", "산양유", "발효유",
+    "치즈류", "버터류", "분유", "조제유류",
+    # 식육/수산
+    "식육가공품", "햄류", "소시지류", "베이컨류", "건조저장육류",
+    "수산물가공품", "어육가공품", "젓갈류",
+    # 면/즉석/조미
+    "면류", "즉석조리식품", "즉석섭취식품",
+    "장류", "고추장", "된장", "간장", "조미식품",
+    "드레싱", "마요네즈", "케첩",
+    # 기타
+    "조림식품", "절임식품", "젓갈류", "김치류",
+    "건강기능식품", "특수의료용도식품",
+    "농산가공식품류", "기타가공품",
+]
+
+
+@st.cache_data(ttl=86400, show_spinner=False)  # 24시간 캐시
+def _get_food_types_cached() -> list:
+    """사이트에서 식품유형 목록을 한 번만 가져와 캐시.
+
+    실패하면 빈 리스트 반환 → 호출자가 fallback 처리.
+    """
+    try:
+        result_file = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8",
+        )
+        result_file.close()
+
+        cmd = [
+            sys.executable, str(SCRAPER_PATH),
+            "--list-food-types", "--headless",
+            "--output-file", result_file.name,
+        ]
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True,
+            encoding="utf-8", timeout=120,  # 180 → 120초로 단축
+        )
+        if proc.returncode != 0:
+            return []
+        try:
+            with open(result_file.name, "r", encoding="utf-8") as f:
+                return json.load(f)
+        finally:
+            try:
+                os.unlink(result_file.name)
+            except Exception:
+                pass
+    except Exception:
+        return []
+
+
+def _clear_food_types_cache():
+    _get_food_types_cached.clear()
+
+
 def _render_scraper_mode():
     # 헤더 (먼저 표시)
     st.subheader("🌐 웹 수집 (전체 식품유형 + 상세정보)")
@@ -538,12 +846,98 @@ def _render_scraper_mode():
 
     with st.sidebar:
         st.markdown("### ⚙️ 수집 설정")
-        food_type = st.text_input(
+
+        # ────────── 식품유형 선택 ──────────
+        # 기본은 폴백 목록 (즉시 사용). 사용자가 명시적으로
+        # "사이트에서 받기" 누른 경우에만 실제 추출 실행.
+        if st.session_state.get("_pmr_scr_types_loaded") == "fetched":
+            food_types = _get_food_types_cached() or _FALLBACK_FOOD_TYPES
+            loaded_label = (
+                "📋 사이트 추출"
+                if food_types != _FALLBACK_FOOD_TYPES
+                else "📋 기본 목록 (사이트 추출 실패)"
+            )
+        else:
+            food_types = _FALLBACK_FOOD_TYPES
+            loaded_label = "📋 기본 목록"
+
+        st.caption(f"{loaded_label} ({len(food_types)}종)")
+
+        options = ["(전체 - 제품명만 검색)"] + sorted(set(food_types))
+        default_index = (
+            options.index("혼합음료") if "혼합음료" in options else 0
+        )
+        selected = st.selectbox(
             "품목유형",
-            value="혼합음료",
-            help="예: 혼합음료, 과채음료, 과자, 빵류, 빙과, 액상차",
+            options=options,
+            index=default_index,
+            help=(
+                "원하는 식품유형 선택. '전체' 선택 시에는 "
+                "제품명을 반드시 입력해야 함."
+            ),
             key="_pmr_scr_food",
         )
+        food_type_value = (
+            "" if selected.startswith("(전체") else selected
+        )
+
+        # 식품유형 목록 새로고침 (사이트에서 직접 추출)
+        with st.expander("🔄 식품유형 목록 갱신 (선택)", expanded=False):
+            st.caption(
+                "기본 목록에 없는 유형이 필요하면 "
+                "사이트에서 직접 추출하세요 (1~2분 소요)."
+            )
+            if st.button(
+                "🌐 사이트에서 최신 목록 가져오기",
+                key="_pmr_scr_fetch_types",
+                use_container_width=True,
+            ):
+                with st.spinner(
+                    "사이트에서 식품유형 추출 중... (최대 2분)"
+                ):
+                    _clear_food_types_cache()
+                    fetched = _get_food_types_cached()
+                if fetched:
+                    st.session_state["_pmr_scr_types_loaded"] = "fetched"
+                    st.success(f"✅ {len(fetched)}개 추출")
+                    st.rerun()
+                else:
+                    st.warning(
+                        "사이트 추출 실패 - 기본 목록 그대로 사용"
+                    )
+
+            # 직접 입력 옵션 (목록에 없는 유형)
+            custom_type = st.text_input(
+                "직접 입력 (위 목록에 없는 경우)",
+                value="",
+                placeholder="예: 가공두유",
+                help="입력하면 위 드롭다운 선택을 무시하고 이 값을 사용",
+                key="_pmr_scr_food_custom",
+            )
+            if custom_type.strip():
+                food_type_value = custom_type.strip()
+                st.caption(f"💡 직접 입력 사용: '{food_type_value}'")
+
+        # ────────── 제품명 검색 ──────────
+        product_name = st.text_input(
+            "제품명 (선택)",
+            value="",
+            placeholder="예: 콜라겐, 아메리카노",
+            help=(
+                "특정 제품명 키워드로 좁히고 싶을 때만 입력. "
+                "비워두면 선택된 식품유형 전체 검색."
+            ),
+            key="_pmr_scr_product",
+        )
+
+        # 입력 검증
+        if not food_type_value and not product_name.strip():
+            st.warning(
+                "⚠️ 품목유형 '전체' 선택 시에는 "
+                "**제품명을 반드시 입력**해주세요."
+            )
+
+        st.markdown("---")
         st.markdown("**수집 범위**")
         limit_mode = st.radio(
             "범위",
@@ -619,12 +1013,13 @@ def _render_scraper_mode():
         )
         return
 
-    if not food_type.strip():
-        st.error("품목유형을 입력해주세요.")
+    if not food_type_value and not product_name.strip():
+        st.error("품목유형을 선택하거나 제품명을 입력해주세요.")
         return
 
     _run_scraper_subprocess(
-        food_type=food_type.strip(),
+        food_type=food_type_value,
+        product_name=product_name.strip(),
         max_items=max_items,
         max_pages=max_pages,
         page_size=page_size,
@@ -675,7 +1070,8 @@ def _render_scraper_inspect(headless):
 
 
 def _run_scraper_subprocess(
-    food_type, max_items, max_pages, page_size, headless, delay,
+    food_type, product_name, max_items, max_pages,
+    page_size, headless, delay,
 ):
     result_file = tempfile.NamedTemporaryFile(
         mode="w", suffix=".json", delete=False, encoding="utf-8",
@@ -685,6 +1081,7 @@ def _run_scraper_subprocess(
     cmd = [
         sys.executable, str(SCRAPER_PATH),
         "--food-type", food_type,
+        "--product-name", product_name,
         "--page-size", str(int(page_size)),
         "--delay", str(delay),
         "--output-file", result_file.name,
@@ -784,7 +1181,17 @@ def _run_scraper_subprocess(
             st.warning("수집된 항목이 없습니다.")
             return
 
-        _render_scraper_results(results, food_type)
+        # 결과 파일명용 라벨 만들기 (식품유형 + 제품명 조합)
+        if food_type and product_name:
+            query_label = f"{food_type}_{product_name}"
+        elif food_type:
+            query_label = food_type
+        elif product_name:
+            query_label = product_name
+        else:
+            query_label = "검색"
+
+        _render_scraper_results(results, query_label)
 
     except subprocess.TimeoutExpired:
         st.error("실행 시간 초과")
