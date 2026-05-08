@@ -9,7 +9,7 @@ v4 핵심 개선:
 """
 from __future__ import annotations
 
-SCRAPER_VERSION = "v4.3 (2026-05)"
+SCRAPER_VERSION = "v5.0 (2026-05)"
 
 import argparse
 import json
@@ -579,6 +579,205 @@ def _open_detail_in_new_tab(
 
 
 # ============================================================
+# 폼 입력 헬퍼 (food_type / product_name 공용)
+# ============================================================
+def _fill_search_field(
+    page: Page,
+    value: str,
+    label_texts: list[str],
+    selectors: list[str],
+    field_label: str,
+    required: bool = True,
+) -> bool:
+    """검색 폼 필드에 값 입력. label/selector 후보를 순차 시도.
+
+    찾지 못했고 required=True면 진단 정보 덤프 후 RuntimeError.
+    required=False면 경고 로그 후 False 반환 (선택적 필드).
+    """
+    # 1) get_by_label
+    for label_text in label_texts:
+        try:
+            loc = page.get_by_label(label_text, exact=False).first
+            if loc.count():
+                loc.fill(value)
+                log(f"  → {field_label}: get_by_label('{label_text}') 사용")
+                return True
+        except Exception:
+            continue
+
+    # 2) 셀렉터 후보
+    for sel in selectors:
+        try:
+            inp = page.locator(sel).first
+            if inp.count() and inp.is_visible():
+                inp.fill(value)
+                log(f"  → {field_label}: {sel} 사용")
+                return True
+        except Exception:
+            continue
+
+    # 못 찾음
+    if not required:
+        log(f"  ⚠️ {field_label} 입력 필드 못 찾음 (선택 필드라 계속 진행)")
+        return False
+
+    # required: 진단 + 예외
+    log(f"⚠️ {field_label} 입력 필드 못 찾음 - 진단 덤프:")
+    try:
+        import tempfile
+        debug_dir = tempfile.gettempdir()
+        html_path = os.path.join(debug_dir, "food_safety_debug.html")
+        png_path = os.path.join(debug_dir, "food_safety_debug.png")
+        try:
+            with open(html_path, "w", encoding="utf-8") as f:
+                f.write(page.content())
+            log(f"  📄 HTML 저장: {html_path}")
+        except Exception:
+            pass
+        try:
+            page.screenshot(path=png_path, full_page=True)
+            log(f"  🖼️ 스크린샷 저장: {png_path}")
+        except Exception:
+            pass
+        for inp in page.locator("input:visible").all()[:25]:
+            try:
+                info = {
+                    "type": inp.get_attribute("type"),
+                    "name": inp.get_attribute("name"),
+                    "id": inp.get_attribute("id"),
+                    "placeholder": inp.get_attribute("placeholder"),
+                }
+                log(f"    {dict((k, v) for k, v in info.items() if v)}")
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    raise RuntimeError(
+        f"{field_label} 입력 필드를 찾을 수 없습니다. "
+        f"저장된 HTML/스크린샷을 확인해주세요."
+    )
+
+
+# ============================================================
+# 식품유형 목록 추출 (Streamlit dropdown 채우기용)
+# ============================================================
+def list_food_types(headless: bool = True) -> list[str]:
+    """검색 페이지의 품목유형 자동완성 드롭다운에서 가능한 모든 식품유형 추출.
+
+    동작 방식:
+    1. 검색 페이지 진입
+    2. 품목유형 input에 한글 자모를 하나씩 입력 → 자동완성 옵션 캡처
+    3. 옵션들 합쳐서 정렬 후 반환
+
+    이 사이트는 select 박스가 아니라 자동완성 input이라
+    한글 자모 단위로 prefix 검색해야 모든 항목 발견 가능.
+    """
+    types: set[str] = set()
+    syllable_starts = list("가나다라마바사아자차카타파하")
+
+    with sync_playwright() as p:
+        browser = _launch_chromium(p, headless)
+        context = browser.new_context(
+            locale="ko-KR",
+            timezone_id="Asia/Seoul",
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+            viewport={"width": 1280, "height": 900},
+        )
+        page = context.new_page()
+
+        try:
+            _robust_goto(
+                page, "https://www.foodsafetykorea.go.kr/", timeout=30000
+            )
+            time.sleep(1.5)
+            search_url_no_hash = SEARCH_URL.split("#")[0]
+            _robust_goto(page, search_url_no_hash, timeout=60000)
+            time.sleep(2)
+        except Exception as e:
+            log(f"⚠️ 페이지 진입 실패: {e}")
+            browser.close()
+            return []
+
+        # 품목유형 input 찾기
+        input_loc = None
+        for sel in [
+            "input[name='prdlstNm']",
+            "input[name='prdlstDcnm']",
+            "input[id*='prdlst']",
+            "label:has-text('품목유형') ~ input",
+            "th:has-text('품목유형') ~ td input",
+        ]:
+            try:
+                loc = page.locator(sel).first
+                if loc.count() and loc.is_visible():
+                    input_loc = loc
+                    break
+            except Exception:
+                continue
+
+        if input_loc is None:
+            log("⚠️ 품목유형 입력 필드 못 찾음 - 식품유형 목록 추출 불가")
+            browser.close()
+            return []
+
+        # 각 자모로 prefix 입력 → 자동완성 옵션 수집
+        for ch in syllable_starts:
+            try:
+                input_loc.click()
+                input_loc.fill("")
+                time.sleep(0.2)
+                input_loc.type(ch, delay=80)
+                time.sleep(0.8)  # 자동완성 ajax 응답 대기
+
+                # 자동완성 옵션 셀렉터 후보
+                option_selectors = [
+                    "ul.ui-autocomplete li",
+                    ".autocomplete-result li",
+                    "[role='listbox'] [role='option']",
+                    "ul.search_list li",
+                    ".dropdown-menu li",
+                ]
+                found_any = False
+                for opt_sel in option_selectors:
+                    try:
+                        opts = page.locator(opt_sel).all()
+                        if not opts:
+                            continue
+                        for opt in opts:
+                            try:
+                                if not opt.is_visible():
+                                    continue
+                                txt = (opt.inner_text() or "").strip()
+                                if txt and 2 <= len(txt) <= 30:
+                                    types.add(txt)
+                                    found_any = True
+                            except Exception:
+                                continue
+                        if found_any:
+                            break
+                    except Exception:
+                        continue
+
+                # ESC로 자동완성 닫기
+                page.keyboard.press("Escape")
+                time.sleep(0.2)
+            except Exception as e:
+                log(f"  '{ch}' 시도 중 오류: {e}")
+                continue
+
+        browser.close()
+
+    result = sorted(types)
+    log(f"✅ 식품유형 {len(result)}개 추출")
+    return result
+
+
+# ============================================================
 # 진단 모드
 # ============================================================
 def inspect_site(headless: bool = False) -> None:
@@ -649,6 +848,7 @@ def inspect_site(headless: bool = False) -> None:
 # ============================================================
 def scrape(
     food_type: str,
+    product_name: str = "",
     max_items: int | None = None,
     max_pages: int | None = None,
     page_size: int = 50,
@@ -723,133 +923,51 @@ def scrape(
         log(f"  현재 URL: {page.url}")
         log(f"  페이지 제목: {page.title()[:60]}")
 
-        # 2. 품목유형 입력
-        log(f"품목유형 입력: '{food_type}'")
-        filled = False
-        attempt_errors: list[str] = []
-
-        # 2-a) get_by_label
-        for label_text in ["품목유형", "품목 유형"]:
-            try:
-                loc = page.get_by_label(label_text, exact=False).first
-                if loc.count():
-                    loc.fill(food_type)
-                    filled = True
-                    log(f"  → get_by_label('{label_text}') 사용")
-                    break
-            except Exception as e:
-                attempt_errors.append(
-                    f"get_by_label('{label_text}'): {type(e).__name__}"
-                )
-
-        # 2-b) 셀렉터 후보 (확장)
-        if not filled:
-            for sel in [
-                "input[name='prdlstNm']",
-                "input[name='prdlstDcnm']",
-                "input[name='PRDLST_NM']",
-                "input[id*='prdlst']",
-                "input[id*='Prdlst']",
-                "input[placeholder*='품목유형']",
-                "input[title*='품목유형']",
-                # 라벨/헤더 형제 패턴
-                "label:has-text('품목유형') ~ input",
-                "th:has-text('품목유형') ~ td input",
-                "th:has-text('품목유형') + td input",
-                "td:has-text('품목유형') + td input",
-            ]:
-                try:
-                    inp = page.locator(sel).first
-                    if inp.count() and inp.is_visible():
-                        inp.fill(food_type)
-                        filled = True
-                        log(f"  → {sel} 사용")
-                        break
-                except Exception as e:
-                    attempt_errors.append(
-                        f"{sel}: {type(e).__name__}"
-                    )
-
-        if not filled:
-            # 자동 진단 - 다음 시도에서 즉시 정답을 알 수 있도록
-            log("⚠️ 품목유형 입력 필드 못 찾음 - 자동 진단 정보 덤프:")
-
-            # HTML과 스크린샷 저장 (사용자가 분석할 수 있도록)
-            import tempfile
-            debug_dir = tempfile.gettempdir()
-            html_path = os.path.join(
-                debug_dir, "food_safety_debug.html"
+        # 2. 품목유형 입력 (빈 문자열이면 건너뜀)
+        if food_type and food_type.strip():
+            _fill_search_field(
+                page, food_type.strip(),
+                label_texts=["품목유형", "품목 유형"],
+                selectors=[
+                    "input[name='prdlstNm']",
+                    "input[name='prdlstDcnm']",
+                    "input[name='PRDLST_NM']",
+                    "input[id*='prdlst']",
+                    "input[id*='Prdlst']",
+                    "input[placeholder*='품목유형']",
+                    "input[title*='품목유형']",
+                    "label:has-text('품목유형') ~ input",
+                    "th:has-text('품목유형') ~ td input",
+                    "th:has-text('품목유형') + td input",
+                    "td:has-text('품목유형') + td input",
+                ],
+                field_label="품목유형",
+                required=not (product_name and product_name.strip()),
             )
-            png_path = os.path.join(
-                debug_dir, "food_safety_debug.png"
-            )
-            try:
-                with open(html_path, "w", encoding="utf-8") as f:
-                    f.write(page.content())
-                log(f"  📄 페이지 HTML 저장: {html_path}")
-            except Exception as e:
-                log(f"  HTML 저장 실패: {e}")
-            try:
-                page.screenshot(path=png_path, full_page=True)
-                log(f"  🖼️ 스크린샷 저장: {png_path}")
-            except Exception as e:
-                log(f"  스크린샷 저장 실패: {e}")
+        else:
+            log("품목유형 입력 생략 (전체 검색 모드)")
 
-            # 가시 input
-            try:
-                all_inputs = page.locator("input:visible").all()
-                log(f"  ▶ 가시 input {len(all_inputs)}개:")
-                for i, inp in enumerate(all_inputs[:25]):
-                    try:
-                        info = {
-                            "type": inp.get_attribute("type"),
-                            "name": inp.get_attribute("name"),
-                            "id": inp.get_attribute("id"),
-                            "placeholder": inp.get_attribute("placeholder"),
-                            "title": inp.get_attribute("title"),
-                        }
-                        info_clean = {
-                            k: v for k, v in info.items() if v
-                        }
-                        log(f"    [{i}] {info_clean}")
-                    except Exception:
-                        continue
-            except Exception as e:
-                log(f"  input 덤프 실패: {e}")
-
-            # 모든 input (hidden 포함)도 카운트
-            try:
-                hidden_count = page.locator("input").count()
-                log(f"  ▶ 전체 input (hidden 포함) {hidden_count}개")
-            except Exception:
-                pass
-
-            # 가시 label
-            try:
-                all_labels = page.locator("label:visible").all()
-                log(f"  ▶ 가시 label {len(all_labels)}개:")
-                for i, lbl in enumerate(all_labels[:20]):
-                    try:
-                        txt = (lbl.inner_text() or "").strip()[:30]
-                        for_attr = lbl.get_attribute("for")
-                        log(f"    [{i}] '{txt}' for={for_attr}")
-                    except Exception:
-                        continue
-            except Exception:
-                pass
-
-            # 페이지의 텍스트 샘플 (블록 페이지인지 확인용)
-            try:
-                body_text = page.locator("body").inner_text()[:500]
-                log(f"  ▶ 페이지 텍스트(첫 500자): {body_text}")
-            except Exception:
-                pass
-
-            log(f"  ▶ 시도 실패 셀렉터: {len(attempt_errors)}개")
-
-            raise RuntimeError(
-                "품목유형 입력 필드를 찾을 수 없습니다. 위 로그의 input/text 정보 "
-                "또는 저장된 HTML/스크린샷을 확인해주세요."
+        # 2-c. 제품명 입력 (선택)
+        if product_name and product_name.strip():
+            log(f"제품명 입력: '{product_name}'")
+            _fill_search_field(
+                page, product_name.strip(),
+                label_texts=["제품명", "품목명"],
+                selectors=[
+                    "input[name='prductNm']",
+                    "input[name='productNm']",
+                    "input[name='PRDUCT_NM']",
+                    "input[id*='prduct']",
+                    "input[id*='product']",
+                    "input[placeholder*='제품명']",
+                    "input[title*='제품명']",
+                    "label:has-text('제품명') ~ input",
+                    "th:has-text('제품명') ~ td input",
+                    "th:has-text('제품명') + td input",
+                    "td:has-text('제품명') + td input",
+                ],
+                field_label="제품명",
+                required=False,
             )
 
         # 3. 검색
@@ -985,7 +1103,14 @@ def scrape(
 # ============================================================
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--food-type", help="품목유형 (예: 혼합음료)")
+    parser.add_argument(
+        "--food-type", default="",
+        help="품목유형 (예: 혼합음료). 비워두면 제품명만으로 검색.",
+    )
+    parser.add_argument(
+        "--product-name", default="",
+        help="제품명 검색어 (선택)",
+    )
     parser.add_argument(
         "--max-items", "--max", type=int, default=None, dest="max_items",
     )
@@ -995,8 +1120,12 @@ def main() -> int:
     parser.add_argument("--delay", type=float, default=1.0)
     parser.add_argument("--inspect", action="store_true")
     parser.add_argument(
+        "--list-food-types", action="store_true",
+        help="식품유형 목록만 추출 (UI dropdown용)",
+    )
+    parser.add_argument(
         "--output-file",
-        help="결과 JSON을 쓸 파일 경로 (지정 시 stdout 대신 사용 - 파이프 버퍼 데드락 회피)",
+        help="결과 JSON을 쓸 파일 경로 (지정 시 stdout 대신 사용)",
     )
     args = parser.parse_args()
 
@@ -1006,18 +1135,31 @@ def main() -> int:
         if args.inspect:
             inspect_site(headless=args.headless)
             return 0
-        if not args.food_type:
-            emit("ERROR", "--food-type 필수")
+
+        if args.list_food_types:
+            types = list_food_types(headless=args.headless)
+            payload = json.dumps(types, ensure_ascii=False)
+            if args.output_file:
+                with open(args.output_file, "w", encoding="utf-8") as f:
+                    f.write(payload)
+                emit("LOG", f"식품유형 {len(types)}개 저장: {args.output_file}")
+            else:
+                print(payload)
+            return 0
+
+        if not args.food_type and not args.product_name:
+            emit("ERROR", "--food-type 또는 --product-name 중 하나 이상 필수")
             return 2
+
         results = scrape(
             food_type=args.food_type,
+            product_name=args.product_name,
             max_items=args.max_items,
             max_pages=args.max_pages,
             page_size=args.page_size,
             headless=args.headless,
             delay=args.delay,
         )
-        # 결과 출력: 파일이 지정되면 거기에, 아니면 stdout
         if args.output_file:
             try:
                 with open(args.output_file, "w", encoding="utf-8") as f:
