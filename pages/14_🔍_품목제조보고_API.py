@@ -151,14 +151,18 @@ def _fetch_with_term(
     use_exact_match=True, candidate_multiplier=5,
 ):
     """
-    I1250 API는 정렬 파라미터를 공식 지원 안 함 → 다음 전략 사용:
-    1. CHNG_DT 또는 PRMS_DT 범위 파라미터로 옛날 데이터 API 측에서 컷
-    2. 충분한 후보 가져오기 (max_rows × 5배수)
-    3. 클라이언트 측에서 PRMS_DT 내림차순 재정렬
+    I1250 API는 정렬 파라미터 / 날짜범위 파라미터를 지원 안 함.
+    → 안전한 전략:
+       1. 충분한 후보 가져오기 (max_rows × candidate_multiplier)
+       2. 클라이언트 측에서 식품유형 정확 매칭 + 신고일 컷
+       3. PRMS_DT 내림차순 재정렬 후 상위 N건 반환
 
     Args:
-        min_prms_dt: "YYYYMMDD" - 이보다 옛날은 폐기
-        candidate_multiplier: 최신순 추출용 후보 배수 (기본 5)
+        search_term: PRDLST_DCNM 검색어 (정확명 또는 변형)
+        food_type: 정확 매칭 기준 원본명 (전체검색 시 빈 문자열)
+        product_name: PRDLST_NM 추가 필터 (선택)
+        min_prms_dt: "YYYYMMDD" - 이보다 옛날은 클라이언트에서 폐기
+        candidate_multiplier: 후보 배수 (기본 5)
     """
     encoded_type = (
         urllib.parse.quote(search_term) if search_term else ""
@@ -168,26 +172,18 @@ def _fetch_with_term(
     )
     norm_target = _normalize(food_type) if food_type else ""
 
-    # API 파라미터 조합
+    # API 파라미터 (검증된 것만)
     params_list = []
     if encoded_type:
         params_list.append(f"PRDLST_DCNM={encoded_type}")
     if encoded_name:
         params_list.append(f"PRDLST_NM={encoded_name}")
-    # CHNG_DT 범위 - 옛날 데이터 API 측에서 컷 (정렬 파라미터 미지원 보완)
-    if min_prms_dt:
-        today_str = datetime.now().strftime("%Y%m%d")
-        params_list.append(f"CHNG_DT={min_prms_dt}..{today_str}")
-        log(
-            f"   📅 API 측 CHNG_DT 필터: {min_prms_dt}..{today_str}"
-        )
     params = "&".join(params_list) if params_list else ""
 
-    # 후보 확보량 - 정확 매칭이 필요하면 더 많이
+    # 후보 확보량
     if use_exact_match and food_type:
         target_candidates = max_rows * candidate_multiplier
     else:
-        # 식품유형 정확 매칭 불필요(전체검색)면 적게
         target_candidates = max_rows * 2
     target_candidates = min(target_candidates, 5000)
 
@@ -197,7 +193,6 @@ def _fetch_with_term(
     consec_fails = 0
     skipped_old = 0
     skipped_type = 0
-    chng_dt_param_failed = False  # 범위 파라미터 미지원 감지
 
     while (
         start <= target_candidates
@@ -216,26 +211,6 @@ def _fetch_with_term(
             if code == "INFO-300":
                 log("❌ 인증키 오류")
                 return []
-
-            # CHNG_DT 파라미터가 안 먹어 결과 없으면 → 파라미터 빼고 재시도
-            if (
-                code != "INFO-000"
-                and "CHNG_DT" in params
-                and not chng_dt_param_failed
-            ):
-                log(
-                    "⚠️ CHNG_DT 범위 파라미터 미지원 가능성 - "
-                    "파라미터 제거 후 클라이언트 필터로 전환"
-                )
-                params = "&".join(
-                    [p for p in params.split("&")
-                     if not p.startswith("CHNG_DT=")]
-                )
-                chng_dt_param_failed = True
-                # candidate를 더 늘려야 함 (API 측 필터 사라졌으므로)
-                target_candidates = min(max_rows * 10, 8000)
-                continue
-
             if code != "INFO-000" or not svc.get("row"):
                 break
 
@@ -251,7 +226,7 @@ def _fetch_with_term(
                     ) != norm_target:
                         skipped_type += 1
                         continue
-                # 2) 신고일 컷 (PRMS_DT 기준)
+                # 2) 신고일 컷 (클라이언트 측)
                 if min_prms_dt:
                     prms = (
                         (r.get("PRMS_DT", "") or "")
@@ -292,7 +267,7 @@ def _fetch_with_term(
                 log("⛔ 3회 연속 실패 - 중단")
                 break
 
-    # 최신 신고일 순으로 정렬 (PRMS_DT 내림차순)
+    # PRMS_DT 내림차순 정렬
     def _prms_key(r):
         d = (r.get("PRMS_DT", "") or "")
         return d.replace("-", "").replace(".", "")[:8]
