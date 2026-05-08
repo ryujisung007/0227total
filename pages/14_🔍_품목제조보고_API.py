@@ -148,18 +148,21 @@ def _get_search_terms(food_type: str) -> list:
 def _fetch_with_term(
     base_url, api_key, search_term, food_type, max_rows,
     log, product_name="", min_prms_dt="",
-    use_exact_match=True, candidate_multiplier=3,
+    use_exact_match=True, candidate_multiplier=5,
 ):
     """
+    I1250 API는 정렬 파라미터를 공식 지원 안 함 → 다음 전략 사용:
+    1. CHNG_DT 또는 PRMS_DT 범위 파라미터로 옛날 데이터 API 측에서 컷
+    2. 충분한 후보 가져오기 (max_rows × 5배수)
+    3. 클라이언트 측에서 PRMS_DT 내림차순 재정렬
+
     Args:
-        search_term: PRDLST_DCNM에 보낼 검색어 (식품유형 변형 포함)
-        food_type: 정확 매칭 기준이 되는 원본 식품유형 (전체 검색 시 빈 문자열)
-        product_name: PRDLST_NM 파라미터 추가 검색어
-        min_prms_dt: "YYYYMMDD" - 이 날짜 이전 데이터는 즉시 폐기
-        use_exact_match: True면 PRDLST_DCNM 정확 일치만 통과
-        candidate_multiplier: 최신순 정렬 위해 N배수 후보 확보 (3 = max_rows의 3배)
+        min_prms_dt: "YYYYMMDD" - 이보다 옛날은 폐기
+        candidate_multiplier: 최신순 추출용 후보 배수 (기본 5)
     """
-    encoded_type = urllib.parse.quote(search_term) if search_term else ""
+    encoded_type = (
+        urllib.parse.quote(search_term) if search_term else ""
+    )
     encoded_name = (
         urllib.parse.quote(product_name) if product_name else ""
     )
@@ -171,19 +174,30 @@ def _fetch_with_term(
         params_list.append(f"PRDLST_DCNM={encoded_type}")
     if encoded_name:
         params_list.append(f"PRDLST_NM={encoded_name}")
+    # CHNG_DT 범위 - 옛날 데이터 API 측에서 컷 (정렬 파라미터 미지원 보완)
+    if min_prms_dt:
+        today_str = datetime.now().strftime("%Y%m%d")
+        params_list.append(f"CHNG_DT={min_prms_dt}..{today_str}")
+        log(
+            f"   📅 API 측 CHNG_DT 필터: {min_prms_dt}..{today_str}"
+        )
     params = "&".join(params_list) if params_list else ""
 
-    # 정렬 후 max_rows 추리려면 더 많은 후보 필요
-    target_candidates = max_rows * candidate_multiplier
-    target_candidates = min(target_candidates, 5000)  # 안전 상한
+    # 후보 확보량 - 정확 매칭이 필요하면 더 많이
+    if use_exact_match and food_type:
+        target_candidates = max_rows * candidate_multiplier
+    else:
+        # 식품유형 정확 매칭 불필요(전체검색)면 적게
+        target_candidates = max_rows * 2
+    target_candidates = min(target_candidates, 5000)
 
     all_data = []
     start = 1
     page_size = 200
     consec_fails = 0
-    fetched_total = 0
     skipped_old = 0
     skipped_type = 0
+    chng_dt_param_failed = False  # 범위 파라미터 미지원 감지
 
     while (
         start <= target_candidates
@@ -202,27 +216,47 @@ def _fetch_with_term(
             if code == "INFO-300":
                 log("❌ 인증키 오류")
                 return []
+
+            # CHNG_DT 파라미터가 안 먹어 결과 없으면 → 파라미터 빼고 재시도
+            if (
+                code != "INFO-000"
+                and "CHNG_DT" in params
+                and not chng_dt_param_failed
+            ):
+                log(
+                    "⚠️ CHNG_DT 범위 파라미터 미지원 가능성 - "
+                    "파라미터 제거 후 클라이언트 필터로 전환"
+                )
+                params = "&".join(
+                    [p for p in params.split("&")
+                     if not p.startswith("CHNG_DT=")]
+                )
+                chng_dt_param_failed = True
+                # candidate를 더 늘려야 함 (API 측 필터 사라졌으므로)
+                target_candidates = min(max_rows * 10, 8000)
+                continue
+
             if code != "INFO-000" or not svc.get("row"):
                 break
 
             rows = svc.get("row", [])
             total = svc.get("total_count", "0")
-            fetched_total += len(rows)
 
             page_matched = []
             for r in rows:
-                # 1) 식품유형 정확 매칭 (요청 시)
+                # 1) 식품유형 정확 매칭
                 if use_exact_match and norm_target:
                     if _normalize(
                         r.get("PRDLST_DCNM", "")
                     ) != norm_target:
                         skipped_type += 1
                         continue
-                # 2) 신고일 컷 (PRMS_DT는 YYYYMMDD 또는 YYYY-MM-DD)
+                # 2) 신고일 컷 (PRMS_DT 기준)
                 if min_prms_dt:
                     prms = (
-                        r.get("PRMS_DT", "") or ""
-                    ).replace("-", "").replace(".", "")[:8]
+                        (r.get("PRMS_DT", "") or "")
+                        .replace("-", "").replace(".", "")[:8]
+                    )
                     if prms and prms < min_prms_dt:
                         skipped_old += 1
                         continue
@@ -232,10 +266,11 @@ def _fetch_with_term(
             log(
                 f"📦 {start}~{end} → 매칭 {len(page_matched)}/{len(rows)} "
                 f"(누적: {len(all_data)}, 유형불일치: {skipped_type}, "
-                f"날짜컷: {skipped_old}, DB: {total})"
+                f"날짜컷: {skipped_old}, DB총: {total})"
             )
 
             if len(rows) < page_size:
+                log("  ▣ 더 이상 데이터 없음")
                 break
             start += page_size
             time.sleep(0.3)
@@ -265,7 +300,7 @@ def _fetch_with_term(
     all_data.sort(key=_prms_key, reverse=True)
     log(
         f"🔢 후보 {len(all_data)}건 PRMS_DT 내림차순 정렬 → "
-        f"상위 {min(max_rows, len(all_data))}건 반환"
+        f"상위 {min(max_rows, len(all_data))}건"
     )
     return all_data[:max_rows]
 
