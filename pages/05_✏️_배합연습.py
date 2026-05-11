@@ -183,7 +183,7 @@ with right:
                         if "동일" in val: return "background-color: #D1FAE5"
                     return ""
 
-                styled = cmp_df.style.applymap(color_j, subset=["판정"]).format({
+                styled = cmp_df.style.map(color_j, subset=["판정"]).format({
                     "내 배합(%)": "{:.3f}", "표준(%)": "{:.3f}", "차이(%)": "{:.3f}",
                 })
                 st.dataframe(styled, use_container_width=True, hide_index=True)
