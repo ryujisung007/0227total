@@ -158,8 +158,14 @@ DEFAULT_KR_TICKERS = {
     "KOSPI": "^KS11",
     "KOSDAQ": "^KQ11",
     "삼성전자": "005930.KS",
+    "삼성전자우": "005935.KS",
     "SK하이닉스": "000660.KS",
+    "대우건설": "047040.KS",
+    "삼성전기": "009150.KS",
     "글로벌텍스프리": "204620.KQ",
+    "펌텍코리아": "251970.KQ",
+    "LG화학": "051910.KS",
+    "현대차": "005380.KS",
 }
 DEFAULT_US_TICKERS = {
     "S&P500": "^GSPC",
@@ -175,7 +181,7 @@ def _init_ticker_state():
         st.session_state["us_tickers"] = dict(DEFAULT_US_TICKERS)
 
 
-@st.cache_data(ttl=600)  # 10분 캐시 — 매 rerun마다 야후 파이낸스를 두드리지 않도록
+@st.cache_data(ttl=60)  # 1분 캐시 — "실시간"에 가깝게, 그래도 매 rerun마다 두드리진 않게
 def fetch_quote(ticker: str) -> dict:
     try:
         hist = yf.Ticker(ticker).history(period="5d")
@@ -256,9 +262,9 @@ def _intraday_shape(ticker: str):
 
 
 def market_comment(code: str, market: str, pct: float) -> str:
-    """장 상태(프리/장중/애프터) + 흐름 + 장난스러운 한마디를 한 줄로."""
-    phase, now = market_phase(market)
-    time_str = now.strftime("%H:%M")
+    """카드 안에 넣을 한 줄 — 장중일 때만 흐름(전강후약 등) + 장난스러운 한마디.
+    지금이 프리장/장중/애프터장인지는 섹션 상단 phase_banner_html에서 한 번만 보여준다."""
+    phase, _ = market_phase(market)
 
     if phase == "장중":
         shape = _intraday_shape(code)
@@ -278,16 +284,12 @@ def market_comment(code: str, market: str, pct: float) -> str:
                 trend = "하락세 지속"
             else:
                 trend = "약보합"
-        prefix = f"{time_str} 기준 · {trend}"
-    elif phase == "프리장":
-        prefix = "프리장"
-    elif phase == "애프터장":
-        prefix = "애프터장 마감"
+        prefix = f"{trend} · "
     else:
-        prefix = "휴장"
+        prefix = ""
 
     joke = "오늘도 스머프 예정 ㅜㅜ" if pct < 0 else "오늘은 국짐 가나!?"
-    return f"{prefix} · {joke}"
+    return f"{prefix}{joke}"
 
 
 def _card_html(name: str, d: dict, market: str = "KR", code: str = "") -> str:
@@ -300,7 +302,7 @@ def _card_html(name: str, d: dict, market: str = "KR", code: str = "") -> str:
         )
     up = d["pct"] >= 0
     label = "국짐" if up else "스머프"
-    color = "#d64545" if up else "#3b6fd6"  # 국내 관례: 상승=빨강, 하락=파랑
+    color = "#b91c1c" if up else "#1d4ed8"  # 국내 관례: 상승=빨강, 하락=파랑
     arrow = "▲" if up else "▼"
     comment = market_comment(code, market, d["pct"]) if code else ""
     comment_html = f'<div style="font-size:12px;color:#94a3b8;margin-top:4px;">{comment}</div>' if comment else ""
@@ -317,25 +319,82 @@ def _card_html(name: str, d: dict, market: str = "KR", code: str = "") -> str:
     """
 
 
-def render_market_briefing():
-    """메인화면 상단 — 오늘의 시장 브리핑 (카드형 시각화)."""
-    _init_ticker_state()
-    st.markdown("### 📊 오늘의 시장 브리핑")
-    st.caption("국장 당일 · 미장 전일 마감 — 10분 캐시. 종목 추가/삭제는 왼쪽 사이드바에서.")
+def _stock_row_html(name: str, d: dict) -> str:
+    """개별 종목 — 지수 카드보다 작고 한 줄로 압축된 형태."""
+    if "pct" not in d:
+        return f'<div style="font-size:13px;color:#94a3b8;padding:4px 0;">{name} · 조회 실패</div>'
+    up = d["pct"] >= 0
+    label = "국짐" if up else "스머프"
+    color = "#b91c1c" if up else "#1d4ed8"
+    arrow = "▲" if up else "▼"
+    return (
+        f'<div style="display:flex;justify-content:space-between;padding:5px 2px;'
+        f'border-bottom:1px solid #f1f5f9;font-size:13px;">'
+        f'<span style="color:#334155;">{name}</span>'
+        f'<span style="color:#0f172a;">{d["value"]:,.1f}</span>'
+        f'<span style="font-weight:600;color:{color};">{arrow} {d["pct"]:+.2f}% · {label}</span>'
+        f"</div>"
+    )
 
-    for label, key, market in [("🇰🇷 국장", "kr_tickers", "KR"), ("🇺🇸 미장", "us_tickers", "US")]:
-        tickers = st.session_state[key]
-        if not tickers:
-            continue
-        with st.container(border=True):
-            st.markdown(f"**{label}**")
-            cols = st.columns(len(tickers))
-            for col, (name, code) in zip(cols, tickers.items()):
-                with col:
-                    st.markdown(
-                        _card_html(name, fetch_quote(code), market=market, code=code),
-                        unsafe_allow_html=True,
-                    )
+
+def _biggest_mover(all_stock_quotes: dict, want_gainer: bool):
+    """all_stock_quotes: {name: quote_dict}. 가장 크게 오른/내린 종목 하나를 찾는다."""
+    candidates = [(name, d["pct"]) for name, d in all_stock_quotes.items() if "pct" in d]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda x: x[1]) if want_gainer else min(candidates, key=lambda x: x[1])
+
+
+def render_market_briefing():
+    """메인화면 맨 아래 — 작게 접혀있는 참고용 시장 브리핑. 교열이 메인, 이건 부가 기능."""
+    _init_ticker_state()
+    with st.expander("📊 오늘의 시장 브리핑 (참고용, 클릭해서 펼치기)", expanded=False):
+        cap_col, refresh_col = st.columns([5, 1])
+        cap_col.caption(
+            "🐶 두피 관심종목(국장) · 미장 — 1분 캐시로 최대한 실시간에 가깝게. "
+            "무료 데이터 특성상 실거래가와 몇 분 차이날 수 있어요. 종목 추가/삭제는 왼쪽 사이드바에서."
+        )
+        if refresh_col.button("🔄 새로고침"):
+            fetch_quote.clear()
+            st.rerun()
+
+        all_stock_quotes = {}  # 떡상/떡락 집계용 (지수 제외, 개별 종목만)
+
+        for label, key, market in [("🐶 두피 관심종목 (국장)", "kr_tickers", "KR"), ("🇺🇸 미장", "us_tickers", "US")]:
+            tickers = st.session_state[key]
+            if not tickers:
+                continue
+            index_items = {n: c for n, c in tickers.items() if c.startswith("^")}
+            stock_items = {n: c for n, c in tickers.items() if not c.startswith("^")}
+
+            with st.container(border=True):
+                head_col, badge_col = st.columns([1, 2])
+                head_col.markdown(f"**{label}**")
+                badge_col.markdown(phase_banner_html(market), unsafe_allow_html=True)
+
+                if index_items:
+                    cols = st.columns(len(index_items))
+                    for col, (name, code) in zip(cols, index_items.items()):
+                        with col:
+                            st.markdown(
+                                _card_html(name, fetch_quote(code), market=market, code=code),
+                                unsafe_allow_html=True,
+                            )
+                if stock_items:
+                    for name, code in stock_items.items():
+                        d = fetch_quote(code)
+                        all_stock_quotes[name] = d
+                        st.markdown(_stock_row_html(name, d), unsafe_allow_html=True)
+
+        gainer = _biggest_mover(all_stock_quotes, want_gainer=True)
+        loser = _biggest_mover(all_stock_quotes, want_gainer=False)
+        if gainer or loser:
+            st.markdown("**오늘의 떡상 · 떡락** _(추적 중인 개별 종목 기준)_")
+            mc1, mc2 = st.columns(2)
+            if gainer:
+                mc1.markdown(f"🚀 떡상: **{gainer[0]}** :red[+{gainer[1]:.2f}%]")
+            if loser:
+                mc2.markdown(f"💀 떡락: **{loser[0]}** :blue[{loser[1]:.2f}%]")
 
     render_market_detail()
     st.divider()
