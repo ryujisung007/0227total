@@ -10,6 +10,8 @@
 import json
 import threading
 import time
+import datetime as dt
+from zoneinfo import ZoneInfo
 import requests
 import streamlit as st
 import yfinance as yf
@@ -193,42 +195,80 @@ def fetch_history(ticker: str, period: str = "1mo"):
         return None
 
 
-def render_ticker_group(title: str, session_key: str):
+def _card_html(name: str, d: dict) -> str:
+    if "pct" not in d:
+        return (
+            f'<div style="border:1px solid #e5e7eb;border-radius:12px;padding:14px 16px;'
+            f'margin-bottom:10px;background:#fafafa;">'
+            f'<div style="font-size:13px;color:#64748b;">{name}</div>'
+            f'<div style="font-size:14px;color:#94a3b8;">조회 실패</div></div>'
+        )
+    up = d["pct"] >= 0
+    label = "국짐" if up else "스머프"
+    color = "#d64545" if up else "#3b6fd6"  # 국내 관례: 상승=빨강, 하락=파랑
+    arrow = "▲" if up else "▼"
+    return f"""
+    <div style="border:1px solid #e5e7eb;border-radius:12px;padding:14px 16px;
+                margin-bottom:10px;background:#ffffff;box-shadow:0 1px 2px rgba(0,0,0,.04);">
+      <div style="font-size:13px;color:#64748b;">{name}</div>
+      <div style="font-size:24px;font-weight:700;color:#0f172a;">{d['value']:,.1f}</div>
+      <div style="font-size:14px;font-weight:600;color:{color};">
+        {arrow} {d['pct']:+.2f}% <span style="font-weight:400;">· {label}</span>
+      </div>
+    </div>
+    """
+
+
+def render_market_briefing():
+    """메인화면 상단 — 오늘의 시장 브리핑 (카드형 시각화)."""
+    _init_ticker_state()
+    st.markdown("### 📊 오늘의 시장 브리핑")
+    st.caption("국장 당일 · 미장 전일 마감 — 10분 캐시. 종목 추가/삭제는 왼쪽 사이드바에서.")
+
+    for label, key in [("🇰🇷 국장", "kr_tickers"), ("🇺🇸 미장", "us_tickers")]:
+        tickers = st.session_state[key]
+        if not tickers:
+            continue
+        with st.container(border=True):
+            st.markdown(f"**{label}**")
+            cols = st.columns(len(tickers))
+            for col, (name, code) in zip(cols, tickers.items()):
+                with col:
+                    st.markdown(_card_html(name, fetch_quote(code)), unsafe_allow_html=True)
+
+    render_market_detail()
+    st.divider()
+
+
+def render_ticker_manage(title: str, session_key: str):
+    """사이드바 — 종목 추가/삭제 관리 (수치는 메인화면 브리핑 카드에서 확인)."""
     st.markdown(f"**{title}**")
     tickers = st.session_state[session_key]
-    for name, code in list(tickers.items()):
-        d = fetch_quote(code)
-        row = st.columns([5, 1])
-        with row[0]:
-            if "pct" in d:
-                up = d["pct"] >= 0
-                label = "국짐" if up else "스머프"
-                color = "red" if up else "blue"  # 국내 관례: 상승=빨강, 하락=파랑
-                st.markdown(f"{name}  {d['value']:,.1f}  :{color}[{label} {d['pct']:+.2f}%]")
-            else:
-                st.markdown(f"{name}  _조회 실패_")
-        with row[1]:
-            if name not in DEFAULT_KR_TICKERS and name not in DEFAULT_US_TICKERS:
-                if st.button("✕", key=f"rm_{session_key}_{name}", help="목록에서 제거"):
-                    del st.session_state[session_key][name]
-                    st.rerun()
+    for name in list(tickers.keys()):
+        row = st.columns([4, 1])
+        row[0].caption(name)
+        if name not in DEFAULT_KR_TICKERS and name not in DEFAULT_US_TICKERS:
+            if row[1].button("✕", key=f"rm_{session_key}_{name}", help="목록에서 제거"):
+                del st.session_state[session_key][name]
+                st.rerun()
 
     with st.form(key=f"add_{session_key}", clear_on_submit=True, border=False):
         c1, c2, c3 = st.columns([2, 2, 1])
         new_name = c1.text_input("표시 이름", key=f"name_{session_key}", label_visibility="collapsed", placeholder="표시 이름")
         new_code = c2.text_input("티커(yfinance)", key=f"code_{session_key}", label_visibility="collapsed", placeholder="예: NVDA, 000270.KS")
-        added = c3.form_submit_button("➕ 추가")
+        added = c3.form_submit_button("➕")
         if added and new_name.strip() and new_code.strip():
             st.session_state[session_key][new_name.strip()] = new_code.strip()
+            st.toast(f"'{new_name.strip()}' 추가됨 — 메인화면 브리핑에서 확인하세요.", icon="✅")
             st.rerun()
 
 
 def render_market_widget():
+    """사이드바 — 종목 관리 + 상세보기 선택. 실제 브리핑 카드는 메인화면에 표시된다."""
     _init_ticker_state()
-    st.caption("📈 국장 당일 · 미장 전일 마감 — 10분 캐시. 종목은 자유롭게 추가/삭제 가능")
-    render_ticker_group("🇰🇷 국장", "kr_tickers")
+    render_ticker_manage("🇰🇷 국장", "kr_tickers")
     st.divider()
-    render_ticker_group("🇺🇸 미장", "us_tickers")
+    render_ticker_manage("🇺🇸 미장", "us_tickers")
 
     all_tickers = {**st.session_state["kr_tickers"], **st.session_state["us_tickers"]}
     st.divider()
@@ -237,12 +277,12 @@ def render_market_widget():
 
 
 def render_market_detail():
-    """사이드바에서 종목을 선택하면 메인화면(우측)에 상세 정보를 보여준다."""
+    """종목을 선택하면 브리핑 카드 아래에 상세(가격·1개월 차트)를 보여준다."""
     pick = st.session_state.get("market_detail_pick")
     if not pick:
         return
     name, code = pick
-    st.markdown(f"### 📊 {name} 상세")
+    st.markdown(f"#### 🔎 {name} 상세")
     d = fetch_quote(code)
     hist = fetch_history(code)
     c1, c2 = st.columns([1, 2])
@@ -263,7 +303,6 @@ def render_market_detail():
             st.line_chart(hist["Close"], height=220)
         else:
             st.info("차트 데이터를 불러오지 못했습니다.")
-    st.divider()
 
 
 # ──────────────────────────────────────────────
@@ -271,7 +310,10 @@ def render_market_detail():
 # ──────────────────────────────────────────────
 hero_col, title_col = st.columns([1, 3])
 with hero_col:
-    st.image("assets/edit_hero.png", width="stretch")
+    try:
+        st.image("assets/edit_hero.png", width="stretch")
+    except Exception:
+        pass  # 헤더 이미지가 없거나 로드 실패해도 앱 전체가 죽으면 안 된다
 with title_col:
     st.title("🐶 두피와 기봉이의 AI 교열세상")
     st.caption("사실검증 → 문법판정(오류/스타일 구분) → 교열본 → 수정 포인트 → 확인 권고")
@@ -291,8 +333,6 @@ with st.sidebar:
     st.caption("판정 원칙: '문법 오류'와 '스타일 권고'를 구분하고, 규범 판단에는 사전 근거를 명시합니다.")
     st.divider()
     render_market_widget()
-
-render_market_detail()
 
 text = st.text_area(
     "검토할 글을 입력하세요",
@@ -418,3 +458,7 @@ if st.session_state.get("review_context"):
                 )
             st.markdown(answer)
         st.session_state["gibong_chat"].append({"role": "assistant", "content": answer})
+
+# 교열 도구가 첫 화면의 주인공 — 시장 브리핑은 항상 맨 아래, 별도 섹션으로 분리
+st.divider()
+render_market_briefing()
