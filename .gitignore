@@ -10,3 +10,7 @@ __pycache__/
 # OS
 .DS_Store
 Thumbs.db
+
+# 로컬 실행 로그 (공인 IP 등 노출될 수 있어 커밋 대상 아님)
+*_log.txt
+streamlit_edit_log.txt

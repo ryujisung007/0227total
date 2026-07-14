@@ -152,7 +152,7 @@ def call_claude_chat(history: list[dict], review_context: str, api_key: str) -> 
 # ──────────────────────────────────────────────
 hero_col, title_col = st.columns([1, 3])
 with hero_col:
-    st.image("assets/edit_hero.png", use_container_width=True)
+    st.image("assets/edit_hero.png", width="stretch")
 with title_col:
     st.title("🐶 두피와 기봉이의 AI 교열세상")
     st.caption("사실검증 → 문법판정(오류/스타일 구분) → 교열본 → 수정 포인트 → 확인 권고")
@@ -177,7 +177,7 @@ text = st.text_area(
     placeholder="예) 이 대통령은 2022년 8월 당권을 거머쥔 이후 문 전 대통령을 처음 예방한 자리에서도…",
 )
 
-if st.button("🚀 교열 판정", type="primary", use_container_width=True):
+if st.button("🚀 교열 판정", type="primary", width="stretch"):
     if not api_key:
         st.error("API 키를 입력하세요 (secrets의 ANTHROPIC_API_KEY 또는 사이드바 입력).")
     elif not text.strip():
