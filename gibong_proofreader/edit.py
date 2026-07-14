@@ -281,6 +281,8 @@ def _card_html(name: str, d: dict, market: str = "KR", code: str = "") -> str:
     label = "국짐" if up else "스머프"
     color = "#d64545" if up else "#3b6fd6"  # 국내 관례: 상승=빨강, 하락=파랑
     arrow = "▲" if up else "▼"
+    comment = market_comment(code, market, d["pct"]) if code else ""
+    comment_html = f'<div style="font-size:12px;color:#94a3b8;margin-top:4px;">{comment}</div>' if comment else ""
     return f"""
     <div style="border:1px solid #e5e7eb;border-radius:12px;padding:14px 16px;
                 margin-bottom:10px;background:#ffffff;box-shadow:0 1px 2px rgba(0,0,0,.04);">
@@ -289,6 +291,7 @@ def _card_html(name: str, d: dict, market: str = "KR", code: str = "") -> str:
       <div style="font-size:14px;font-weight:600;color:{color};">
         {arrow} {d['pct']:+.2f}% <span style="font-weight:400;">· {label}</span>
       </div>
+      {comment_html}
     </div>
     """
 
