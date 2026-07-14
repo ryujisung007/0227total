@@ -150,48 +150,120 @@ def call_claude_chat(history: list[dict], review_context: str, api_key: str) -> 
 
 
 # ──────────────────────────────────────────────
-# 시장 현황 위젯 — 업무 리프레시용 (국장 당일 / 미장 전일 마감)
+# 시장 현황 위젯 — 업무 리프레시용 (국장 / 미장, 종목 개인화 가능)
 # ──────────────────────────────────────────────
-MARKET_TICKERS = {
+DEFAULT_KR_TICKERS = {
     "KOSPI": "^KS11",
     "KOSDAQ": "^KQ11",
+    "삼성전자": "005930.KS",
+    "SK하이닉스": "000660.KS",
+    "글로벌텍스프리": "204620.KQ",
+}
+DEFAULT_US_TICKERS = {
     "S&P500": "^GSPC",
     "NASDAQ": "^IXIC",
+    "다우존스": "^DJI",
 }
 
 
+def _init_ticker_state():
+    if "kr_tickers" not in st.session_state:
+        st.session_state["kr_tickers"] = dict(DEFAULT_KR_TICKERS)
+    if "us_tickers" not in st.session_state:
+        st.session_state["us_tickers"] = dict(DEFAULT_US_TICKERS)
+
+
 @st.cache_data(ttl=600)  # 10분 캐시 — 매 rerun마다 야후 파이낸스를 두드리지 않도록
-def fetch_market_snapshot() -> dict:
-    out = {}
-    for name, ticker in MARKET_TICKERS.items():
-        try:
-            hist = yf.Ticker(ticker).history(period="5d")
-            if len(hist) >= 2:
-                last, prev = hist["Close"].iloc[-1], hist["Close"].iloc[-2]
-                out[name] = {"value": float(last), "pct": float((last - prev) / prev * 100)}
+def fetch_quote(ticker: str) -> dict:
+    try:
+        hist = yf.Ticker(ticker).history(period="5d")
+        if len(hist) >= 2:
+            last, prev = hist["Close"].iloc[-1], hist["Close"].iloc[-2]
+            return {"value": float(last), "pct": float((last - prev) / prev * 100)}
+        return {"error": "데이터 부족"}
+    except Exception as ex:  # noqa: BLE001
+        return {"error": str(ex)}
+
+
+@st.cache_data(ttl=600)
+def fetch_history(ticker: str, period: str = "1mo"):
+    try:
+        return yf.Ticker(ticker).history(period=period)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def render_ticker_group(title: str, session_key: str):
+    st.markdown(f"**{title}**")
+    tickers = st.session_state[session_key]
+    for name, code in list(tickers.items()):
+        d = fetch_quote(code)
+        row = st.columns([5, 1])
+        with row[0]:
+            if "pct" in d:
+                up = d["pct"] >= 0
+                label = "국짐" if up else "스머프"
+                color = "red" if up else "blue"  # 국내 관례: 상승=빨강, 하락=파랑
+                st.markdown(f"{name}  {d['value']:,.1f}  :{color}[{label} {d['pct']:+.2f}%]")
             else:
-                out[name] = {"error": "데이터 부족"}
-        except Exception as ex:  # noqa: BLE001
-            out[name] = {"error": str(ex)}
-    return out
+                st.markdown(f"{name}  _조회 실패_")
+        with row[1]:
+            if name not in DEFAULT_KR_TICKERS and name not in DEFAULT_US_TICKERS:
+                if st.button("✕", key=f"rm_{session_key}_{name}", help="목록에서 제거"):
+                    del st.session_state[session_key][name]
+                    st.rerun()
+
+    with st.form(key=f"add_{session_key}", clear_on_submit=True, border=False):
+        c1, c2, c3 = st.columns([2, 2, 1])
+        new_name = c1.text_input("표시 이름", key=f"name_{session_key}", label_visibility="collapsed", placeholder="표시 이름")
+        new_code = c2.text_input("티커(yfinance)", key=f"code_{session_key}", label_visibility="collapsed", placeholder="예: NVDA, 000270.KS")
+        added = c3.form_submit_button("➕ 추가")
+        if added and new_name.strip() and new_code.strip():
+            st.session_state[session_key][new_name.strip()] = new_code.strip()
+            st.rerun()
 
 
 def render_market_widget():
-    st.caption("📈 국장(당일) · 미장(전일 마감) — 10분 캐시")
-    snap = fetch_market_snapshot()
-    cols = st.columns(2)
-    for i, name in enumerate(MARKET_TICKERS):
-        d = snap.get(name, {})
-        with cols[i % 2]:
-            if "pct" in d:
-                up = d["pct"] >= 0
-                emoji = "🔺" if up else "🔻"
-                color = "red" if up else "blue"  # 국내 관례: 상승=빨강, 하락=파랑
-                st.markdown(
-                    f"**{name}**  \n{d['value']:,.1f}  \n:{color}[{emoji} {d['pct']:+.2f}%]"
-                )
-            else:
-                st.markdown(f"**{name}**  \n_조회 실패_")
+    _init_ticker_state()
+    st.caption("📈 국장 당일 · 미장 전일 마감 — 10분 캐시. 종목은 자유롭게 추가/삭제 가능")
+    render_ticker_group("🇰🇷 국장", "kr_tickers")
+    st.divider()
+    render_ticker_group("🇺🇸 미장", "us_tickers")
+
+    all_tickers = {**st.session_state["kr_tickers"], **st.session_state["us_tickers"]}
+    st.divider()
+    pick = st.selectbox("🔎 자세히 볼 종목", ["(선택 안 함)"] + list(all_tickers.keys()))
+    st.session_state["market_detail_pick"] = None if pick == "(선택 안 함)" else (pick, all_tickers[pick])
+
+
+def render_market_detail():
+    """사이드바에서 종목을 선택하면 메인화면(우측)에 상세 정보를 보여준다."""
+    pick = st.session_state.get("market_detail_pick")
+    if not pick:
+        return
+    name, code = pick
+    st.markdown(f"### 📊 {name} 상세")
+    d = fetch_quote(code)
+    hist = fetch_history(code)
+    c1, c2 = st.columns([1, 2])
+    with c1:
+        if "pct" in d:
+            up = d["pct"] >= 0
+            label = "국짐" if up else "스머프"
+            st.metric(name, f"{d['value']:,.2f}", f"{d['pct']:+.2f}% ({label})")
+        else:
+            st.warning(f"조회 실패: {d.get('error')}")
+        if hist is not None and not hist.empty:
+            st.caption(
+                f"1개월 최고 {hist['High'].max():,.2f} · 최저 {hist['Low'].min():,.2f} · "
+                f"평균 거래량 {hist['Volume'].mean():,.0f}"
+            )
+    with c2:
+        if hist is not None and not hist.empty:
+            st.line_chart(hist["Close"], height=220)
+        else:
+            st.info("차트 데이터를 불러오지 못했습니다.")
+    st.divider()
 
 
 # ──────────────────────────────────────────────
@@ -219,6 +291,8 @@ with st.sidebar:
     st.caption("판정 원칙: '문법 오류'와 '스타일 권고'를 구분하고, 규범 판단에는 사전 근거를 명시합니다.")
     st.divider()
     render_market_widget()
+
+render_market_detail()
 
 text = st.text_area(
     "검토할 글을 입력하세요",
