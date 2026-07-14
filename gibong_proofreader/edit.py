@@ -12,6 +12,7 @@ import threading
 import time
 import requests
 import streamlit as st
+import yfinance as yf
 
 # ──────────────────────────────────────────────
 # 기본 설정
@@ -147,6 +148,52 @@ def call_claude_chat(history: list[dict], review_context: str, api_key: str) -> 
     except Exception as ex:
         return f"(오류: {ex})"
 
+
+# ──────────────────────────────────────────────
+# 시장 현황 위젯 — 업무 리프레시용 (국장 당일 / 미장 전일 마감)
+# ──────────────────────────────────────────────
+MARKET_TICKERS = {
+    "KOSPI": "^KS11",
+    "KOSDAQ": "^KQ11",
+    "S&P500": "^GSPC",
+    "NASDAQ": "^IXIC",
+}
+
+
+@st.cache_data(ttl=600)  # 10분 캐시 — 매 rerun마다 야후 파이낸스를 두드리지 않도록
+def fetch_market_snapshot() -> dict:
+    out = {}
+    for name, ticker in MARKET_TICKERS.items():
+        try:
+            hist = yf.Ticker(ticker).history(period="5d")
+            if len(hist) >= 2:
+                last, prev = hist["Close"].iloc[-1], hist["Close"].iloc[-2]
+                out[name] = {"value": float(last), "pct": float((last - prev) / prev * 100)}
+            else:
+                out[name] = {"error": "데이터 부족"}
+        except Exception as ex:  # noqa: BLE001
+            out[name] = {"error": str(ex)}
+    return out
+
+
+def render_market_widget():
+    st.caption("📈 국장(당일) · 미장(전일 마감) — 10분 캐시")
+    snap = fetch_market_snapshot()
+    cols = st.columns(2)
+    for i, name in enumerate(MARKET_TICKERS):
+        d = snap.get(name, {})
+        with cols[i % 2]:
+            if "pct" in d:
+                up = d["pct"] >= 0
+                emoji = "🔺" if up else "🔻"
+                color = "red" if up else "blue"  # 국내 관례: 상승=빨강, 하락=파랑
+                st.markdown(
+                    f"**{name}**  \n{d['value']:,.1f}  \n:{color}[{emoji} {d['pct']:+.2f}%]"
+                )
+            else:
+                st.markdown(f"**{name}**  \n_조회 실패_")
+
+
 # ──────────────────────────────────────────────
 # UI
 # ──────────────────────────────────────────────
@@ -170,6 +217,8 @@ with st.sidebar:
     use_web = st.toggle("🔍 웹검색 사실검증", value=True, help="고유명사·수치·기록을 실시간 검색으로 확인")
     st.divider()
     st.caption("판정 원칙: '문법 오류'와 '스타일 권고'를 구분하고, 규범 판단에는 사전 근거를 명시합니다.")
+    st.divider()
+    render_market_widget()
 
 text = st.text_area(
     "검토할 글을 입력하세요",
