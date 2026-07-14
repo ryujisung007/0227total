@@ -195,7 +195,81 @@ def fetch_history(ticker: str, period: str = "1mo"):
         return None
 
 
-def _card_html(name: str, d: dict) -> str:
+KR_TZ = ZoneInfo("Asia/Seoul")
+US_TZ = ZoneInfo("America/New_York")
+
+
+def market_phase(market: str) -> tuple[str, dt.datetime]:
+    """market: 'KR' 또는 'US'. 반환: (프리장/장중/애프터장/휴장, 해당 시장 기준 현재시각)."""
+    if market == "KR":
+        now = dt.datetime.now(KR_TZ)
+        open_t, close_t = dt.time(9, 0), dt.time(15, 30)
+    else:
+        now = dt.datetime.now(US_TZ)
+        open_t, close_t = dt.time(9, 30), dt.time(16, 0)
+
+    if now.weekday() >= 5:
+        return "휴장", now
+    t = now.time()
+    if t < open_t:
+        return "프리장", now
+    if t > close_t:
+        return "애프터장", now
+    return "장중", now
+
+
+@st.cache_data(ttl=300)
+def _intraday_shape(ticker: str):
+    """오늘 5분봉으로 전반부/후반부 흐름을 대략 분류한다. 데이터 부족하면 None."""
+    try:
+        h = yf.Ticker(ticker).history(period="1d", interval="5m")
+        if len(h) < 6:
+            return None
+        closes = h["Close"]
+        open_px = closes.iloc[0]
+        mid_px = closes.iloc[len(closes) // 2]
+        now_px = closes.iloc[-1]
+        return float(mid_px - open_px), float(now_px - mid_px)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def market_comment(code: str, market: str, pct: float) -> str:
+    """장 상태(프리/장중/애프터) + 흐름 + 장난스러운 한마디를 한 줄로."""
+    phase, now = market_phase(market)
+    time_str = now.strftime("%H:%M")
+
+    if phase == "장중":
+        shape = _intraday_shape(code)
+        if abs(pct) < 0.2:
+            trend = "약보합"
+        elif shape is None:
+            trend = "강세" if pct > 0 else "약세"
+        else:
+            first_half, second_half = shape
+            if first_half > 0 and second_half < 0:
+                trend = "전강후약"
+            elif first_half < 0 and second_half > 0:
+                trend = "후강전약"
+            elif first_half > 0 and second_half > 0:
+                trend = "상승세 지속"
+            elif first_half < 0 and second_half < 0:
+                trend = "하락세 지속"
+            else:
+                trend = "약보합"
+        prefix = f"{time_str} 기준 · {trend}"
+    elif phase == "프리장":
+        prefix = "프리장"
+    elif phase == "애프터장":
+        prefix = "애프터장 마감"
+    else:
+        prefix = "휴장"
+
+    joke = "오늘도 스머프 예정 ㅜㅜ" if pct < 0 else "오늘은 국짐 가나!?"
+    return f"{prefix} · {joke}"
+
+
+def _card_html(name: str, d: dict, market: str = "KR", code: str = "") -> str:
     if "pct" not in d:
         return (
             f'<div style="border:1px solid #e5e7eb;border-radius:12px;padding:14px 16px;'
