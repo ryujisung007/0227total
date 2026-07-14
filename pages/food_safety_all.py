@@ -62,14 +62,25 @@ def _url(svc_id, p_s, p_e, params=""):
 def _norm(s):
     return s.strip().replace("·", ".").replace(" ", "").lower()
 
-@st.cache_data(ttl=600, show_spinner=False)
 def _get(url):
-    try:
-        r = requests.get(url, timeout=20)
-        r.raise_for_status()
-        return r.json(), None
-    except Exception as e:
-        return None, str(e)
+    """캐시 없이 매번 직접 호출 — 캐시된 오류 방지"""
+    proxy = st.session_state.get("proxy_url", "").strip()
+    proxies = {"http": proxy, "https": proxy} if proxy else None
+    for attempt in range(3):
+        try:
+            r = requests.get(url, timeout=30, proxies=proxies)
+            r.raise_for_status()
+            return r.json(), None
+        except requests.exceptions.ConnectTimeout:
+            if attempt < 2:
+                time.sleep(2)
+                continue
+            return None, "연결 시간 초과 — Windows 방화벽에서 Python 허용 필요"
+        except requests.exceptions.ConnectionError as e:
+            return None, f"연결 실패: {str(e)[:120]}"
+        except Exception as e:
+            return None, str(e)
+    return None, "3회 재시도 실패"
 
 def _rows(data, svc_id):
     """응답 JSON에서 row 리스트 추출"""
@@ -187,26 +198,69 @@ with st.sidebar:
         st.info("💡 Python 3.9 이상 필요\nhttps://python.org")
 
     st.markdown("---")
-    API_KEY = get_api_key()
-
     if not API_KEY:
         st.warning("⚠️ secrets.toml에서 키를 읽지 못했습니다.\n아래에 직접 입력하세요.")
         manual_key = st.text_input(
             "FOOD_SAFETY_API_KEY",
             type="password",
             placeholder="7270692908c74bcc...",
-            key="manual_api_key"
+            key="manual_api_key_raw",
+            help="키값만 입력 (숫자+영문 20자리)"
         )
         if manual_key.strip():
-            API_KEY = manual_key.strip()
-            st.success(f"✅ 수동 입력: `{API_KEY[:8]}...`")
+            # 알파벳+숫자만 추출 (URL 등 잘못 붙여넣기 방지)
+            import re as _re
+            cleaned = _re.sub(r'[^a-zA-Z0-9]', '', manual_key)
+            if len(cleaned) < 10:
+                st.error("❌ 키 형식 오류 — 숫자+영문 키값만 입력하세요.\n예: 7270692908c74bccaebc")
+                st.stop()
+            API_KEY = cleaned
+            # session_state에 정제된 키 저장
+            st.session_state["manual_api_key"] = cleaned
+            st.success(f"✅ 키 입력됨: `{cleaned[:8]}...`")
         else:
-            st.info("💡 키 입력 후 Enter를 누르세요.")
+            st.info("💡 API 키를 입력하세요 (숫자+영문 20자리만)")
             st.stop()
     else:
+        st.session_state["manual_api_key"] = API_KEY
         st.success(f"✅ API 키: `{API_KEY[:8]}...`")
     st.markdown("---")
-    st.caption("API 7종 통합 조회\n로컬 전용 앱")
+
+    # ── 네트워크 진단 ──
+    with st.expander("🔌 네트워크 진단 / 프록시 설정", expanded=False):
+        if st.button("🔌 연결 테스트", use_container_width=True, key="net_test"):
+            test_url = f"http://openapi.foodsafetykorea.go.kr/api/{API_KEY}/I1250/json/1/1"
+            proxy = st.session_state.get("proxy_url", "").strip()
+            proxies = {"http": proxy, "https": proxy} if proxy else None
+            try:
+                r = requests.get(test_url, timeout=10, proxies=proxies)
+                if r.status_code == 200:
+                    st.success("✅ API 서버 연결 정상")
+                else:
+                    st.warning(f"⚠️ HTTP {r.status_code}: {r.text[:100]}")
+            except requests.exceptions.ConnectTimeout:
+                st.error("❌ 연결 시간 초과\n방화벽/VPN 확인 필요")
+            except Exception as e:
+                st.error(f"❌ {str(e)[:150]}")
+
+        st.markdown("**프록시 설정 (회사 네트워크 시)**")
+        proxy_input = st.text_input(
+            "프록시 주소",
+            placeholder="http://proxy.company.com:8080",
+            key="proxy_url",
+        )
+        if proxy_input:
+            st.caption(f"프록시 적용: {proxy_input}")
+
+        st.markdown("**문제 해결 체크리스트**")
+        st.markdown("""
+- VPN 연결 해제 후 재시도
+- 회사 네트워크라면 프록시 주소 입력
+- `curl http://openapi.foodsafetykorea.go.kr` 로 직접 테스트
+- 식품안전나라 서버 점검 여부 확인
+        """)
+
+    st.markdown("---")
 
 # ============================================================
 # session_state 초기화
@@ -295,11 +349,16 @@ with tab1:
 
         rows = st.session_state.products
         df_p = pd.DataFrame([{
-            "품목제조번호": r.get("PRDLST_REPORT_NO",""),
-            "제품명":       r.get("PRDLST_NM",""),
-            "식품유형":     r.get("PRDLST_DCNM",""),
-            "제조사":       r.get("BSSH_NM",""),
-            "보고일자":     r.get("PRMS_DT",""),
+            "품목제조번호": r.get("PRDLST_REPORT_NO", ""),
+            "제품명":       r.get("PRDLST_NM", ""),
+            "식품유형":     r.get("PRDLST_DCNM", ""),
+            "제조사":       r.get("BSSH_NM", ""),
+            "보고일자":     r.get("PRMS_DT", ""),
+            "최종수정":     r.get("LAST_UPDT_DTM", ""),
+            "포장재질":     r.get("FRMLC_MTRQLT", ""),
+            "유통기한":     r.get("POG_DAYCNT", ""),
+            "생산여부":     r.get("PRODUCTION", ""),
+            "업종":         r.get("INDUTY_CD_NM", ""),
         } for r in rows])
 
         # 전체선택 / 전체해제
@@ -367,11 +426,27 @@ with tab1:
         # 원재료 DataFrame
         raw_rows = st.session_state.raw_mats
         df_raw = pd.DataFrame([{
-            "제품명":   r.get("_제품명",""),
-            "원재료명": r.get("RAWMTRL_NM",""),
-            "함량":     r.get("CONTENT",""),
-            "원산지":   r.get("ORIGIN_CNTRY_NM",""),
-        } for r in raw_rows if r.get("RAWMTRL_NM","")])
+            "제품명":   r.get("_제품명", ""),
+            # C002 필드명 우선순위로 탐색
+            "원재료명": (r.get("RAWMTRL_NM")
+                        or r.get("INGR_NM")
+                        or r.get("RAW_MTRL_NM")
+                        or r.get("MATERIAL_NM", "")),
+            "함량":     (r.get("CONTENT")
+                        or r.get("CNTNT")
+                        or r.get("CONTENT_NM", "")),
+            "원산지":   (r.get("ORIGIN_CNTRY_NM")
+                        or r.get("ORIGN_CNTRY_NM")
+                        or r.get("CNTRY_NM", "")),
+        } for r in raw_rows])
+
+        # 원재료명이 전부 비어있으면 실제 필드 디버그 표시
+        if df_raw["원재료명"].eq("").all() and raw_rows:
+            st.warning("⚠️ 원재료 필드명 자동 탐색 실패 — 실제 필드 확인 중")
+            with st.expander("🔍 C002 실제 응답 필드 (개발자 확인용)"):
+                st.json(raw_rows[0])
+            # 전체 필드를 그대로 표시
+            df_raw = pd.DataFrame(raw_rows[:50])
 
         # 원재료 집계 (제품별 사용 수)
         if not df_raw.empty:
