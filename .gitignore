@@ -1,5 +1,6 @@
 # secrets — 로컬 테스트용 키, 배포 시엔 Streamlit Cloud secrets에 별도 등록
-.streamlit/secrets.toml
+# 하위 폴더(예: gibong_proofreader/.streamlit/secrets.toml)에도 적용되도록 ** 사용
+**/.streamlit/secrets.toml
 
 # Python
 __pycache__/
