@@ -117,6 +117,36 @@ def call_claude(text: str, mode: str, use_web: bool, api_key: str) -> dict:
             continue
     return {"ok": False, "error": last_err}
 
+
+def call_claude_chat(history: list[dict], review_context: str, api_key: str) -> str:
+    """'기봉이' 챗봇 — 방금 나온 교열 결과(review_context)를 문맥으로 물음에 답한다."""
+    system = (
+        "너는 '기봉이', AI 교열 결과에 대해 친근하고 간결하게 답하는 보조 챗봇이다. "
+        "아래 검토 결과 JSON을 근거로만 답하고, 결과에 없는 내용은 모른다고 말한다. "
+        "존댓말 대신 친근한 반말 섞인 말투를 쓰되 무례하지는 않게.\n\n"
+        f"[이번 검토 결과]\n{review_context}"
+    )
+    messages = [{"role": m["role"], "content": m["content"]} for m in history]
+    try:
+        r = requests.post(
+            API_URL,
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={"model": MODEL_CANDIDATES[0], "max_tokens": 1000, "system": system, "messages": messages},
+            timeout=60,
+        )
+        if r.status_code != 200:
+            return f"(API 오류 {r.status_code}: {r.text[:200]})"
+        data = r.json()
+        return "\n".join(
+            b.get("text", "") for b in data.get("content", []) if b.get("type") == "text"
+        ).strip() or "(빈 응답)"
+    except Exception as ex:
+        return f"(오류: {ex})"
+
 # ──────────────────────────────────────────────
 # UI
 # ──────────────────────────────────────────────
@@ -210,12 +240,9 @@ if st.button("🚀 교열 판정", type="primary", use_container_width=True):
             if r.get("교열본"):
                 st.subheader("② 교열본")
                 st.info(r["교열본"])
-                edited_text = r["교열본"]
-                est_lines = edited_text.count("\n") + (len(edited_text) // 60) + 2
-                box_height = max(120, min(1200, est_lines * 32))
-                st.text_area(
-                    "복사용", value=edited_text, height=box_height, label_visibility="collapsed"
-                )
+                # st.code는 마우스를 올리면 오른쪽 위에 복사 아이콘이 뜨고, height를 안 주면
+                # 내용 길이에 맞춰 자동으로 늘어난다(스크롤로 잘리지 않음).
+                st.code(r["교열본"], language=None, wrap_lines=True)
 
             points = r.get("수정포인트") or []
             if points:
