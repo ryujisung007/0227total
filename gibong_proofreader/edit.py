@@ -187,7 +187,11 @@ def fetch_quote(ticker: str) -> dict:
         hist = yf.Ticker(ticker).history(period="5d")
         if len(hist) >= 2:
             last, prev = hist["Close"].iloc[-1], hist["Close"].iloc[-2]
-            return {"value": float(last), "pct": float((last - prev) / prev * 100)}
+            return {
+                "value": float(last),
+                "pct": float((last - prev) / prev * 100),
+                "prev_close": float(prev),  # 직전 정규장 종가 — 흐름 참고용
+            }
         return {"error": "데이터 부족"}
     except Exception as ex:  # noqa: BLE001
         return {"error": str(ex)}
@@ -225,22 +229,23 @@ def market_phase(market: str) -> tuple[str, dt.datetime]:
 
 
 PHASE_BADGE = {
-    "프리장": ("🌅", "#94a3b8"),
-    "장중": ("🟢", "#16a34a"),
-    "애프터장": ("🌙", "#64748b"),
-    "휴장": ("💤", "#94a3b8"),
+    "프리장": ("🌅", "#f87171", "준비중"),
+    "장중": ("🔴", "#dc2626", "진행중"),
+    "애프터장": ("🌙", "#7f1d1d", "마감"),
+    "휴장": ("💤", "#9ca3af", "휴장"),
 }
 
 
 def phase_banner_html(market: str) -> str:
-    """국장/미장 섹션 맨 위에 한 번만 — 지금이 프리장/장중/애프터장인지 시간과 함께 큼직하게."""
+    """국장/미장 섹션 맨 위에 한 번만 — 지금 단계만 '불이 들어온' 것처럼 빨간색 계열로 진하게 표시."""
     phase, now = market_phase(market)
-    icon, color = PHASE_BADGE[phase]
+    icon, color, suffix = PHASE_BADGE[phase]
     tz_label = "한국시간" if market == "KR" else "미국동부시간"
     return (
-        f'<div style="display:inline-block;padding:4px 12px;border-radius:999px;'
-        f'background:{color}1a;color:{color};font-weight:700;font-size:14px;margin-bottom:6px;">'
-        f'{icon} {phase} · {now.strftime("%H:%M")} ({tz_label})'
+        f'<div style="display:inline-block;padding:6px 16px;border-radius:999px;'
+        f'background:{color};color:#ffffff;font-weight:700;font-size:15px;margin-bottom:6px;'
+        f'box-shadow:0 0 10px {color}cc;">'
+        f'{icon} {phase} ({suffix}) · {now.strftime("%H:%M")} ({tz_label})'
         f"</div>"
     )
 
@@ -306,6 +311,10 @@ def _card_html(name: str, d: dict, market: str = "KR", code: str = "") -> str:
     arrow = "▲" if up else "▼"
     comment = market_comment(code, market, d["pct"]) if code else ""
     comment_html = f'<div style="font-size:12px;color:#94a3b8;margin-top:4px;">{comment}</div>' if comment else ""
+    prev_html = (
+        f'<div style="font-size:12px;color:#94a3b8;margin-top:2px;">전일 정규장 종가 {d["prev_close"]:,.1f}</div>'
+        if "prev_close" in d else ""
+    )
     return f"""
     <div style="border:1px solid #e5e7eb;border-radius:12px;padding:14px 16px;
                 margin-bottom:10px;background:#ffffff;box-shadow:0 1px 2px rgba(0,0,0,.04);">
@@ -314,24 +323,28 @@ def _card_html(name: str, d: dict, market: str = "KR", code: str = "") -> str:
       <div style="font-size:14px;font-weight:600;color:{color};">
         {arrow} {d['pct']:+.2f}% <span style="font-weight:400;">· {label}</span>
       </div>
+      {prev_html}
       {comment_html}
     </div>
     """
 
 
 def _stock_row_html(name: str, d: dict) -> str:
-    """개별 종목 — 지수 카드보다 작고 한 줄로 압축된 형태."""
+    """개별 종목 — 지수 카드보다 작고 한 줄로 압축된 형태. 전일 정규장 종가도 같이 보여줘서 흐름을 알 수 있게."""
     if "pct" not in d:
         return f'<div style="font-size:13px;color:#94a3b8;padding:4px 0;">{name} · 조회 실패</div>'
     up = d["pct"] >= 0
     label = "국짐" if up else "스머프"
     color = "#b91c1c" if up else "#1d4ed8"
     arrow = "▲" if up else "▼"
+    prev = d.get("prev_close")
+    prev_span = f'<span style="color:#94a3b8;font-size:11px;">(전일종가 {prev:,.1f})</span>' if prev else ""
     return (
-        f'<div style="display:flex;justify-content:space-between;padding:5px 2px;'
-        f'border-bottom:1px solid #f1f5f9;font-size:13px;">'
+        f'<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 2px;'
+        f'border-bottom:1px solid #f1f5f9;font-size:13px;gap:6px;">'
         f'<span style="color:#334155;">{name}</span>'
         f'<span style="color:#0f172a;">{d["value"]:,.1f}</span>'
+        f'{prev_span}'
         f'<span style="font-weight:600;color:{color};">{arrow} {d["pct"]:+.2f}% · {label}</span>'
         f"</div>"
     )
@@ -345,14 +358,67 @@ def _biggest_mover(all_stock_quotes: dict, want_gainer: bool):
     return max(candidates, key=lambda x: x[1]) if want_gainer else min(candidates, key=lambda x: x[1])
 
 
+# 토스 등 증권사의 "상승률/하락률 상위" 순위는 비공개 API라 그대로 가져올 수 없다.
+# 대신 코스피/코스닥 시가총액 상위권 위주로 스크리닝 유니버스를 넓혀서, 같은 방식(야후
+# 파이낸스, 공개 데이터)으로 떡상/떡락 상위를 계산한다 — 실제 토스 순위와 완전히 같지는
+# 않지만 대형주 위주 흐름은 충분히 비슷하게 잡힌다.
+MARKET_SCREENER_UNIVERSE = {
+    "삼성전자": "005930.KS", "SK하이닉스": "000660.KS", "LG에너지솔루션": "373220.KS",
+    "삼성바이오로직스": "207940.KS", "현대차": "005380.KS", "기아": "000270.KS",
+    "셀트리온": "068270.KS", "POSCO홀딩스": "005490.KS", "NAVER": "035420.KS",
+    "카카오": "035720.KS", "LG화학": "051910.KS", "삼성SDI": "006400.KS",
+    "삼성물산": "028260.KS", "신한지주": "055550.KS", "KB금융": "105560.KS",
+    "현대모비스": "012330.KS", "LG전자": "066570.KS", "SK이노베이션": "096770.KS",
+    "한국전력": "015760.KS", "삼성전기": "009150.KS", "HD현대중공업": "329180.KS",
+    "두산에너빌리티": "034020.KS", "크래프톤": "259960.KS", "SK": "034730.KS",
+    "하나금융지주": "086790.KS", "우리금융지주": "316140.KS", "KT&G": "033780.KS",
+    "LG생활건강": "051900.KS", "아모레퍼시픽": "090430.KS",
+    "에코프로비엠": "247540.KQ", "에코프로": "086520.KQ", "알테오젠": "196170.KQ",
+    "HLB": "028300.KQ", "펄어비스": "263750.KQ", "카카오게임즈": "293490.KQ",
+    "JYP Ent": "035900.KQ", "에스엠": "041510.KQ",
+}
+
+
+@st.cache_data(ttl=300)  # 5분 캐시 — 유니버스가 커서 매 rerun마다 다시 긁으면 느리다
+def fetch_screener_quotes() -> dict:
+    return {name: fetch_quote(code) for name, code in MARKET_SCREENER_UNIVERSE.items()}
+
+
+def render_ticker_manage(title: str, session_key: str):
+    """종목 추가/삭제 관리 — 브리핑 안 '종목 관리' 서브 expander에 들어간다."""
+    st.markdown(f"**{title}**")
+    tickers = st.session_state[session_key]
+    for name in list(tickers.keys()):
+        row = st.columns([4, 1])
+        row[0].caption(name)
+        if name not in DEFAULT_KR_TICKERS and name not in DEFAULT_US_TICKERS:
+            if row[1].button("✕", key=f"rm_{session_key}_{name}", help="목록에서 제거"):
+                del st.session_state[session_key][name]
+                st.rerun()
+
+    with st.form(key=f"add_{session_key}", clear_on_submit=True, border=False):
+        c1, c2, c3 = st.columns([2, 2, 1])
+        new_name = c1.text_input("표시 이름", key=f"name_{session_key}", label_visibility="collapsed", placeholder="표시 이름")
+        new_code = c2.text_input("티커(yfinance)", key=f"code_{session_key}", label_visibility="collapsed", placeholder="예: NVDA, 000270.KS")
+        added = c3.form_submit_button("➕")
+        if added and new_name.strip() and new_code.strip():
+            st.session_state[session_key][new_name.strip()] = new_code.strip()
+            st.toast(f"'{new_name.strip()}' 추가됨", icon="✅")
+            st.rerun()
+
+
 def render_market_briefing():
-    """메인화면 맨 아래 — 작게 접혀있는 참고용 시장 브리핑. 교열이 메인, 이건 부가 기능."""
+    """메인화면 맨 아래 — 작게 접혀있는 참고용 시장 브리핑. 교열이 메인, 이건 부가 기능.
+    사이드바의 '📊 시장 브리핑 표시' 스위치가 꺼져있으면 아예 렌더링하지 않는다."""
     _init_ticker_state()
+    if not st.session_state.get("show_market_briefing", True):
+        return
+
     with st.expander("📊 오늘의 시장 브리핑 (참고용, 클릭해서 펼치기)", expanded=False):
         cap_col, refresh_col = st.columns([5, 1])
         cap_col.caption(
             "🐶 두피 관심종목(국장) · 미장 — 1분 캐시로 최대한 실시간에 가깝게. "
-            "무료 데이터 특성상 실거래가와 몇 분 차이날 수 있어요. 종목 추가/삭제는 왼쪽 사이드바에서."
+            "무료 데이터 특성상 실거래가와 몇 분 차이날 수 있어요."
         )
         if refresh_col.button("🔄 새로고침"):
             fetch_quote.clear()
@@ -386,54 +452,30 @@ def render_market_briefing():
                         all_stock_quotes[name] = d
                         st.markdown(_stock_row_html(name, d), unsafe_allow_html=True)
 
-        gainer = _biggest_mover(all_stock_quotes, want_gainer=True)
-        loser = _biggest_mover(all_stock_quotes, want_gainer=False)
+        # 떡상/떡락 — 내 관심종목 + 코스피/코스닥 대형주 스크리너 유니버스를 합쳐서 계산
+        combined = {**fetch_screener_quotes(), **all_stock_quotes}
+        gainer = _biggest_mover(combined, want_gainer=True)
+        loser = _biggest_mover(combined, want_gainer=False)
         if gainer or loser:
-            st.markdown("**오늘의 떡상 · 떡락** _(추적 중인 개별 종목 기준)_")
+            st.markdown("**오늘의 떡상 · 떡락** _(관심종목 + 코스피·코스닥 대형주 기준)_")
             mc1, mc2 = st.columns(2)
             if gainer:
                 mc1.markdown(f"🚀 떡상: **{gainer[0]}** :red[+{gainer[1]:.2f}%]")
             if loser:
                 mc2.markdown(f"💀 떡락: **{loser[0]}** :blue[{loser[1]:.2f}%]")
 
-    render_market_detail()
-    st.divider()
+        with st.expander("⚙️ 종목 관리 (추가/삭제/자세히 볼 종목)"):
+            render_ticker_manage("🇰🇷 국장", "kr_tickers")
+            st.divider()
+            render_ticker_manage("🇺🇸 미장", "us_tickers")
+            all_tickers = {**st.session_state["kr_tickers"], **st.session_state["us_tickers"]}
+            st.divider()
+            pick = st.selectbox("🔎 자세히 볼 종목", ["(선택 안 함)"] + list(all_tickers.keys()))
+            st.session_state["market_detail_pick"] = (
+                None if pick == "(선택 안 함)" else (pick, all_tickers[pick])
+            )
 
-
-def render_ticker_manage(title: str, session_key: str):
-    """사이드바 — 종목 추가/삭제 관리 (수치는 메인화면 브리핑 카드에서 확인)."""
-    st.markdown(f"**{title}**")
-    tickers = st.session_state[session_key]
-    for name in list(tickers.keys()):
-        row = st.columns([4, 1])
-        row[0].caption(name)
-        if name not in DEFAULT_KR_TICKERS and name not in DEFAULT_US_TICKERS:
-            if row[1].button("✕", key=f"rm_{session_key}_{name}", help="목록에서 제거"):
-                del st.session_state[session_key][name]
-                st.rerun()
-
-    with st.form(key=f"add_{session_key}", clear_on_submit=True, border=False):
-        c1, c2, c3 = st.columns([2, 2, 1])
-        new_name = c1.text_input("표시 이름", key=f"name_{session_key}", label_visibility="collapsed", placeholder="표시 이름")
-        new_code = c2.text_input("티커(yfinance)", key=f"code_{session_key}", label_visibility="collapsed", placeholder="예: NVDA, 000270.KS")
-        added = c3.form_submit_button("➕")
-        if added and new_name.strip() and new_code.strip():
-            st.session_state[session_key][new_name.strip()] = new_code.strip()
-            st.toast(f"'{new_name.strip()}' 추가됨 — 메인화면 브리핑에서 확인하세요.", icon="✅")
-            st.rerun()
-
-
-def render_market_widget():
-    """사이드바 — 종목 관리 + 상세보기 선택. 실제 브리핑 카드는 메인화면에 표시된다."""
-    _init_ticker_state()
-    render_ticker_manage("🇰🇷 국장", "kr_tickers")
-    st.divider()
-    render_ticker_manage("🇺🇸 미장", "us_tickers")
-
-    all_tickers = {**st.session_state["kr_tickers"], **st.session_state["us_tickers"]}
-    st.divider()
-    pick = st.selectbox("🔎 자세히 볼 종목", ["(선택 안 함)"] + list(all_tickers.keys()))
-    st.session_state["market_detail_pick"] = None if pick == "(선택 안 함)" else (pick, all_tickers[pick])
+        render_market_detail()
 
 
 def render_market_detail():
@@ -492,7 +534,11 @@ with st.sidebar:
     st.divider()
     st.caption("판정 원칙: '문법 오류'와 '스타일 권고'를 구분하고, 규범 판단에는 사전 근거를 명시합니다.")
     st.divider()
-    render_market_widget()
+    st.session_state["show_market_briefing"] = st.toggle(
+        "📊 시장 브리핑 표시",
+        value=st.session_state.get("show_market_briefing", True),
+        help="켜면 화면 맨 아래에 국장/미장 브리핑이 나타납니다. 관리(추가/삭제)는 그 안에서 합니다.",
+    )
 
 text = st.text_area(
     "검토할 글을 입력하세요",
