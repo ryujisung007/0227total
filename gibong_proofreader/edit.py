@@ -218,6 +218,27 @@ def market_phase(market: str) -> tuple[str, dt.datetime]:
     return "장중", now
 
 
+PHASE_BADGE = {
+    "프리장": ("🌅", "#94a3b8"),
+    "장중": ("🟢", "#16a34a"),
+    "애프터장": ("🌙", "#64748b"),
+    "휴장": ("💤", "#94a3b8"),
+}
+
+
+def phase_banner_html(market: str) -> str:
+    """국장/미장 섹션 맨 위에 한 번만 — 지금이 프리장/장중/애프터장인지 시간과 함께 큼직하게."""
+    phase, now = market_phase(market)
+    icon, color = PHASE_BADGE[phase]
+    tz_label = "한국시간" if market == "KR" else "미국동부시간"
+    return (
+        f'<div style="display:inline-block;padding:4px 12px;border-radius:999px;'
+        f'background:{color}1a;color:{color};font-weight:700;font-size:14px;margin-bottom:6px;">'
+        f'{icon} {phase} · {now.strftime("%H:%M")} ({tz_label})'
+        f"</div>"
+    )
+
+
 @st.cache_data(ttl=300)
 def _intraday_shape(ticker: str):
     """오늘 5분봉으로 전반부/후반부 흐름을 대략 분류한다. 데이터 부족하면 None."""
