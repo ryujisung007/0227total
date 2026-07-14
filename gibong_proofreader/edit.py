@@ -302,7 +302,7 @@ def render_market_briefing():
     st.markdown("### 📊 오늘의 시장 브리핑")
     st.caption("국장 당일 · 미장 전일 마감 — 10분 캐시. 종목 추가/삭제는 왼쪽 사이드바에서.")
 
-    for label, key in [("🇰🇷 국장", "kr_tickers"), ("🇺🇸 미장", "us_tickers")]:
+    for label, key, market in [("🇰🇷 국장", "kr_tickers", "KR"), ("🇺🇸 미장", "us_tickers", "US")]:
         tickers = st.session_state[key]
         if not tickers:
             continue
@@ -311,7 +311,10 @@ def render_market_briefing():
             cols = st.columns(len(tickers))
             for col, (name, code) in zip(cols, tickers.items()):
                 with col:
-                    st.markdown(_card_html(name, fetch_quote(code)), unsafe_allow_html=True)
+                    st.markdown(
+                        _card_html(name, fetch_quote(code), market=market, code=code),
+                        unsafe_allow_html=True,
+                    )
 
     render_market_detail()
     st.divider()
